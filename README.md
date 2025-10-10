@@ -56,9 +56,20 @@ python packet_capture.py --output packets.json
 # Disable MQTT publishing
 python packet_capture.py --no-mqtt
 
-# Enable verbose logging
+# Enable verbose output (shows JSON packet data)
 python packet_capture.py --verbose
+
+# Enable debug output (shows all detailed debugging info)
+python packet_capture.py --debug
 ```
+
+## Output Levels
+
+The script supports three output levels:
+
+- **Normal (default)**: Shows minimal packet info line only
+- **--verbose**: Adds JSON packet data output  
+- **--debug**: Adds all detailed debugging information
 
 ## Output Format
 

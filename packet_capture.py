@@ -32,7 +32,12 @@ MQTT Topics:
 - meshcore/decoded: Decoded packet content
 
 Usage:
-    python packet_capture.py [--config config.ini] [--output output.json] [--no-mqtt]
+    python packet_capture.py [--config config.ini] [--output output.json] [--verbose] [--debug] [--no-mqtt]
+    
+Output Levels:
+    Normal (default): Shows minimal packet info line only
+    --verbose: Adds JSON packet data output
+    --debug: Adds all detailed debugging information
 """
 
 import asyncio
@@ -66,10 +71,11 @@ except ImportError:
 class PacketCapture:
     """Standalone packet capture using meshcore package"""
     
-    def __init__(self, config_file: str = "config.ini", output_file: Optional[str] = None, verbose: bool = False, enable_mqtt: bool = True):
+    def __init__(self, config_file: str = "config.ini", output_file: Optional[str] = None, verbose: bool = False, debug: bool = False, enable_mqtt: bool = True):
         self.config_file = config_file
         self.output_file = output_file
         self.verbose = verbose
+        self.debug = debug
         self.enable_mqtt = enable_mqtt
         self.config = configparser.ConfigParser()
         self.load_config()
@@ -743,10 +749,10 @@ origin = PacketCapture Nodes
             self.output_packet(packet_data)
             
             self.packet_count += 1
-            self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, SNR: {packet_data['SNR']}, RSSI: {packet_data['RSSI']}")
+            self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, SNR: {packet_data['SNR']}, RSSI: {packet_data['RSSI']}, hash: {packet_data['hash']}")
             
-            # Output full packet data structure in verbose mode
-            if self.verbose:
+            # Output full packet data structure in verbose or debug mode
+            if self.verbose or self.debug:
                 self.logger.info("📋 Full packet data structure:")
                 import json
                 self.logger.info(json.dumps(packet_data, indent=2))
@@ -795,10 +801,11 @@ origin = PacketCapture Nodes
         # Convert to JSON
         json_data = json.dumps(packet_data, indent=2)
         
-        # Output to console
-        print("=" * 80)
-        print(json_data)
-        print("=" * 80)
+        # Output to console only in verbose or debug mode
+        if self.verbose or self.debug:
+            print("=" * 80)
+            print(json_data)
+            print("=" * 80)
         
         # Output to file if specified
         if self.output_handle:
@@ -917,7 +924,8 @@ async def main():
     parser = argparse.ArgumentParser(description='MeshCore Packet Capture Script')
     parser.add_argument('--config', default='config.ini', help='Configuration file path')
     parser.add_argument('--output', help='Output file path (optional)')
-    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose output (shows JSON packet data)')
+    parser.add_argument('--debug', action='store_true', help='Enable debug output (shows all detailed debugging info)')
     parser.add_argument('--no-mqtt', action='store_true', help='Disable MQTT publishing')
     
     args = parser.parse_args()
@@ -927,11 +935,14 @@ async def main():
         config_file=args.config, 
         output_file=args.output, 
         verbose=args.verbose,
+        debug=args.debug,
         enable_mqtt=not args.no_mqtt
     )
     
-    if args.verbose:
+    if args.debug:
         capture.logger.setLevel(logging.DEBUG)
+    elif args.verbose:
+        capture.logger.setLevel(logging.INFO)
     
     try:
         await capture.start()

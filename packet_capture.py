@@ -69,7 +69,6 @@ class PacketCapture:
         # MQTT connection
         self.mqtt_client = None
         self.mqtt_connected = False
-        self.should_exit = False
         
         # Packet correlation cache
         self.rf_data_cache = {}
@@ -631,7 +630,6 @@ origin = PacketCapture Nodes
             origin_id = self.config.get('packetcapture', 'origin_id', fallback=None)
             if not origin_id:
                 # Generate a hash from device name as last resort
-                import hashlib
                 device_name = self.device_name or 'Unknown'
                 origin_id = hashlib.sha256(device_name.encode()).hexdigest()
                 self.logger.warning(f"Using generated origin_id from device name: {origin_id}")
@@ -669,7 +667,7 @@ origin = PacketCapture Nodes
         
         return packet_data
     
-    async def handle_rf_log_data(self, event, metadata=None):
+    async def handle_rf_log_data(self, event):
         """Handle RF log data events to cache SNR/RSSI information and process packets"""
         try:
             payload = event.payload
@@ -739,7 +737,7 @@ origin = PacketCapture Nodes
         except Exception as e:
             self.logger.error(f"Error processing packet from RF data: {e}")
     
-    async def handle_raw_data(self, event, metadata=None):
+    async def handle_raw_data(self, event):
         """Handle raw data events (full packet data)"""
         try:
             payload = event.payload
@@ -817,17 +815,17 @@ origin = PacketCapture Nodes
     async def setup_event_handlers(self):
         """Setup event handlers for packet capture"""
         # Handle RF log data for SNR/RSSI information
-        async def on_rf_data(event, metadata=None):
+        async def on_rf_data(event):
             self.logger.debug(f"RF_DATA event received: {event}")
-            await self.handle_rf_log_data(event, metadata)
+            await self.handle_rf_log_data(event)
         
         # Handle raw data events (full packet data)
-        async def on_raw_data(event, metadata=None):
+        async def on_raw_data(event):
             self.logger.debug(f"RAW_DATA event received: {event}")
-            await self.handle_raw_data(event, metadata)
+            await self.handle_raw_data(event)
         
         # Handle status response events
-        async def on_status_response(event, metadata=None):
+        async def on_status_response(event):
             self.logger.debug(f"STATUS_RESPONSE event received: {event}")
             # Log the status data to see what's available
             if hasattr(event, 'payload') and event.payload:

@@ -1,43 +1,22 @@
 #!/usr/bin/env python3
 """
-Standalone MeshCore Packet Capture Script with MQTT Support
+MeshCore Packet Capture Tool
 
-This script captures incoming packets from a MeshCore companion radio and outputs
-structured data to console, file, and MQTT broker. It uses the meshcore package
-for all data acquisition and includes MQTT publishing capabilities from mctomqtt.py.
-
-Based on the existing meshcore-bot codebase, this script can capture:
-- origin: Device name or configured identifier
-- origin_id: Device public key or configured ID
-- timestamp: Current timestamp when packet is received
-- type: "PACKET" (hardcoded)
-- direction: "rx" (hardcoded for received packets)
-- time: Extracted from timestamp
-- date: Extracted from timestamp
-- len: Packet length from raw data
-- packet_type: Extracted from packet header
-- route: Route type (F for flood, D for direct, etc.)
-- payload_len: Calculated payload length
-- raw: Raw hex packet data
-- SNR: Signal-to-noise ratio from RF log data
-- RSSI: Received signal strength from RF log data
-- score: Packet quality score (if available)
-- duration: Packet transmission duration (if available)
-- hash: Packet hash (calculated from raw data)
-
-MQTT Topics:
-- meshcore/status: Device online/offline status
-- meshcore/packets: Full packet data
-- meshcore/raw: Raw packet data
-- meshcore/decoded: Decoded packet content
+Captures packets from MeshCore radios and outputs to console, file, and MQTT.
+Compatible with both serial and BLE connections.
 
 Usage:
     python packet_capture.py [--config config.ini] [--output output.json] [--verbose] [--debug] [--no-mqtt]
-    
-Output Levels:
-    Normal (default): Shows minimal packet info line only
-    --verbose: Adds JSON packet data output
-    --debug: Adds all detailed debugging information
+
+Options:
+    --config     Configuration file (default: config.ini)
+    --output     Output file for packet data
+    --verbose    Show JSON packet data
+    --debug      Show detailed debugging info
+    --no-mqtt    Disable MQTT publishing
+
+The script captures packet metadata including SNR, RSSI, route type, payload type,
+and raw hex data. MQTT topics are configurable in the config file.
 """
 
 import asyncio

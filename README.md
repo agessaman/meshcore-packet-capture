@@ -1,6 +1,6 @@
 # MeshCore Packet Capture
 
-A standalone Python script for capturing and analyzing packets from MeshCore companion radios. The script connects to MeshCore devices via Bluetooth Low Energy (BLE) or serial connection, captures incoming packets, and outputs structured data to console, file, and MQTT broker.
+A standalone Python script for capturing and analyzing packets from MeshCore companion radios. The script connects to MeshCore devices via Bluetooth Low Energy (BLE), serial, or TCP connection, captures incoming packets, and outputs structured data to console, file, and MQTT broker.
 
 Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt) project by [Cisien](https://github.com/Cisien) and uses the official [meshcore](https://github.com/meshcore-dev/meshcore_py) Python package.
 
@@ -8,7 +8,7 @@ Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt)
 
 - **Packet Capture**: Captures incoming packets from MeshCore devices
 - **Multiple Output Formats**: Console output, file logging, and MQTT publishing
-- **Connection Types**: Supports both BLE and serial connections
+- **Connection Types**: Supports both BLE, serial, and TCP connections
 - **Packet Analysis**: Parses packet headers, routes, payloads, and metadata
 - **RF Data**: Captures signal quality metrics (SNR, RSSI)
 - **MQTT Integration**: Publishes packet data to MQTT topics for integration with other systems
@@ -30,10 +30,11 @@ pip install meshcore paho-mqtt
 The script uses a `config.ini` file for configuration. A default configuration file is created automatically on first run.
 
 ### Connection Settings
-- `connection_type`: `ble` or `serial`
+- `connection_type`: `ble`, `serial`, or `tcp`
 - `ble_address`: Specific BLE device address (optional)
 - `ble_device_name`: BLE device name to scan for (optional)
 - `serial_port`: Serial port path (for serial connections)
+- `tcp_socket`: TCP host:port (for TCP connections)
 
 ### MQTT Settings
 - `server`: MQTT broker address

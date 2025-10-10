@@ -1,5 +1,5 @@
 [connection]
-# Connection type: serial or ble
+# Connection type: serial or ble or tcp
 connection_type = ble
 
 # Serial port (for serial connection)
@@ -11,6 +11,9 @@ connection_type = ble
 # BLE address (for BLE connection) - use specific UUID to target exact device
 # format: Name or UUID like "12:34:56:78:90:AB" or "78212A67-3FF9-83AD-D3F0-3B432DDEB5F9"
 ble_address = YOUR_BLE_ADDRESS_HERE
+
+# TCP socket format: "hostname:port"
+#tcp_socket = localhost:5000
 
 # Connection timeout in seconds
 timeout = 30

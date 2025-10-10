@@ -97,7 +97,7 @@ class PacketCapture:
     def create_default_config(self):
         """Create default configuration file"""
         default_config = """[connection]
-# Connection type: serial or ble
+# Connection type: serial or ble or tcp
 connection_type = ble
 
 # Serial port (for serial connection)
@@ -108,6 +108,9 @@ serial_port = /dev/ttyUSB0
 
 # BLE device name (for BLE connection) - will scan and match by name
 #ble_device_name = MeshCore-HOWL
+
+# TCP socket format: "hostname:port"
+#tcp_socket = localhost:5000
 
 # Connection timeout in seconds
 timeout = 30
@@ -163,6 +166,13 @@ origin = PacketCapture Nodes
                 serial_port = self.config.get('connection', 'serial_port', fallback='/dev/ttyUSB0')
                 self.logger.info(f"Connecting via serial port: {serial_port}")
                 self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=False)
+            elif connection_type == 'tcp':
+                # Create tcp connection
+                tcp_socket = self.config.get('connection', 'tcp_socket', fallback='localhost:5000')
+                host, _, port = tcp_socket.partition(':')
+                port = int(port) if port else 5000
+                self.logger.info(f"Connecting via tcp: {host}:{port}")
+                self.meshcore = await meshcore.MeshCore.create_tcp(host, port, debug=False)
             else:
                 # Create BLE connection (default)
                 ble_address = self.config.get('connection', 'ble_address', fallback=None)

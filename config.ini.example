@@ -10,17 +10,17 @@ connection_type = ble
 
 # BLE address (for BLE connection) - use specific UUID to target exact device
 # format: Name or UUID like "12:34:56:78:90:AB" or "78212A67-3FF9-83AD-D3F0-3B432DDEB5F9"
-ble_address = 78212B67-3FF9-83AD-D3F0-3B432ADEB5F9
+ble_address = YOUR_BLE_ADDRESS_HERE
 
 # Connection timeout in seconds
 timeout = 30
 
 [mqtt]
 # MQTT broker settings
-server = meshtastic.pugetmesh.org
+server = YOUR_MQTT_SERVER_HERE
 port = 1883
-username = meshdev
-password = large4cats
+username = YOUR_MQTT_USERNAME_HERE
+password = YOUR_MQTT_PASSWORD_HERE
 client_id_prefix = meshcore_
 qos = 0
 retain = true

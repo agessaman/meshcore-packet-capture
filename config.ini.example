@@ -18,6 +18,14 @@ ble_address = YOUR_BLE_ADDRESS_HERE
 # Connection timeout in seconds
 timeout = 30
 
+# Reconnection settings
+# Maximum number of connection retry attempts (0 = infinite)
+max_connection_retries = 5
+# Delay between connection retry attempts in seconds
+connection_retry_delay = 5
+# Connection health check interval in seconds
+health_check_interval = 30
+
 [mqtt]
 # MQTT broker settings
 server = YOUR_MQTT_SERVER_HERE
@@ -28,6 +36,12 @@ client_id_prefix = meshcore_
 qos = 0
 retain = true
 
+# MQTT reconnection settings
+# Maximum number of MQTT retry attempts (0 = infinite)
+max_mqtt_retries = 5
+# Delay between MQTT retry attempts in seconds
+mqtt_retry_delay = 5
+
 [topics]
 # MQTT topic structure
 status = meshcore/test/status
@@ -35,3 +49,10 @@ raw = meshcore/test/raw
 decoded = meshcore/test/decoded
 packets = meshcore/test/packets
 debug = meshcore/test/debug
+
+[packetcapture]
+# Origin identifier for captured packets (fallback when device name unavailable)
+origin = PacketCapture Nodes
+# Manual origin_id override (fallback when device public key unavailable)
+#origin_id = your_custom_origin_id_here
+

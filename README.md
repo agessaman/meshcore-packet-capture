@@ -12,6 +12,8 @@ Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt)
 - **Packet Analysis**: Parses packet headers, routes, payloads, and metadata
 - **RF Data**: Captures signal quality metrics (SNR, RSSI)
 - **MQTT Integration**: Publishes packet data to MQTT topics for integration with other systems
+- **Automatic Reconnection**: Handles disconnections gracefully with configurable retry logic
+- **Connection Monitoring**: Continuous health checks to detect and recover from connection issues
 
 ## Requirements
 
@@ -35,12 +37,18 @@ The script uses a `config.ini` file for configuration. A default configuration f
 - `ble_device_name`: BLE device name to scan for (optional)
 - `serial_port`: Serial port path (for serial connections)
 - `tcp_socket`: TCP host:port (for TCP connections)
+- `timeout`: Connection timeout in seconds
+- `max_connection_retries`: Maximum MeshCore connection retry attempts (0 = infinite)
+- `connection_retry_delay`: Delay between MeshCore reconnection attempts (seconds)
+- `health_check_interval`: How often to check connection health (seconds)
 
 ### MQTT Settings
 - `server`: MQTT broker address
 - `port`: MQTT broker port
 - `username`/`password`: Authentication credentials
 - `topics`: MQTT topic structure for different data types
+- `max_mqtt_retries`: Maximum MQTT connection retry attempts (0 = infinite)
+- `mqtt_retry_delay`: Delay between MQTT reconnection attempts (seconds)
 
 ## Usage
 
@@ -102,6 +110,41 @@ Captured packets are output in JSON format with the following structure:
 - `meshcore/packets`: Full packet data
 - `meshcore/raw`: Raw packet data
 - `meshcore/decoded`: Decoded packet content
+
+## Troubleshooting
+
+### Connection Issues
+
+**Script stops receiving packets but doesn't reconnect:**
+- The script now includes automatic reconnection logic
+- Check the logs for connection health check messages
+- Adjust `health_check_interval` in config to check more frequently
+- Increase `max_connection_retries` if you want more retry attempts
+
+**BLE connection keeps dropping:**
+- Ensure the MeshCore device is within range
+- Check for interference from other Bluetooth devices
+- Try increasing `connection_retry_delay` to give the device more time to recover
+- Set `max_connection_retries = 0` for infinite retry attempts
+
+**MQTT connection issues:**
+- Verify MQTT broker settings in config
+- Check network connectivity to MQTT broker
+- The script will automatically retry MQTT connections on failure
+- Adjust `mqtt_retry_delay` if reconnection attempts are too frequent
+
+### Debugging
+
+Enable debug mode for detailed logging:
+```bash
+python packet_capture.py --debug
+```
+
+This will show:
+- Connection health check results
+- Reconnection attempts and results
+- Detailed packet parsing information
+- MQTT connection status
 
 ## Files
 

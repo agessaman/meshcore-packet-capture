@@ -65,10 +65,17 @@ class PacketCapture:
         # Connection
         self.meshcore = None
         self.connected = False
+        self.connection_retry_count = 0
+        self.max_connection_retries = self.config.getint('connection', 'max_connection_retries', fallback=5)
+        self.connection_retry_delay = self.config.getint('connection', 'connection_retry_delay', fallback=5)
+        self.health_check_interval = self.config.getint('connection', 'health_check_interval', fallback=30)
         
         # MQTT connection
         self.mqtt_client = None
         self.mqtt_connected = False
+        self.mqtt_retry_count = 0
+        self.max_mqtt_retries = self.config.getint('mqtt', 'max_mqtt_retries', fallback=5)
+        self.mqtt_retry_delay = self.config.getint('mqtt', 'mqtt_retry_delay', fallback=5)
         
         # Packet correlation cache
         self.rf_data_cache = {}
@@ -112,6 +119,14 @@ serial_port = /dev/ttyUSB0
 # Connection timeout in seconds
 timeout = 30
 
+# Reconnection settings
+# Maximum number of connection retry attempts (0 = infinite)
+max_connection_retries = 5
+# Delay between connection retry attempts in seconds
+connection_retry_delay = 5
+# Connection health check interval in seconds
+health_check_interval = 30
+
 [mqtt]
 # MQTT broker settings
 server = localhost
@@ -121,6 +136,12 @@ password =
 client_id_prefix = meshcore_
 qos = 0
 retain = true
+
+# MQTT reconnection settings
+# Maximum number of MQTT retry attempts (0 = infinite)
+max_mqtt_retries = 5
+# Delay between MQTT retry attempts in seconds
+mqtt_retry_delay = 5
 
 [topics]
 # MQTT topic structure (mirroring mctomqtt.py)
@@ -135,6 +156,7 @@ debug = meshcore/debug
 origin = PacketCapture Nodes
 # Manual origin_id override (fallback when device public key unavailable)
 #origin_id = your_custom_origin_id_here
+
 """
         with open(self.config_file, 'w') as f:
             f.write(default_config)
@@ -148,6 +170,25 @@ origin = PacketCapture Nodes
             datefmt='%Y-%m-%d %H:%M:%S'
         )
         self.logger = logging.getLogger('PacketCapture')
+    
+    async def check_connection_health(self) -> bool:
+        """Check if the MeshCore connection is still healthy"""
+        try:
+            if not self.meshcore or not self.meshcore.is_connected:
+                self.logger.warning("MeshCore connection is not active")
+                return False
+            
+            # Try to get device info as a health check
+            if hasattr(self.meshcore, 'self_info') and self.meshcore.self_info:
+                self.logger.debug("Connection health check passed")
+                return True
+            else:
+                self.logger.warning("Connection health check failed - no device info")
+                return False
+                
+        except Exception as e:
+            self.logger.warning(f"Connection health check failed: {e}")
+            return False
     
     async def connect(self) -> bool:
         """Connect to MeshCore node using official package"""
@@ -208,6 +249,70 @@ origin = PacketCapture Nodes
             self.logger.error(f"Connection failed: {e}")
             return False
     
+    async def reconnect_meshcore(self) -> bool:
+        """Attempt to reconnect to MeshCore device with retry logic"""
+        if self.max_connection_retries > 0 and self.connection_retry_count >= self.max_connection_retries:
+            self.logger.error(f"Maximum connection retry attempts ({self.max_connection_retries}) reached")
+            return False
+        
+        self.connection_retry_count += 1
+        self.logger.info(f"Attempting MeshCore reconnection (attempt {self.connection_retry_count}/{self.max_connection_retries if self.max_connection_retries > 0 else '∞'})...")
+        
+        # Clean up existing connection
+        if self.meshcore:
+            try:
+                await self.meshcore.disconnect()
+            except Exception as e:
+                self.logger.debug(f"Error disconnecting during reconnect: {e}")
+            self.meshcore = None
+        
+        # Wait before retrying
+        if self.connection_retry_delay > 0:
+            self.logger.info(f"Waiting {self.connection_retry_delay} seconds before retry...")
+            await asyncio.sleep(self.connection_retry_delay)
+        
+        # Attempt to reconnect
+        success = await self.connect()
+        if success:
+            self.connection_retry_count = 0  # Reset counter on successful connection
+            self.logger.info("MeshCore reconnection successful")
+        else:
+            self.logger.warning(f"MeshCore reconnection attempt {self.connection_retry_count} failed")
+        
+        return success
+    
+    async def connection_monitor(self):
+        """Monitor connection health and attempt reconnection if needed"""
+        self.logger.info(f"Starting connection monitoring (health check every {self.health_check_interval} seconds)")
+        
+        while self.connected:
+            try:
+                await asyncio.sleep(self.health_check_interval)
+                
+                if not self.connected:
+                    break
+                
+                # Check MeshCore connection health
+                if not await self.check_connection_health():
+                    self.logger.warning("MeshCore connection health check failed, attempting reconnection...")
+                    
+                    # Attempt to reconnect without changing self.connected
+                    if await self.reconnect_meshcore():
+                        self.logger.info("MeshCore reconnection successful, resuming packet capture")
+                        
+                        # Re-setup event handlers after reconnection
+                        await self.setup_event_handlers()
+                        await self.meshcore.start_auto_message_fetching()
+                    else:
+                        self.logger.error("MeshCore reconnection failed, will retry on next health check")
+                
+            except asyncio.CancelledError:
+                self.logger.debug("Connection monitoring cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in connection monitoring: {e}")
+                await asyncio.sleep(5)  # Wait before retrying monitoring
+    
     def sanitize_client_id(self, name):
         """Convert device name to valid MQTT client ID"""
         client_id = self.config.get("mqtt", "client_id_prefix", fallback="meshcore_client_") + name.replace(" ", "_")
@@ -227,7 +332,12 @@ origin = PacketCapture Nodes
     def on_mqtt_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         self.mqtt_connected = False
         self.logger.warning(f"Disconnected from MQTT broker (code: {reason_code}; flags: {disconnect_flags}; userdata: {userdata}; properties: {properties})")
-        self.logger.warning("MQTT disconnected, continuing packet capture...")
+        
+        # Schedule MQTT reconnection attempt
+        if reason_code != 0:  # Only attempt reconnection for unexpected disconnections
+            asyncio.create_task(self.reconnect_mqtt())
+        else:
+            self.logger.info("MQTT disconnected normally, continuing packet capture...")
 
     def connect_mqtt(self):
         """Connect to MQTT broker"""
@@ -289,6 +399,30 @@ origin = PacketCapture Nodes
         except Exception as e:
             self.logger.error(f"MQTT connection error: {str(e)}")
             return False
+    
+    async def reconnect_mqtt(self):
+        """Attempt to reconnect to MQTT broker with retry logic"""
+        if self.max_mqtt_retries > 0 and self.mqtt_retry_count >= self.max_mqtt_retries:
+            self.logger.error(f"Maximum MQTT retry attempts ({self.max_mqtt_retries}) reached")
+            return False
+        
+        self.mqtt_retry_count += 1
+        self.logger.info(f"Attempting MQTT reconnection (attempt {self.mqtt_retry_count}/{self.max_mqtt_retries if self.max_mqtt_retries > 0 else '∞'})...")
+        
+        # Wait before retrying
+        if self.mqtt_retry_delay > 0:
+            self.logger.info(f"Waiting {self.mqtt_retry_delay} seconds before MQTT retry...")
+            await asyncio.sleep(self.mqtt_retry_delay)
+        
+        # Attempt to reconnect
+        success = self.connect_mqtt()
+        if success:
+            self.mqtt_retry_count = 0  # Reset counter on successful connection
+            self.logger.info("MQTT reconnection successful")
+        else:
+            self.logger.warning(f"MQTT reconnection attempt {self.mqtt_retry_count} failed")
+        
+        return success
     
     def publish_status(self, status):
         """Publish status with additional information"""
@@ -866,12 +1000,20 @@ origin = PacketCapture Nodes
         self.logger.info("Packet capture is running. Press Ctrl+C to stop.")
         self.logger.info("Waiting for packets...")
         
+        # Start connection monitoring task
+        monitoring_task = asyncio.create_task(self.connection_monitor())
+        
         try:
             while self.connected:
                 await asyncio.sleep(1)
         except KeyboardInterrupt:
             self.logger.info("Received interrupt signal")
         finally:
+            monitoring_task.cancel()
+            try:
+                await monitoring_task
+            except asyncio.CancelledError:
+                pass
             await self.stop()
     
     async def stop(self):

@@ -88,6 +88,11 @@ class PacketCapture:
         self.device_name = None
         self.device_public_key = None
         
+        # Advert settings
+        self.advert_interval_hours = self.config.getint('packetcapture', 'advert_interval_hours', fallback=11)
+        self.last_advert_time = 0
+        self.advert_task = None
+        
         # Output file handle
         self.output_handle = None
         if self.output_file:
@@ -159,6 +164,13 @@ debug = meshcore/debug
 origin = PacketCapture Nodes
 # Manual origin_id override (fallback when device public key unavailable)
 #origin_id = your_custom_origin_id_here
+
+# Advert settings
+# Advert interval in hours (0 = disabled, >0 = hours between adverts)
+advert_interval_hours = 11
+
+# RF data cache timeout in seconds (how long to keep SNR/RSSI data for packet correlation)
+rf_data_timeout = 15.0
 
 """
         with open(self.config_file, 'w') as f:
@@ -844,7 +856,7 @@ origin = PacketCapture Nodes
                     
                     # Clean up old cache entries
                     current_time = time.time()
-                    timeout = self.config.getfloat('PacketCapture', 'rf_data_timeout', fallback=15.0)
+                    timeout = self.config.getfloat('packetcapture', 'rf_data_timeout', fallback=15.0)
                     self.rf_data_cache = {
                         k: v for k, v in self.rf_data_cache.items()
                         if current_time - v['timestamp'] < timeout
@@ -937,24 +949,31 @@ origin = PacketCapture Nodes
         if self.enable_mqtt:
             self.safe_publish(self.config.get("topics", "packets"), json.dumps(packet_data))
             
-            # Also publish raw data if available
+            # Try to decode and publish decoded message
             if 'raw' in packet_data:
-                raw_message = {
-                    "origin": packet_data.get("origin"),
-                    "origin_id": packet_data.get("origin_id"),
-                    "timestamp": packet_data.get("timestamp"),
-                    "type": "RAW",
-                    "data": packet_data.get("raw")
-                }
-                self.safe_publish(self.config.get("topics", "raw"), json.dumps(raw_message))
-                
-                # Try to decode and publish decoded message
                 try:
                     decoded_message = self.decode_and_publish_message(packet_data.get("raw"))
                     if decoded_message is not None:
                         self.safe_publish(self.config.get("topics", "decoded"), json.dumps(decoded_message))
                 except Exception as e:
                     self.logger.debug(f"Error decoding packet for MQTT: {e}")
+            
+            # Publish to debug topic only when --debug flag is set
+            if self.debug:
+                debug_message = {
+                    "origin": packet_data.get("origin"),
+                    "origin_id": packet_data.get("origin_id"),
+                    "timestamp": packet_data.get("timestamp"),
+                    "type": "DEBUG",
+                    "packet_data": packet_data,
+                    "debug_info": {
+                        "packet_count": self.packet_count,
+                        "rf_data_cache_size": len(self.rf_data_cache),
+                        "connection_status": self.connected,
+                        "mqtt_status": self.mqtt_connected
+                    }
+                }
+                self.safe_publish(self.config.get("topics", "debug"), json.dumps(debug_message))
     
     async def setup_event_handlers(self):
         """Setup event handlers for packet capture"""
@@ -1013,6 +1032,10 @@ origin = PacketCapture Nodes
         # Start connection monitoring task
         monitoring_task = asyncio.create_task(self.connection_monitor())
         
+        # Start advert scheduler task
+        if self.advert_interval_hours > 0:
+            self.advert_task = asyncio.create_task(self.advert_scheduler())
+        
         try:
             while self.connected:
                 await asyncio.sleep(1)
@@ -1020,10 +1043,17 @@ origin = PacketCapture Nodes
             self.logger.info("Received interrupt signal")
         finally:
             monitoring_task.cancel()
+            if self.advert_task:
+                self.advert_task.cancel()
             try:
                 await monitoring_task
             except asyncio.CancelledError:
                 pass
+            if self.advert_task:
+                try:
+                    await self.advert_task
+                except asyncio.CancelledError:
+                    pass
             await self.stop()
     
     async def stop(self):
@@ -1046,6 +1076,56 @@ origin = PacketCapture Nodes
             self.output_handle.close()
         
         self.logger.info(f"Packet capture stopped. Total packets captured: {self.packet_count}")
+    
+    async def send_advert(self):
+        """Send a flood advert using meshcore commands"""
+        try:
+            if not self.meshcore or not self.meshcore.is_connected:
+                self.logger.warning("Cannot send advert - not connected to MeshCore")
+                return False
+            
+            self.logger.info("Sending flood advert...")
+            await self.meshcore.commands.send_advert(flood=True)
+            self.last_advert_time = time.time()
+            self.logger.info("Flood advert sent successfully!")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error sending flood advert: {e}")
+            return False
+    
+    async def advert_scheduler(self):
+        """Background task to send adverts at configured intervals"""
+        if self.advert_interval_hours <= 0:
+            self.logger.info("Advert scheduling disabled (interval = 0)")
+            return
+        
+        self.logger.info(f"Starting advert scheduler with {self.advert_interval_hours} hour interval")
+        
+        while self.connected:
+            try:
+                # Calculate seconds until next advert
+                current_time = time.time()
+                time_since_last = current_time - self.last_advert_time
+                interval_seconds = self.advert_interval_hours * 3600
+                
+                if time_since_last >= interval_seconds:
+                    # Time to send an advert
+                    await self.send_advert()
+                    # Sleep for the full interval to avoid rapid-fire adverts
+                    await asyncio.sleep(interval_seconds)
+                else:
+                    # Sleep until it's time for the next advert
+                    sleep_time = interval_seconds - time_since_last
+                    self.logger.debug(f"Next advert in {sleep_time/3600:.1f} hours")
+                    await asyncio.sleep(sleep_time)
+                    
+            except asyncio.CancelledError:
+                self.logger.debug("Advert scheduler cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in advert scheduler: {e}")
+                await asyncio.sleep(60)  # Wait 1 minute before retrying
 
 
 async def main():

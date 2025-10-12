@@ -15,9 +15,6 @@ ble_address = YOUR_BLE_ADDRESS_HERE
 # TCP socket format: "hostname:port"
 #tcp_socket = localhost:5000
 
-# Connection timeout in seconds
-timeout = 30
-
 # Reconnection settings
 # Maximum number of connection retry attempts (0 = infinite)
 max_connection_retries = 5
@@ -45,14 +42,20 @@ mqtt_retry_delay = 5
 [topics]
 # MQTT topic structure
 status = meshcore/test/status
-raw = meshcore/test/raw
 decoded = meshcore/test/decoded
 packets = meshcore/test/packets
 debug = meshcore/test/debug
 
 [packetcapture]
 # Origin identifier for captured packets (fallback when device name unavailable)
-origin = PacketCapture Nodes
+origin = Node Name
 # Manual origin_id override (fallback when device public key unavailable)
 #origin_id = your_custom_origin_id_here
+
+# Advert settings
+# Advert interval in hours (0 = disabled, >0 = hours between adverts)
+advert_interval_hours = 11
+
+# RF data cache timeout in seconds (how long to keep SNR/RSSI data for packet correlation)
+rf_data_timeout = 15.0
 

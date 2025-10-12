@@ -49,6 +49,9 @@ The script uses a `config.ini` file for configuration. A default configuration f
 - `max_mqtt_retries`: Maximum MQTT connection retry attempts (0 = infinite)
 - `mqtt_retry_delay`: Delay between MQTT reconnection attempts (seconds)
 
+### Advert Settings
+- `advert_interval_hours`: Send flood adverts at this interval (0 = disabled, default = 11 hours)
+
 ## Usage
 
 ```bash
@@ -107,8 +110,8 @@ Captured packets are output in JSON format with the following structure:
 
 - `meshcore/status`: Device online/offline status
 - `meshcore/packets`: Full packet data
-- `meshcore/raw`: Raw packet data
 - `meshcore/decoded`: Decoded packet content
+- `meshcore/debug`: Debug information (only when --debug flag is used)
 
 ## Troubleshooting
 

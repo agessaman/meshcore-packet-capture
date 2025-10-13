@@ -230,7 +230,7 @@ for i, device in enumerate(data, 1):
     name = device.get('name', 'Unknown')
     address = device.get('address', 'Unknown')
     print(f'  {i}) {name} ({address})')
-    print(f'DEVICE_{i}={address}|{name}', file=sys.stderr)
+    print(f'DEVICE_{i}="{address}|{name}"', file=sys.stderr)
 " 2>/tmp/device_list
         
         # Read device list
@@ -294,6 +294,12 @@ handle_ble_pairing() {
     echo ""
     print_info "Checking BLE pairing status for $device_name ($device_address)..."
     
+    # Debug: Show the actual values being passed
+    if [ -z "$device_name" ] || [ -z "$device_address" ]; then
+        print_error "Invalid device information: name='$device_name', address='$device_address'"
+        return 1
+    fi
+    
     # Create a temporary script to check pairing status and handle pairing
     local temp_script="/tmp/ble_pairing_helper.py"
     cat > "$temp_script" << EOF
@@ -313,9 +319,9 @@ async def check_pairing_and_connect(address, name, pin=None):
     try:
         print(f"Checking pairing status for {name} ({address})...", file=sys.stderr, flush=True)
         
-        # Try to connect without PIN first
+        # Try to connect without PIN first (with timeout)
         try:
-            meshcore = await MeshCore.create_ble(address=address, debug=False)
+            meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=False), timeout=30.0)
             print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
             await meshcore.disconnect()
             print(json.dumps({"status": "paired", "message": "Device is already paired"}), flush=True)
@@ -329,6 +335,10 @@ async def check_pairing_and_connect(address, name, pin=None):
             elif "No MeshCore device found" in error_msg or "Failed to connect" in error_msg:
                 print("Device not found or not in range, may need to be in pairing mode", file=sys.stderr, flush=True)
                 print(json.dumps({"status": "not_found", "message": "Device not found or not in range"}), flush=True)
+                return False
+            elif "TimeoutError" in error_msg or "timeout" in error_msg.lower():
+                print("Connection timed out, device may be busy or not responding", file=sys.stderr, flush=True)
+                print(json.dumps({"status": "timeout", "message": "Connection timed out"}), flush=True)
                 return False
             else:
                 print(f"Connection error: {error_msg}", file=sys.stderr, flush=True)
@@ -345,7 +355,7 @@ async def attempt_pairing(address, name, pin):
     try:
         print(f"Attempting to pair with {name} using PIN...", file=sys.stderr, flush=True)
         
-        meshcore = await MeshCore.create_ble(address=address, pin=pin, debug=False)
+        meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, pin=pin, debug=False), timeout=60.0)
         print("Pairing successful!", file=sys.stderr, flush=True)
         await meshcore.disconnect()
         print(json.dumps({"status": "paired", "message": "Pairing successful"}), flush=True)
@@ -389,9 +399,9 @@ if __name__ == "__main__":
     main()
 EOF
     
-    # Check pairing status first
+    # Check pairing status first (with timeout to prevent hanging)
     local pairing_output
-    if pairing_output=$(python3 "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
+    if pairing_output=$(timeout 30 python3 "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
         local pairing_status=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
         
         if [ "$pairing_status" = "paired" ]; then
@@ -404,6 +414,12 @@ EOF
             print_info "  • Powered on and within range"
             print_info "  • In pairing mode (if not already paired)"
             print_info "  • Not connected to another device"
+            rm -f "$temp_script" /tmp/ble_pairing_error
+            return 1
+        elif [ "$pairing_status" = "timeout" ]; then
+            print_warning "Connection timed out"
+            print_info "The device may be busy or not responding. Please try again."
+            print_info "If the device shows as connected, try disconnecting it first."
             rm -f "$temp_script" /tmp/ble_pairing_error
             return 1
         elif [ "$pairing_status" = "not_paired" ]; then
@@ -421,10 +437,10 @@ EOF
                 fi
             done
             
-            # Attempt pairing with PIN
+            # Attempt pairing with PIN (with timeout to prevent hanging)
             echo ""
             print_info "Attempting to pair with device..."
-            if pairing_output=$(python3 "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error); then
+            if pairing_output=$(timeout 60 python3 "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error); then
                 local pairing_result=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
                 
                 if [ "$pairing_result" = "paired" ]; then
@@ -444,13 +460,22 @@ EOF
                     return 1
                 fi
             else
-                print_error "Failed to attempt BLE pairing"
+                # Check if it was a timeout
                 if [ -f /tmp/ble_pairing_error ]; then
                     local error_msg=$(cat /tmp/ble_pairing_error)
-                    if [ -n "$error_msg" ]; then
-                        print_info "Error details: $error_msg"
+                    if [[ "$error_msg" == *"timeout"* ]] || [[ "$error_msg" == *"Terminated"* ]]; then
+                        print_error "BLE pairing timed out"
+                        print_info "The pairing process took too long. The device may be busy or not responding."
+                        print_info "Please try again or check if the device is in pairing mode."
+                    else
+                        print_error "Failed to attempt BLE pairing"
+                        if [ -n "$error_msg" ]; then
+                            print_info "Error details: $error_msg"
+                        fi
                     fi
                     rm -f /tmp/ble_pairing_error
+                else
+                    print_error "Failed to attempt BLE pairing"
                 fi
                 rm -f "$temp_script"
                 return 1
@@ -468,13 +493,21 @@ EOF
             return 1
         fi
     else
-        print_error "Failed to check BLE pairing status"
+        # Check if it was a timeout
         if [ -f /tmp/ble_pairing_error ]; then
             local error_msg=$(cat /tmp/ble_pairing_error)
-            if [ -n "$error_msg" ]; then
-                print_info "Error details: $error_msg"
+            if [[ "$error_msg" == *"timeout"* ]] || [[ "$error_msg" == *"Terminated"* ]]; then
+                print_error "BLE pairing check timed out"
+                print_info "The device may be busy or not responding. Please try again."
+            else
+                print_error "Failed to check BLE pairing status"
+                if [ -n "$error_msg" ]; then
+                    print_info "Error details: $error_msg"
+                fi
             fi
             rm -f /tmp/ble_pairing_error
+        else
+            print_error "Failed to check BLE pairing status"
         fi
         rm -f "$temp_script"
         return 1

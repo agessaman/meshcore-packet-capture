@@ -14,9 +14,9 @@ async def check_pairing_and_connect(address, name, pin=None):
     try:
         print(f"Checking pairing status for {name} ({address})...", file=sys.stderr, flush=True)
         
-        # Try to connect without PIN first
+        # Try to connect without PIN first (with timeout)
         try:
-            meshcore = await MeshCore.create_ble(address=address, debug=False)
+            meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=False), timeout=30.0)
             print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
             await meshcore.disconnect()
             print(json.dumps({"status": "paired", "message": "Device is already paired"}), flush=True)
@@ -46,7 +46,7 @@ async def attempt_pairing(address, name, pin):
     try:
         print(f"Attempting to pair with {name} using PIN...", file=sys.stderr, flush=True)
         
-        meshcore = await MeshCore.create_ble(address=address, pin=pin, debug=False)
+        meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, pin=pin, debug=False), timeout=60.0)
         print("Pairing successful!", file=sys.stderr, flush=True)
         await meshcore.disconnect()
         print(json.dumps({"status": "paired", "message": "Pairing successful"}), flush=True)

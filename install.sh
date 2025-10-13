@@ -143,7 +143,7 @@ from bleak.backends.scanner import AdvertisementData
 async def scan_ble_devices():
     """Scan for MeshCore BLE devices using BleakScanner"""
     try:
-        print("Scanning for MeshCore BLE devices...", flush=True)
+        print("Scanning for MeshCore BLE devices...", file=sys.stderr, flush=True)
         
         def match_meshcore_device(device: BLEDevice, advertisement_data: AdvertisementData):
             """Filter to match MeshCore devices."""
@@ -158,7 +158,7 @@ async def scan_ble_devices():
         devices = await BleakScanner.discover(timeout=10.0, detection_callback=match_meshcore_device)
         
         if not devices:
-            print("No MeshCore BLE devices found", flush=True)
+            print("No MeshCore BLE devices found", file=sys.stderr, flush=True)
             return []
         
         # Format devices for the installer

@@ -497,7 +497,7 @@ main() {
         cp "${LOCAL_INSTALL}/auth_token.py" "$INSTALL_DIR/"
         cp "${LOCAL_INSTALL}/enums.py" "$INSTALL_DIR/"
         cp "${LOCAL_INSTALL}/requirements.txt" "$INSTALL_DIR/"
-        cp -r "${LOCAL_INSTALL}/meshcore_py" "$INSTALL_DIR/"
+        # meshcore_py no longer needed - using PyPI version
         if [ -f "${LOCAL_INSTALL}/.env" ]; then
             cp "${LOCAL_INSTALL}/.env" "$INSTALL_DIR/"
         fi
@@ -609,7 +609,7 @@ main() {
     source "$INSTALL_DIR/venv/bin/activate"
     pip install --quiet --upgrade pip
     pip install --quiet -r "$INSTALL_DIR/requirements.txt"
-    pip install --quiet -e "$INSTALL_DIR/meshcore_py"
+    # meshcore is now installed from PyPI via requirements.txt
     print_success "Python dependencies installed"
     
     # Check for meshcore-decoder (optional)

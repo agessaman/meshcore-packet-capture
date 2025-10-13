@@ -31,10 +31,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import argparse
 
-# Import the local meshcore package for testing
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'meshcore_py', 'src'))
+# Import meshcore from PyPI
 import meshcore
 from meshcore import EventType
 
@@ -257,7 +254,7 @@ class PacketCapture:
         return resolved
     
     async def fetch_private_key_from_device(self) -> bool:
-        """Fetch private key from device using meshcore_py library"""
+        """Fetch private key from device using meshcore library"""
         try:
             self.logger.info("Fetching private key from device...")
             
@@ -265,7 +262,7 @@ class PacketCapture:
                 self.logger.error("Cannot fetch private key - not connected to device")
                 return False
             
-            # Use meshcore_py library to export private key
+            # Use meshcore library to export private key
             result = await self.meshcore.commands.export_private_key()
             
             if result.type == EventType.PRIVATE_KEY:

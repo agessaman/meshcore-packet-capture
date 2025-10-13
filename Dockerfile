@@ -19,8 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the entire project
 COPY . .
 
-# Install the local meshcore package in development mode
-RUN pip install -e ./meshcore_py
+# meshcore is now installed from PyPI via requirements.txt
 
 # Create non-root user for security
 RUN useradd -m -u 1000 meshcore && chown -R meshcore:meshcore /app

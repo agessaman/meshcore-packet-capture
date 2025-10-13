@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  meshcore-capture:
+    build: .
+    container_name: meshcore-packet-capture
+    privileged: true  # Required for BLE access and device communication
+    devices:
+      # Mount serial devices (uncomment and modify as needed)
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/ttyUSB1:/dev/ttyUSB1
+      - /dev/ttyACM0:/dev/ttyACM0
+    volumes:
+      # Persistent data storage
+      - ./data:/app/data
+      # Configuration files (optional - can use environment variables instead)
+      - ./.env.local:/app/.env.local:ro
+    environment:
+      # Connection settings
+      - PACKETCAPTURE_CONNECTION_TYPE=ble
+      - PACKETCAPTURE_TIMEOUT=30
+      - PACKETCAPTURE_MAX_CONNECTION_RETRIES=5
+      - PACKETCAPTURE_CONNECTION_RETRY_DELAY=5
+      - PACKETCAPTURE_HEALTH_CHECK_INTERVAL=30
+      
+      # MQTT settings (configure as needed)
+      - PACKETCAPTURE_MQTT1_ENABLED=true
+      - PACKETCAPTURE_MQTT1_SERVER=localhost
+      - PACKETCAPTURE_MQTT1_PORT=1883
+      - PACKETCAPTURE_MQTT1_USERNAME=
+      - PACKETCAPTURE_MQTT1_PASSWORD=
+      - PACKETCAPTURE_MQTT1_USE_TLS=false
+      
+      # MQTT reconnection settings
+      - PACKETCAPTURE_MAX_MQTT_RETRIES=5
+      - PACKETCAPTURE_MQTT_RETRY_DELAY=5
+      - PACKETCAPTURE_EXIT_ON_RECONNECT_FAIL=true
+      
+      # Topic settings
+      - PACKETCAPTURE_TOPIC_STATUS=meshcore/status
+      - PACKETCAPTURE_TOPIC_PACKETS=meshcore/packets
+      - PACKETCAPTURE_TOPIC_RAW=meshcore/raw
+      - PACKETCAPTURE_TOPIC_DECODED=meshcore/decoded
+      - PACKETCAPTURE_TOPIC_DEBUG=meshcore/debug
+      
+      # Device settings
+      - PACKETCAPTURE_IATA=LOC
+      - PACKETCAPTURE_ORIGIN=PacketCapture Docker
+      
+      # Advert settings
+      - PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11
+      
+      # RF data settings
+      - PACKETCAPTURE_RF_DATA_TIMEOUT=15.0
+    networks:
+      - meshcore-network
+    restart: unless-stopped
+    # Uncomment for host networking (may be needed for BLE discovery)
+    # network_mode: host
+
+networks:
+  meshcore-network:
+    driver: bridge

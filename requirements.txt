@@ -1,0 +1,11 @@
+# Core dependencies for MeshCore packet capture
+paho-mqtt>=1.6.0
+
+# MeshCore package (commented out until our changes are accepted upstream)
+# meshcore>=2.1.9
+
+# MeshCore package dependencies (installed from local meshcore_py directory)
+# These are listed here for reference - the local package will be installed via pip install -e
+bleak>=0.21.0
+pyserial-asyncio>=0.6
+pycayennelpp>=1.0.0

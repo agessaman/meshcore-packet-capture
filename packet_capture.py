@@ -6,17 +6,16 @@ Captures packets from MeshCore radios and outputs to console, file, and MQTT.
 Compatible with both serial and BLE connections.
 
 Usage:
-    python packet_capture.py [--config config.ini] [--output output.json] [--verbose] [--debug] [--no-mqtt]
+    python packet_capture.py [--output output.json] [--verbose] [--debug] [--no-mqtt]
 
 Options:
-    --config     Configuration file (default: config.ini)
     --output     Output file for packet data
     --verbose    Show JSON packet data
     --debug      Show detailed debugging info
     --no-mqtt    Disable MQTT publishing
 
 The script captures packet metadata including SNR, RSSI, route type, payload type,
-and raw hex data. MQTT topics are configurable in the config file.
+and raw hex data. Configuration is done via environment variables and .env files.
 """
 
 import asyncio
@@ -25,13 +24,17 @@ import logging
 import hashlib
 import time
 import re
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 import argparse
-import configparser
 
-# Import the official meshcore package
+# Import the local meshcore package for testing
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'meshcore_py', 'src'))
 import meshcore
 from meshcore import EventType
 
@@ -46,36 +49,96 @@ except ImportError:
     print("pip install paho-mqtt")
     exit(1)
 
+# Import auth token module
+try:
+    from auth_token import create_auth_token, read_private_key_file
+except ImportError:
+    print("Warning: auth_token.py not found - auth token authentication will not be available")
+    create_auth_token = None
+    read_private_key_file = None
+
+# Private key functionality using meshcore_py library
+
+
+def load_env_files():
+    """Load environment variables from .env and .env.local files"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    env_file = os.path.join(script_dir, '.env')
+    env_local_file = os.path.join(script_dir, '.env.local')
+    
+    def parse_env_file(filepath):
+        """Parse a .env file and return a dictionary"""
+        env_vars = {}
+        if not os.path.exists(filepath):
+            return env_vars
+        
+        with open(filepath, 'r') as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+                # Parse KEY=VALUE
+                if '=' in line:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    # Remove quotes if present
+                    if value and value[0] in ('"', "'") and value[-1] == value[0]:
+                        value = value[1:-1]
+                    env_vars[key] = value
+        return env_vars
+    
+    # Load .env first (defaults)
+    env_vars = parse_env_file(env_file)
+    
+    # Load .env.local (overrides)
+    local_vars = parse_env_file(env_local_file)
+    env_vars.update(local_vars)
+    
+    # Set environment variables
+    for key, value in env_vars.items():
+        if key not in os.environ:
+            os.environ[key] = value
+    
+    return env_vars
+
+
+# Load environment configuration
+load_env_files()
+
 
 class PacketCapture:
     """Standalone packet capture using meshcore package"""
     
-    def __init__(self, config_file: str = "config.ini", output_file: Optional[str] = None, verbose: bool = False, debug: bool = False, enable_mqtt: bool = True):
-        self.config_file = config_file
+    def __init__(self, output_file: Optional[str] = None, verbose: bool = False, debug: bool = False, enable_mqtt: bool = True):
         self.output_file = output_file
         self.verbose = verbose
         self.debug = debug
         self.enable_mqtt = enable_mqtt
-        self.config = configparser.ConfigParser()
-        self.load_config()
         
         # Setup logging
         self.setup_logging()
+        
+        # Global IATA for template resolution
+        self.global_iata = os.getenv('PACKETCAPTURE_IATA', 'LOC').lower()
         
         # Connection
         self.meshcore = None
         self.connected = False
         self.connection_retry_count = 0
-        self.max_connection_retries = self.config.getint('connection', 'max_connection_retries', fallback=5)
-        self.connection_retry_delay = self.config.getint('connection', 'connection_retry_delay', fallback=5)
-        self.health_check_interval = self.config.getint('connection', 'health_check_interval', fallback=30)
+        self.max_connection_retries = self.get_env_int('MAX_CONNECTION_RETRIES', 5)
+        self.connection_retry_delay = self.get_env_int('CONNECTION_RETRY_DELAY', 5)
+        self.health_check_interval = self.get_env_int('HEALTH_CHECK_INTERVAL', 30)
         
         # MQTT connection
-        self.mqtt_client = None
+        self.mqtt_clients = []  # List of MQTT client info dictionaries
         self.mqtt_connected = False
         self.mqtt_retry_count = 0
-        self.max_mqtt_retries = self.config.getint('mqtt', 'max_mqtt_retries', fallback=5)
-        self.mqtt_retry_delay = self.config.getint('mqtt', 'mqtt_retry_delay', fallback=5)
+        self.max_mqtt_retries = self.get_env_int('MAX_MQTT_RETRIES', 5)
+        self.mqtt_retry_delay = self.get_env_int('MQTT_RETRY_DELAY', 5)
+        self.should_exit = False  # Flag to exit when reconnection attempts fail
+        self.exit_on_reconnect_fail = self.get_env_bool('EXIT_ON_RECONNECT_FAIL', True)
         
         # Packet correlation cache
         self.rf_data_cache = {}
@@ -87,9 +150,13 @@ class PacketCapture:
         # Device information
         self.device_name = None
         self.device_public_key = None
+        self.device_private_key = None
+        
+        # Private key export capability
+        self.private_key_export_available = False
         
         # Advert settings
-        self.advert_interval_hours = self.config.getint('packetcapture', 'advert_interval_hours', fallback=11)
+        self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 1)
         self.last_advert_time = 0
         self.advert_task = None
         
@@ -99,80 +166,6 @@ class PacketCapture:
             self.output_handle = open(self.output_file, 'w')
             self.logger.info(f"Output will be written to: {self.output_file}")
     
-    def load_config(self):
-        """Load configuration from file"""
-        if not Path(self.config_file).exists():
-            self.create_default_config()
-        
-        self.config.read(self.config_file)
-    
-    def create_default_config(self):
-        """Create default configuration file"""
-        default_config = """[connection]
-# Connection type: serial or ble
-connection_type = ble
-
-# Serial port (for serial connection)
-serial_port = /dev/ttyUSB0
-
-# BLE address (for BLE connection) - format: "12:34:56:78:90:AB" or "78212A67-3FF9-83AD-D3F0-3B432DDEB5F9"
-#ble_address = 12:34:56:78:90:AB
-
-# BLE device name (for BLE connection) - will scan and match by name
-#ble_device_name = MeshCore-HOWL
-
-# Connection timeout in seconds
-timeout = 30
-
-# Reconnection settings
-# Maximum number of connection retry attempts (0 = infinite)
-max_connection_retries = 5
-# Delay between connection retry attempts in seconds
-connection_retry_delay = 5
-# Connection health check interval in seconds
-health_check_interval = 30
-
-[mqtt]
-# MQTT broker settings
-server = localhost
-port = 1883
-username = 
-password = 
-client_id_prefix = meshcore_
-qos = 0
-retain = true
-
-# MQTT reconnection settings
-# Maximum number of MQTT retry attempts (0 = infinite)
-max_mqtt_retries = 5
-# Delay between MQTT retry attempts in seconds
-mqtt_retry_delay = 5
-
-[topics]
-# MQTT topic structure (mirroring mctomqtt.py)
-status = meshcore/status
-raw = meshcore/raw
-decoded = meshcore/decoded
-packets = meshcore/packets
-debug = meshcore/debug
-
-[packetcapture]
-# Origin identifier for captured packets (fallback when device name unavailable)
-origin = PacketCapture Nodes
-# Manual origin_id override (fallback when device public key unavailable)
-#origin_id = your_custom_origin_id_here
-
-# Advert settings
-# Advert interval in hours (0 = disabled, >0 = hours between adverts)
-advert_interval_hours = 11
-
-# RF data cache timeout in seconds (how long to keep SNR/RSSI data for packet correlation)
-rf_data_timeout = 15.0
-
-"""
-        with open(self.config_file, 'w') as f:
-            f.write(default_config)
-        print(f"Created default config file: {self.config_file}")
     
     def setup_logging(self):
         """Setup logging configuration"""
@@ -183,6 +176,167 @@ rf_data_timeout = 15.0
         )
         self.logger = logging.getLogger('PacketCapture')
     
+    def get_env(self, key, fallback=''):
+        """Get environment variable with fallback (all vars are PACKETCAPTURE_ prefixed)"""
+        full_key = f"PACKETCAPTURE_{key}"
+        return os.getenv(full_key, fallback)
+    
+    def get_env_bool(self, key, fallback=False):
+        """Get boolean environment variable"""
+        value = self.get_env(key, str(fallback)).lower()
+        return value in ('true', '1', 'yes', 'on')
+    
+    def get_env_int(self, key, fallback=0):
+        """Get integer environment variable"""
+        try:
+            return int(self.get_env(key, str(fallback)))
+        except ValueError:
+            return fallback
+    
+    def get_env_float(self, key, fallback=0.0):
+        """Get float environment variable"""
+        try:
+            return float(self.get_env(key, str(fallback)))
+        except ValueError:
+            return fallback
+    
+    def base64url_encode(self, data: bytes) -> str:
+        """Base64url encode without padding"""
+        import base64
+        return base64.urlsafe_b64encode(data).rstrip(b'=').decode('utf-8')
+    
+    def resolve_topic_template(self, template, broker_num=None):
+        """Resolve topic template with {IATA}, {IATA_lower}, and {PUBLIC_KEY} placeholders"""
+        if not template:
+            return template
+        
+        # Get IATA - broker-specific or global
+        iata = self.global_iata
+        if broker_num:
+            broker_iata = self.get_env(f'MQTT{broker_num}_IATA', '')
+            if broker_iata:
+                iata = broker_iata.lower()
+        
+        # Replace template variables
+        resolved = template.replace('{IATA}', iata.upper())  # Uppercase variant
+        resolved = resolved.replace('{IATA_lower}', iata.lower())  # Lowercase variant
+        resolved = resolved.replace('{PUBLIC_KEY}', self.device_public_key if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE')
+        return resolved
+    
+    def get_topic(self, topic_type, broker_num=None):
+        """Get topic with template resolution, checking broker-specific override first"""
+        topic_type_upper = topic_type.upper()
+        
+        # Check broker-specific topic override
+        if broker_num:
+            broker_topic = self.get_env(f'MQTT{broker_num}_TOPIC_{topic_type_upper}', '')
+            if broker_topic:
+                return self.resolve_topic_template(broker_topic, broker_num)
+        
+        # Fall back to global topic
+        global_topic = self.get_env(f'TOPIC_{topic_type_upper}', '')
+        if global_topic:
+            return self.resolve_topic_template(global_topic, broker_num)
+        
+        
+        # CRITICAL FIX: Always provide a valid default topic
+        default_topics = {
+            'STATUS': 'meshcore/status',
+            'RAW': 'meshcore/raw', 
+            'DECODED': 'meshcore/decoded',
+            'PACKETS': 'meshcore/packets',
+            'DEBUG': 'meshcore/debug'
+        }
+        
+        default_topic = default_topics.get(topic_type_upper, f'meshcore/{topic_type.lower()}')
+        resolved = self.resolve_topic_template(default_topic, broker_num)
+        
+        # Log if we're using default
+        if self.debug:
+            self.logger.debug(f"Using default topic for {topic_type}: {resolved}")
+        return resolved
+    
+    async def fetch_private_key_from_device(self) -> bool:
+        """Fetch private key from device using meshcore_py library"""
+        try:
+            self.logger.info("Fetching private key from device...")
+            
+            if not self.meshcore or not self.meshcore.is_connected:
+                self.logger.error("Cannot fetch private key - not connected to device")
+                return False
+            
+            # Use meshcore_py library to export private key
+            result = await self.meshcore.commands.export_private_key()
+            
+            if result.type == EventType.PRIVATE_KEY:
+                self.device_private_key = result.payload["private_key"]
+                self.logger.info("✓ Private key fetched successfully from device")
+                self.private_key_export_available = True
+                return True
+            elif result.type == EventType.DISABLED:
+                self.logger.warning("Private key export is disabled on this device")
+                self.logger.info("This feature requires:")
+                self.logger.info("  - Companion radio firmware")
+                self.logger.info("  - ENABLE_PRIVATE_KEY_EXPORT=1 compile-time flag")
+                self.private_key_export_available = False
+                return False
+            elif result.type == EventType.ERROR:
+                self.logger.error(f"Error fetching private key: {result.payload}")
+                self.private_key_export_available = False
+                return False
+            else:
+                self.logger.error(f"Unexpected response when fetching private key: {result.type}")
+                self.private_key_export_available = False
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error fetching private key from device: {e}")
+            self.private_key_export_available = False
+            return False
+    
+    
+    
+    async def create_jwt_with_private_key(self, audience: str = None) -> Optional[str]:
+        """Create JWT using private key from device"""
+        try:
+            if not self.device_private_key or not create_auth_token:
+                return None
+            
+            # Convert bytearray to hex string if needed
+            private_key = self.device_private_key
+            if isinstance(private_key, (bytes, bytearray)):
+                private_key = private_key.hex()
+            
+            # Use the existing auth_token method
+            claims = {}
+            if audience:
+                claims['aud'] = audience
+            
+            jwt_token = create_auth_token(self.device_public_key, private_key, **claims)
+            self.logger.info("✓ JWT created using private key from device")
+            return jwt_token
+            
+        except Exception as e:
+            self.logger.error(f"Error creating JWT with private key: {e}")
+            return None
+    
+    async def create_auth_token_jwt(self, audience: str = None) -> Optional[str]:
+        """Create JWT token using private key from device"""
+        # Use private key method (fetched from device)
+        jwt_token = await self.create_jwt_with_private_key(audience)
+        if jwt_token:
+            if audience and ('mqtt' in audience.lower() or 'letsmesh' in audience.lower()):
+                self.logger.info("✓ JWT created using private key from device for MQTT authentication")
+            else:
+                self.logger.info("✓ JWT created using private key from device")
+            return jwt_token
+        
+        self.logger.error("Failed to create JWT with private key from device")
+        return None
+    
+    
+    
+
     async def check_connection_health(self) -> bool:
         """Check if the MeshCore connection is still healthy"""
         try:
@@ -190,13 +344,31 @@ rf_data_timeout = 15.0
                 self.logger.warning("MeshCore connection is not active")
                 return False
             
-            # Try to get device info as a health check
+            # Primary health check: Verify device info is still available
             if hasattr(self.meshcore, 'self_info') and self.meshcore.self_info:
-                self.logger.debug("Connection health check passed")
+                if self.debug:
+                    self.logger.debug("Connection health check passed (device info available)")
                 return True
-            else:
-                self.logger.warning("Connection health check failed - no device info")
-                return False
+            
+            # Secondary health check: Try a simple device query command
+            if self.debug:
+                self.logger.debug("Testing device connection health with device query...")
+            try:
+                result = await self.meshcore.commands.send_device_query()
+                if result and hasattr(result, 'type') and result.type != EventType.ERROR:
+                    if self.debug:
+                        self.logger.debug("Connection health check passed (device query successful)")
+                    return True
+                else:
+                    if self.debug:
+                        self.logger.debug(f"Health check device query failed: {result}")
+            except Exception as query_error:
+                if self.debug:
+                    self.logger.debug(f"Health check device query failed: {query_error}")
+            
+            # If we get here, the connection is not healthy
+            self.logger.warning("Connection health check failed - no device info or query failed")
+            return False
                 
         except Exception as e:
             self.logger.warning(f"Connection health check failed: {e}")
@@ -207,19 +379,22 @@ rf_data_timeout = 15.0
         try:
             self.logger.info("Connecting to MeshCore node...")
             
-            # Get connection type from config
-            connection_type = self.config.get('connection', 'connection_type', fallback='ble').lower()
+            # Get connection type from environment
+            connection_type = self.get_env('CONNECTION_TYPE', 'ble').lower()
             self.logger.info(f"Using connection type: {connection_type}")
             
             if connection_type == 'serial':
                 # Create serial connection
-                serial_port = self.config.get('connection', 'serial_port', fallback='/dev/ttyUSB0')
+                serial_port = self.get_env('SERIAL_PORTS', '/dev/ttyUSB0')
+                # Handle comma-separated ports (take first one for now)
+                if ',' in serial_port:
+                    serial_port = serial_port.split(',')[0].strip()
                 self.logger.info(f"Connecting via serial port: {serial_port}")
                 self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=False)
             else:
                 # Create BLE connection (default)
-                ble_address = self.config.get('connection', 'ble_address', fallback=None)
-                ble_device_name = self.config.get('connection', 'ble_device_name', fallback=None)
+                ble_address = self.get_env('BLE_ADDRESS', None)
+                ble_device_name = self.get_env('BLE_DEVICE_NAME', None)
                 
                 if ble_address:
                     # Direct address connection
@@ -251,6 +426,41 @@ rf_data_timeout = 15.0
                     self.device_public_key = self.meshcore.self_info.get('public_key', 'Unknown')
                     self.logger.info(f"Device name: {self.device_name}")
                     self.logger.info(f"Device public key: {self.device_public_key}")
+                    
+                    # Setup JWT authentication using private key from device
+                    self.logger.info("Setting up JWT authentication...")
+                    
+                    # Try to fetch private key from device first
+                    private_key_fetch_success = await self.fetch_private_key_from_device()
+                    
+                    # Fallback: Try to get private key from environment variable
+                    if not private_key_fetch_success:
+                        env_private_key = self.get_env('PRIVATE_KEY', '')
+                        if env_private_key:
+                            self.device_private_key = env_private_key
+                            self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from environment)")
+                        # Try to read from private key file
+                        elif read_private_key_file:
+                            private_key_file = self.get_env('PRIVATE_KEY_FILE', '')
+                            if private_key_file and Path(private_key_file).exists():
+                                try:
+                                    self.device_private_key = read_private_key_file(private_key_file)
+                                    self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from file: {private_key_file})")
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to read private key from file {private_key_file}: {e}")
+                    
+                    # Log authentication method status
+                    if private_key_fetch_success:
+                        self.logger.info("✓ JWT authentication: Private key from device")
+                    elif self.device_private_key:
+                        self.logger.info("✓ JWT authentication: Private key from environment/file")
+                    else:
+                        self.logger.info("❌ JWT authentication: Not available")
+                        self.logger.info("To enable JWT authentication:")
+                        self.logger.info("  1. Ensure device supports private key export (ENABLE_PRIVATE_KEY_EXPORT=1), or")
+                        self.logger.info("  2. Set PACKETCAPTURE_PRIVATE_KEY environment variable, or")
+                        self.logger.info("  3. Set PACKETCAPTURE_PRIVATE_KEY_FILE to point to a private key file, or")
+                        self.logger.info("  4. Create a .env.local file with PACKETCAPTURE_PRIVATE_KEY=your_private_key_here")
                 
                 return True
             else:
@@ -295,7 +505,8 @@ rf_data_timeout = 15.0
     
     async def connection_monitor(self):
         """Monitor connection health and attempt reconnection if needed"""
-        self.logger.info(f"Starting connection monitoring (health check every {self.health_check_interval} seconds)")
+        if self.debug:
+            self.logger.debug(f"Starting connection monitoring (health check every {self.health_check_interval} seconds)")
         
         while self.connected:
             try:
@@ -318,8 +529,13 @@ rf_data_timeout = 15.0
                     else:
                         self.logger.error("MeshCore reconnection failed, will retry on next health check")
                 
+                # Check MQTT connection health
+                if self.enable_mqtt:
+                    await self.check_mqtt_reconnection()
+                
             except asyncio.CancelledError:
-                self.logger.debug("Connection monitoring cancelled")
+                if self.debug:
+                    self.logger.debug("Connection monitoring cancelled")
                 break
             except Exception as e:
                 self.logger.error(f"Error in connection monitoring: {e}")
@@ -327,95 +543,244 @@ rf_data_timeout = 15.0
     
     def sanitize_client_id(self, name):
         """Convert device name to valid MQTT client ID"""
-        client_id = self.config.get("mqtt", "client_id_prefix", fallback="meshcore_client_") + name.replace(" ", "_")
+        client_id = self.get_env("CLIENT_ID_PREFIX", "meshcore_client_") + name.replace(" ", "_")
         client_id = re.sub(r"[^a-zA-Z0-9_-]", "", client_id)
         return client_id[:23]
     
     def on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
+        broker_name = userdata.get('name', 'unknown') if userdata else 'unknown'
+        broker_num = userdata.get('broker_num', None) if userdata else None
         if rc == 0:
             self.mqtt_connected = True
-            self.logger.info("Connected to MQTT broker")
+            self.logger.info(f"Connected to MQTT broker: {broker_name}")
             # Publish online status once on connection
-            self.publish_status("online")
+            self.publish_status("online", client, broker_num)
         else:
-            self.mqtt_connected = False
-            self.logger.error(f"MQTT connection failed with code {rc}")
+            self.logger.error(f"MQTT connection failed for {broker_name} with code {rc}")
 
     def on_mqtt_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
-        self.mqtt_connected = False
-        self.logger.warning(f"Disconnected from MQTT broker (code: {reason_code}; flags: {disconnect_flags}; userdata: {userdata}; properties: {properties})")
+        broker_name = userdata.get('name', 'unknown') if userdata else 'unknown'
+        self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: {reason_code})")
         
-        # Schedule MQTT reconnection attempt
-        if reason_code != 0:  # Only attempt reconnection for unexpected disconnections
-            asyncio.create_task(self.reconnect_mqtt())
+        # Check if any brokers are still connected
+        connected_brokers = [info for info in self.mqtt_clients if info['client'].is_connected()]
+        if not connected_brokers:
+            self.mqtt_connected = False
+            self.logger.warning("All MQTT brokers disconnected. Will attempt reconnection...")
+            # Don't exit immediately - let reconnection logic handle it
         else:
-            self.logger.info("MQTT disconnected normally, continuing packet capture...")
+            self.logger.info(f"Still connected to {len(connected_brokers)} broker(s)")
 
-    def connect_mqtt(self):
-        """Connect to MQTT broker"""
+    async def connect_mqtt_broker(self, broker_num):
+        """Connect to a single MQTT broker"""
         if not self.device_name:
             self.logger.error("Cannot connect to MQTT without device name")
-            return False
+            return None
 
-        client_id = self.sanitize_client_id(self.device_public_key or self.device_name)
-        self.logger.info(f"Using MQTT client ID: {client_id}")
-        
-        self.mqtt_client = mqtt.Client(
-            mqtt.CallbackAPIVersion.VERSION2,
-            client_id=client_id,
-            clean_session=False
-        )
-        
-        # Set username/password if configured
-        username = self.config.get("mqtt", "username", fallback="")
-        password = self.config.get("mqtt", "password", fallback="")
-        if username:
-            self.mqtt_client.username_pw_set(username, password)
-        
-        # Set Last Will and Testament
-        lwt_topic = self.config.get("topics", "status")
-        lwt_payload = json.dumps({
-            "status": "offline",
-            "timestamp": datetime.now().isoformat(),
-            "device": self.device_name,
-            "device_id": self.device_public_key
-        })
-        lwt_qos = self.config.getint("mqtt", "qos", fallback=1)
-        lwt_retain = self.config.getboolean("mqtt", "retain", fallback=True)
-        
-        self.mqtt_client.will_set(
-            lwt_topic,
-            lwt_payload,
-            qos=lwt_qos,
-            retain=lwt_retain
-        )
-        
-        self.logger.debug(f"Set LWT for topic: {lwt_topic}, payload: {lwt_payload}, QoS: {lwt_qos}, retain: {lwt_retain}")
-        
-        # Set callbacks
-        self.mqtt_client.on_connect = self.on_mqtt_connect
-        self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
-        
-        # Connect to broker
+        # Check if broker is enabled
+        if not self.get_env_bool(f'MQTT{broker_num}_ENABLED', False):
+            self.logger.debug(f"MQTT broker {broker_num} is disabled, skipping")
+            return None
+
         try:
-            self.mqtt_client.loop_stop()
-            self.mqtt_client.connect(
-                self.config.get("mqtt", "server"),
-                self.config.getint("mqtt", "port"),
-                keepalive=30
+            # Create client ID
+            client_id = self.sanitize_client_id(self.device_public_key or self.device_name)
+            if broker_num > 1:
+                client_id += f"_{broker_num}"
+            
+            self.logger.info(f"Connecting to MQTT{broker_num} with client ID: {client_id}")
+            
+            # Get transport type
+            transport = self.get_env(f'MQTT{broker_num}_TRANSPORT', 'tcp')
+            
+            mqtt_client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
+                client_id=client_id,
+                clean_session=False,
+                transport=transport
             )
-
-            self.mqtt_client.loop_start()
-            self.logger.debug("MQTT loop started")
-            return True
+            
+            # Set user data for callbacks
+            mqtt_client.user_data_set({
+                'name': f"MQTT{broker_num}",
+                'broker_num': broker_num
+            })
+            
+            # Handle authentication
+            use_auth_token = self.get_env_bool(f'MQTT{broker_num}_USE_AUTH_TOKEN', False)
+            
+            if use_auth_token:
+                # Check if we have any JWT authentication method available
+                if not self.private_key_export_available and not self.device_private_key:
+                    self.logger.error(f"MQTT{broker_num}: No JWT authentication method available (private key from device or environment)")
+                    return None
+                
+                try:
+                    username = f"v1_{self.device_public_key.upper()}"
+                    audience = self.get_env(f'MQTT{broker_num}_TOKEN_AUDIENCE', "")
+                    
+                    if audience:
+                        self.logger.info(f"MQTT{broker_num}: Using JWT authentication [aud: {audience}]")
+                    else:
+                        self.logger.info(f"MQTT{broker_num}: Using JWT authentication")
+                    
+                    # Use the JWT creation method with private key from device
+                    password = await self.create_auth_token_jwt(audience)
+                    if not password:
+                        self.logger.error(f"MQTT{broker_num}: Failed to generate JWT token")
+                        return None
+                    
+                    # Log JWT details for debugging if debug mode is enabled
+                    if self.debug:
+                        self.logger.debug(f"MQTT{broker_num}: Generated JWT: {password}")
+                        try:
+                            import base64
+                            parts = password.split('.')
+                            if len(parts) == 3:
+                                header = base64.urlsafe_b64decode(parts[0] + '==').decode('utf-8')
+                                payload = base64.urlsafe_b64decode(parts[1] + '==').decode('utf-8')
+                                self.logger.debug(f"MQTT{broker_num}: JWT Header: {header}")
+                                self.logger.debug(f"MQTT{broker_num}: JWT Payload: {payload}")
+                                self.logger.debug(f"MQTT{broker_num}: JWT Signature length: {len(base64.urlsafe_b64decode(parts[2] + '=='))} bytes")
+                        except Exception as e:
+                            self.logger.debug(f"Could not decode JWT for inspection: {e}")
+                    
+                    mqtt_client.username_pw_set(username, password)
+                except Exception as e:
+                    self.logger.error(f"MQTT{broker_num}: Failed to generate auth token: {e}")
+                    return None
+            else:
+                # Username/password authentication
+                username = self.get_env(f'MQTT{broker_num}_USERNAME', "")
+                password = self.get_env(f'MQTT{broker_num}_PASSWORD', "")
+                if username:
+                    mqtt_client.username_pw_set(username, password)
+            
+            # Set Last Will and Testament
+            lwt_topic = self.get_topic("status", broker_num)
+            lwt_payload = json.dumps({
+                "status": "offline",
+                "timestamp": datetime.now().isoformat(),
+                "origin": self.device_name,
+                "origin_id": self.device_public_key
+            })
+            lwt_qos = self.get_env_int(f'MQTT{broker_num}_QOS', 0)
+            lwt_retain = self.get_env_bool(f'MQTT{broker_num}_RETAIN', True)
+            
+            mqtt_client.will_set(lwt_topic, lwt_payload, qos=lwt_qos, retain=lwt_retain)
+            
+            # Set callbacks
+            mqtt_client.on_connect = self.on_mqtt_connect
+            mqtt_client.on_disconnect = self.on_mqtt_disconnect
+            
+            # Get connection parameters
+            server = self.get_env(f'MQTT{broker_num}_SERVER', "")
+            if not server:
+                self.logger.error(f"MQTT{broker_num}: Server not configured")
+                return None
+                
+            port = self.get_env_int(f'MQTT{broker_num}_PORT', 1883)
+            
+            # Handle TLS/SSL
+            use_tls = self.get_env_bool(f'MQTT{broker_num}_USE_TLS', False)
+            if use_tls:
+                import ssl
+                tls_verify = self.get_env_bool(f'MQTT{broker_num}_TLS_VERIFY', True)
+                
+                if tls_verify:
+                    mqtt_client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+                    mqtt_client.tls_insecure_set(False)
+                else:
+                    mqtt_client.tls_set(cert_reqs=ssl.CERT_NONE)
+                    mqtt_client.tls_insecure_set(True)
+                    self.logger.warning(f"MQTT{broker_num}: TLS certificate verification disabled (insecure)")
+            
+            # Handle WebSocket transport
+            if transport == "websockets":
+                mqtt_client.ws_set_options(
+                    path="/",
+                    headers=None
+                )
+            
+            # Connect
+            keepalive = self.get_env_int(f'MQTT{broker_num}_KEEPALIVE', 60)
+            mqtt_client.connect(server, port, keepalive=keepalive)
+            mqtt_client.loop_start()
+            
+            self.logger.info(f"Connected to MQTT{broker_num} at {server}:{port} (transport={transport}, tls={use_tls})")
+            return {
+                'client': mqtt_client,
+                'broker_num': broker_num
+            }
+            
         except Exception as e:
-            self.logger.error(f"MQTT connection error: {str(e)}")
+            self.logger.error(f"MQTT connection error for MQTT{broker_num}: {str(e)}")
+            return None
+
+    async def connect_mqtt(self):
+        """Connect to all configured MQTT brokers"""
+        # Try to connect to MQTT1, MQTT2, MQTT3, MQTT4 (can expand if needed)
+        for broker_num in range(1, 5):
+            client_info = await self.connect_mqtt_broker(broker_num)
+            if client_info:
+                self.mqtt_clients.append(client_info)
+        
+        if len(self.mqtt_clients) == 0:
+            self.logger.error("Failed to connect to any MQTT broker")
             return False
+        
+        self.logger.info(f"Connected to {len(self.mqtt_clients)} MQTT broker(s)")
+        return True
+    
+    def disconnect_mqtt(self):
+        """Disconnect from all MQTT brokers and clean up connections"""
+        if self.mqtt_clients:
+            self.logger.info(f"Disconnecting from {len(self.mqtt_clients)} MQTT broker(s)...")
+            
+            for client_info in self.mqtt_clients:
+                try:
+                    mqtt_client = client_info['client']
+                    broker_num = client_info['broker_num']
+                    
+                    if mqtt_client.is_connected():
+                        mqtt_client.loop_stop()
+                        mqtt_client.disconnect()
+                        self.logger.debug(f"Disconnected from MQTT{broker_num}")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Error disconnecting from MQTT{broker_num}: {e}")
+            
+            # Clear the clients list
+            self.mqtt_clients.clear()
+            self.mqtt_connected = False
+    
+    async def stop(self):
+        """Stop packet capture and clean up resources"""
+        self.logger.info("Stopping packet capture...")
+        self.connected = False
+        self.should_exit = True
+        
+        # Disconnect from MQTT brokers
+        self.disconnect_mqtt()
+        
+        # Disconnect from MeshCore device
+        if self.meshcore:
+            try:
+                await self.meshcore.disconnect()
+            except Exception as e:
+                self.logger.warning(f"Error disconnecting from MeshCore device: {e}")
+        
+        # Private key cleanup (no separate instance to clean up)
+        
+        self.logger.info("Packet capture stopped")
     
     async def reconnect_mqtt(self):
         """Attempt to reconnect to MQTT broker with retry logic"""
         if self.max_mqtt_retries > 0 and self.mqtt_retry_count >= self.max_mqtt_retries:
             self.logger.error(f"Maximum MQTT retry attempts ({self.max_mqtt_retries}) reached")
+            if self.exit_on_reconnect_fail:
+                self.logger.error("Exiting due to failed MQTT reconnection attempts")
+                self.should_exit = True
             return False
         
         self.mqtt_retry_count += 1
@@ -426,8 +791,11 @@ rf_data_timeout = 15.0
             self.logger.info(f"Waiting {self.mqtt_retry_delay} seconds before MQTT retry...")
             await asyncio.sleep(self.mqtt_retry_delay)
         
+        # Clean up existing connections before reconnecting
+        self.disconnect_mqtt()
+        
         # Attempt to reconnect
-        success = self.connect_mqtt()
+        success = await self.connect_mqtt()
         if success:
             self.mqtt_retry_count = 0  # Reset counter on successful connection
             self.logger.info("MQTT reconnection successful")
@@ -436,34 +804,92 @@ rf_data_timeout = 15.0
         
         return success
     
-    def publish_status(self, status):
+    async def check_mqtt_reconnection(self):
+        """Check if MQTT reconnection is needed and attempt it"""
+        if self.mqtt_clients:
+            # Check if any brokers are actually connected
+            connected_brokers = [info for info in self.mqtt_clients if info['client'].is_connected()]
+            disconnected_brokers = [info for info in self.mqtt_clients if not info['client'].is_connected()]
+            
+            # Update global connection status
+            if connected_brokers:
+                self.mqtt_connected = True
+            else:
+                self.mqtt_connected = False
+            
+            # If we have disconnected brokers, attempt reconnection
+            if disconnected_brokers:
+                self.logger.info(f"{len(disconnected_brokers)} MQTT broker(s) disconnected, attempting reconnection...")
+                await self.reconnect_mqtt()
+    
+    def publish_status(self, status, client=None, broker_num=None):
         """Publish status with additional information"""
         status_msg = {
             "status": status,
             "timestamp": datetime.now().isoformat(),
-            "device": self.device_name,
-            "device_id": self.device_public_key
+            "origin": self.device_name,
+            "origin_id": self.device_public_key
         }
-        if self.safe_publish(self.config.get("topics", "status"), json.dumps(status_msg), retain=True):
+        if client:
+            self.safe_publish(None, json.dumps(status_msg), retain=True, client=client, broker_num=broker_num, topic_type="status")
+        else:
+            self.safe_publish(None, json.dumps(status_msg), retain=True, topic_type="status")
+        if self.debug:
             self.logger.debug(f"Published status: {status}")
 
-    def safe_publish(self, topic, payload, retain=False):
-        """Safely publish to MQTT broker"""
+    def safe_publish(self, topic, payload, retain=False, client=None, broker_num=None, topic_type=None):
+        """Publish to one or all MQTT brokers"""
         if not self.mqtt_connected:
-            self.logger.warning(f"Not connected - skipping publish to {topic}")
+            self.logger.warning(f"Not connected - skipping publish to {topic or topic_type}")
             return False
 
-        try:
-            qos = self.config.getint("mqtt", "qos", fallback=1)
-            result = self.mqtt_client.publish(topic, payload, qos=qos, retain=retain)
-            if result.rc != mqtt.MQTT_ERR_SUCCESS:
-                self.logger.error(f"Publish failed to {topic}: {mqtt.error_string(result.rc)}")
-                return False
-            self.logger.debug(f"Published to {topic}: {payload}")
-            return True
-        except Exception as e:
-            self.logger.error(f"Publish error to {topic}: {str(e)}")
-            return False
+        success = False
+        
+        if client:
+            clients_to_publish = [info for info in self.mqtt_clients if info['client'] == client]
+        else:
+            clients_to_publish = self.mqtt_clients
+        
+        for mqtt_client_info in clients_to_publish:
+            current_broker_num = mqtt_client_info['broker_num']
+            try:
+                mqtt_client = mqtt_client_info['client']
+                
+                # Check individual client connection status
+                if not mqtt_client.is_connected():
+                    self.logger.warning(f"MQTT{current_broker_num} client not connected - skipping publish")
+                    continue
+                
+                # CRITICAL FIX: Resolve topic properly
+                if topic_type:
+                    resolved_topic = self.get_topic(topic_type, current_broker_num)
+                elif topic:
+                    resolved_topic = topic
+                else:
+                    self.logger.error("Neither topic nor topic_type provided to safe_publish")
+                    continue
+                
+                # Validate topic before publishing
+                if not resolved_topic:
+                    self.logger.error(f"Failed to resolve topic (type={topic_type}, topic={topic})")
+                    continue
+                
+                qos = self.get_env_int(f'MQTT{current_broker_num}_QOS', 0)
+                # Force QoS 1 to 0 to prevent retry storms (like mctomqtt.py)
+                if qos == 1:
+                    qos = 0
+                
+                result = mqtt_client.publish(resolved_topic, payload, qos=qos, retain=retain)
+                if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                    self.logger.error(f"Publish failed to {resolved_topic} on MQTT{current_broker_num}: {mqtt.error_string(result.rc)}")
+                else:
+                    if self.verbose:
+                        self.logger.info(f"✓ Published to {resolved_topic} on MQTT{current_broker_num} (len={len(payload)})")
+                    success = True
+            except Exception as e:
+                self.logger.error(f"Publish error on MQTT{current_broker_num}: {str(e)}", exc_info=True)
+        
+        return success
     
     def parse_advert(self, payload):
         """Parse advert payload - matches C++ AdvertDataHelpers.h implementation"""
@@ -487,7 +913,8 @@ rf_data_timeout = 15.0
             flags_byte = app_data[0]
             
             # Log the full flag byte for debugging
-            self.logger.debug(f"ADVERT flags: 0x{flags_byte:02X} (binary: {flags_byte:08b})")
+            if self.debug:
+                self.logger.debug(f"ADVERT flags: 0x{flags_byte:02X} (binary: {flags_byte:08b})")
             
             # Create flags object with the full byte value
             flags = AdvertFlags(flags_byte)
@@ -563,7 +990,6 @@ rf_data_timeout = 15.0
 
     def decode_and_publish_message(self, raw_data):
         """Decode message - matches Packet.cpp exactly"""
-        self.logger.debug(f"raw_data to parse: {raw_data}")
         byte_data = bytes.fromhex(raw_data)
         try:
             # Validate minimum packet size
@@ -641,7 +1067,8 @@ rf_data_timeout = 15.0
             else:
                 message.update(payload_value)
                 
-            self.logger.debug(f"Successfully decoded: route={message['route_type']}, type={message['payload_type']}")
+            if self.debug:
+                self.logger.debug(f"Successfully decoded: route={message['route_type']}, type={message['payload_type']}")
             return message
             
         except Exception as e:
@@ -772,8 +1199,8 @@ rf_data_timeout = 15.0
         if self.device_public_key and self.device_public_key != 'Unknown':
             origin_id = self.device_public_key
         else:
-            # Try to get from config as fallback
-            origin_id = self.config.get('packetcapture', 'origin_id', fallback=None)
+            # Try to get from environment as fallback
+            origin_id = self.get_env('ORIGIN_ID', None)
             if not origin_id:
                 # Generate a hash from device name as last resort
                 device_name = self.device_name or 'Unknown'
@@ -790,7 +1217,7 @@ rf_data_timeout = 15.0
         
         # Build the packet data structure to match mctomqtt.py exactly
         packet_data = {
-            "origin": self.device_name or self.config.get('packetcapture', 'origin', fallback='Unknown'),
+            "origin": self.device_name or self.get_env('ORIGIN', 'MeshCore Device'),
             "origin_id": origin_id,
             "timestamp": timestamp,
             "type": "PACKET",
@@ -825,11 +1252,9 @@ rf_data_timeout = 15.0
                 # First, try the 'payload' field (already stripped of framing bytes)
                 if 'payload' in payload and payload['payload']:
                     raw_hex = payload['payload']
-                    self.logger.debug(f"Using 'payload' field from RF data")
                 # Fallback to raw_hex with first 2 bytes stripped
                 elif 'raw_hex' in payload and payload['raw_hex']:
                     raw_hex = payload['raw_hex'][4:]  # Skip first 2 bytes (4 hex chars)
-                    self.logger.debug(f"Using 'raw_hex' field (stripped) from RF data")
                 
                 if raw_hex:
                     packet_prefix = raw_hex[:32]
@@ -846,13 +1271,11 @@ rf_data_timeout = 15.0
                     
                     # Clean up old cache entries
                     current_time = time.time()
-                    timeout = self.config.getfloat('packetcapture', 'rf_data_timeout', fallback=15.0)
+                    timeout = self.get_env_float('RF_DATA_TIMEOUT', 15.0)
                     self.rf_data_cache = {
                         k: v for k, v in self.rf_data_cache.items()
                         if current_time - v['timestamp'] < timeout
                     }
-                    
-                    self.logger.debug(f"Cached RF data for packet: {packet_prefix[:16]}...")
                     
                     # Process the packet
                     await self.process_packet_from_rf_data(raw_hex, rf_data)
@@ -872,13 +1295,16 @@ rf_data_timeout = 15.0
             self.output_packet(packet_data)
             
             self.packet_count += 1
-            self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, SNR: {packet_data['SNR']}, RSSI: {packet_data['RSSI']}, hash: {packet_data['hash']}")
+            if self.verbose:
+                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, SNR: {packet_data['SNR']}, RSSI: {packet_data['RSSI']}, hash: {packet_data['hash']}")
+            else:
+                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes")
             
-            # Output full packet data structure in verbose or debug mode
-            if self.verbose or self.debug:
-                self.logger.info("📋 Full packet data structure:")
+            # Output full packet data structure in debug mode only
+            if self.debug:
+                self.logger.debug("📋 Full packet data structure:")
                 import json
-                self.logger.info(json.dumps(packet_data, indent=2))
+                self.logger.debug(json.dumps(packet_data, indent=2))
             
         except Exception as e:
             self.logger.error(f"Error processing packet from RF data: {e}")
@@ -937,52 +1363,29 @@ rf_data_timeout = 15.0
         
         # Publish to MQTT if enabled
         if self.enable_mqtt:
-            self.safe_publish(self.config.get("topics", "packets"), json.dumps(packet_data))
-            
-            # Try to decode and publish decoded message
-            if 'raw' in packet_data:
-                try:
-                    decoded_message = self.decode_and_publish_message(packet_data.get("raw"))
-                    if decoded_message is not None:
-                        self.safe_publish(self.config.get("topics", "decoded"), json.dumps(decoded_message))
-                except Exception as e:
-                    self.logger.debug(f"Error decoding packet for MQTT: {e}")
-            
-            # Publish to debug topic only when --debug flag is set
-            if self.debug:
-                debug_message = {
-                    "origin": packet_data.get("origin"),
-                    "origin_id": packet_data.get("origin_id"),
-                    "timestamp": packet_data.get("timestamp"),
-                    "type": "DEBUG",
-                    "packet_data": packet_data,
-                    "debug_info": {
-                        "packet_count": self.packet_count,
-                        "rf_data_cache_size": len(self.rf_data_cache),
-                        "connection_status": self.connected,
-                        "mqtt_status": self.mqtt_connected
-                    }
-                }
-                self.safe_publish(self.config.get("topics", "debug"), json.dumps(debug_message))
+            self.safe_publish(None, json.dumps(packet_data), topic_type="packets")
     
     async def setup_event_handlers(self):
         """Setup event handlers for packet capture"""
         # Handle RF log data for SNR/RSSI information
         async def on_rf_data(event):
-            self.logger.debug(f"RF_DATA event received: {event}")
+            if self.debug:
+                self.logger.debug(f"RF_DATA event received: {event}")
             await self.handle_rf_log_data(event)
         
         # Handle raw data events (full packet data)
         async def on_raw_data(event):
-            self.logger.debug(f"RAW_DATA event received: {event}")
+            if self.debug:
+                self.logger.debug(f"RAW_DATA event received: {event}")
             await self.handle_raw_data(event)
         
         # Handle status response events
         async def on_status_response(event):
-            self.logger.debug(f"STATUS_RESPONSE event received: {event}")
-            # Log the status data to see what's available
-            if hasattr(event, 'payload') and event.payload:
-                self.logger.info(f"Status data: {event.payload}")
+            if self.debug:
+                self.logger.debug(f"STATUS_RESPONSE event received: {event}")
+                # Log the status data to see what's available
+                if hasattr(event, 'payload') and event.payload:
+                    self.logger.debug(f"Status data: {event.payload}")
         
         # Subscribe to events
         self.meshcore.subscribe(EventType.RX_LOG_DATA, on_rf_data)
@@ -1005,7 +1408,7 @@ rf_data_timeout = 15.0
         
         # Connect to MQTT broker if enabled
         if self.enable_mqtt:
-            if not self.connect_mqtt():
+            if not await self.connect_mqtt():
                 self.logger.warning("Failed to connect to MQTT broker, continuing without MQTT...")
         else:
             self.logger.info("MQTT disabled, skipping MQTT connection")
@@ -1019,7 +1422,8 @@ rf_data_timeout = 15.0
         self.logger.info("Packet capture is running. Press Ctrl+C to stop.")
         self.logger.info("Waiting for packets...")
         
-        # Start connection monitoring task
+        # Start connection monitoring task (delay to allow MQTT connections to stabilize)
+        await asyncio.sleep(5)  # Give MQTT connections time to fully establish
         monitoring_task = asyncio.create_task(self.connection_monitor())
         
         # Start advert scheduler task
@@ -1027,7 +1431,17 @@ rf_data_timeout = 15.0
             self.advert_task = asyncio.create_task(self.advert_scheduler())
         
         try:
-            while self.connected:
+            mqtt_check_interval = 10  # Check MQTT reconnection every 10 seconds
+            last_mqtt_check = 0
+            
+            while self.connected and not self.should_exit:
+                current_time = time.time()
+                
+                # Check MQTT reconnection periodically
+                if current_time - last_mqtt_check >= mqtt_check_interval:
+                    await self.check_mqtt_reconnection()
+                    last_mqtt_check = current_time
+                
                 await asyncio.sleep(1)
         except KeyboardInterrupt:
             self.logger.info("Received interrupt signal")
@@ -1058,9 +1472,12 @@ rf_data_timeout = 15.0
         if self.meshcore:
             await self.meshcore.disconnect()
         
-        if self.mqtt_client:
-            self.mqtt_client.disconnect()
-            self.mqtt_client.loop_stop()
+        for mqtt_client_info in self.mqtt_clients:
+            try:
+                mqtt_client_info['client'].disconnect()
+                mqtt_client_info['client'].loop_stop()
+            except:
+                pass
         
         if self.output_handle:
             self.output_handle.close()
@@ -1087,10 +1504,12 @@ rf_data_timeout = 15.0
     async def advert_scheduler(self):
         """Background task to send adverts at configured intervals"""
         if self.advert_interval_hours <= 0:
-            self.logger.info("Advert scheduling disabled (interval = 0)")
+            if self.debug:
+                self.logger.debug("Advert scheduling disabled (interval = 0)")
             return
         
-        self.logger.info(f"Starting advert scheduler with {self.advert_interval_hours} hour interval")
+        if self.debug:
+            self.logger.debug(f"Starting advert scheduler with {self.advert_interval_hours} hour interval")
         
         while self.connected:
             try:
@@ -1107,11 +1526,13 @@ rf_data_timeout = 15.0
                 else:
                     # Sleep until it's time for the next advert
                     sleep_time = interval_seconds - time_since_last
-                    self.logger.debug(f"Next advert in {sleep_time/3600:.1f} hours")
+                    if self.debug:
+                        self.logger.debug(f"Next advert in {sleep_time/3600:.1f} hours")
                     await asyncio.sleep(sleep_time)
                     
             except asyncio.CancelledError:
-                self.logger.debug("Advert scheduler cancelled")
+                if self.debug:
+                    self.logger.debug("Advert scheduler cancelled")
                 break
             except Exception as e:
                 self.logger.error(f"Error in advert scheduler: {e}")
@@ -1121,7 +1542,6 @@ rf_data_timeout = 15.0
 async def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(description='MeshCore Packet Capture Script')
-    parser.add_argument('--config', default='config.ini', help='Configuration file path')
     parser.add_argument('--output', help='Output file path (optional)')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output (shows JSON packet data)')
     parser.add_argument('--debug', action='store_true', help='Enable debug output (shows all detailed debugging info)')
@@ -1131,7 +1551,6 @@ async def main():
     
     # Create packet capture instance
     capture = PacketCapture(
-        config_file=args.config, 
         output_file=args.output, 
         verbose=args.verbose,
         debug=args.debug,
@@ -1147,6 +1566,7 @@ async def main():
         await capture.start()
     except KeyboardInterrupt:
         print("\nShutting down...")
+        await capture.stop()
     except Exception as e:
         print(f"Error: {e}")
         await capture.stop()

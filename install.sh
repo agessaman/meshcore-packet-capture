@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_VERSION="1.0.0"
 DEFAULT_REPO="agessaman/meshcore-packet-capture"
-DEFAULT_BRANCH="main"
+DEFAULT_BRANCH="feature/multi-mqtt-integration"
 
 # Parse command line arguments
 CONFIG_URL=""

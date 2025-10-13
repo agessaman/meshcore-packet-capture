@@ -229,8 +229,8 @@ data = json.load(sys.stdin)
 for i, device in enumerate(data, 1):
     name = device.get('name', 'Unknown')
     address = device.get('address', 'Unknown')
-    print(f'  {i}) {name} ({address})')
-    print(f'DEVICE_{i}="{address}|{name}"', file=sys.stderr)
+    print('  ' + str(i) + ') ' + name + ' (' + address + ')')
+    print('DEVICE_' + str(i) + '=\"' + address + '|' + name + '\"', file=sys.stderr)
 " 2>/tmp/device_list
         
         # Read device list

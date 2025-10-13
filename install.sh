@@ -116,6 +116,14 @@ scan_ble_devices() {
         return 1
     fi
     
+    # Check if meshcore and bleak are available
+    if ! python3 -c "import meshcore, bleak" 2>/dev/null; then
+        print_warning "meshcore or bleak not available - cannot scan for BLE devices"
+        print_info "BLE scanning requires the meshcore library and its dependencies"
+        print_info "These will be installed after the main installation completes"
+        return 1
+    fi
+    
     # Create a temporary BLE scan helper script
     local temp_script="/tmp/ble_scan_helper.py"
     cat > "$temp_script" << 'EOF'
@@ -190,10 +198,18 @@ EOF
     
     # Run the BLE scan helper
     local scan_output
-    if scan_output=$(python3 "$temp_script" 2>/dev/null); then
+    local scan_error
+    if scan_output=$(python3 "$temp_script" 2>/tmp/ble_scan_error); then
         # Parse JSON output
         local devices_json="$scan_output"
         local device_count=$(echo "$devices_json" | python3 -c "import sys, json; data=json.load(sys.stdin); print(len(data))" 2>/dev/null)
+        
+        # Check if device_count is a valid number
+        if ! [[ "$device_count" =~ ^[0-9]+$ ]]; then
+            print_warning "Failed to parse BLE scan results"
+            rm -f "$temp_script"
+            return 1
+        fi
         
         if [ "$device_count" -eq 0 ]; then
             print_warning "No MeshCore BLE devices found"
@@ -251,6 +267,13 @@ for i, device in enumerate(data, 1):
         done
     else
         print_warning "Failed to scan for BLE devices using meshcore library"
+        if [ -f /tmp/ble_scan_error ]; then
+            local error_msg=$(cat /tmp/ble_scan_error)
+            if [ -n "$error_msg" ]; then
+                print_info "Error details: $error_msg"
+            fi
+            rm -f /tmp/ble_scan_error
+        fi
         rm -f "$temp_script" /tmp/device_list
         return 1
     fi
@@ -289,6 +312,7 @@ select_connection_type() {
                         print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
                     else
                         # Fallback to manual entry
+                        print_info "BLE scanning failed or no devices found. Please enter device details manually."
                         SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
                         SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
                         if [ -n "$SELECTED_BLE_DEVICE" ]; then

@@ -542,30 +542,7 @@ main() {
             exit 1
         fi
         
-        # Download meshcore_py directory (simplified - would need to download each file)
-        print_info "Downloading meshcore_py package..."
-        if ! curl -fsSL --retry 3 --retry-delay 2 "$BASE_URL/meshcore_py/pyproject.toml" -o "$TMP_DIR/pyproject.toml"; then
-            print_error "Failed to download meshcore_py package"
-            exit 1
-        fi
-        
-        # Create meshcore_py directory structure
-        mkdir -p "$TMP_DIR/meshcore_py/src/meshcore"
-        
-        # Download key meshcore files (simplified approach)
-        for file in "__init__.py" "meshcore.py" "events.py" "reader.py" "connection_manager.py" "ble_cx.py" "tcp_cx.py" "serial_cx.py" "packets.py" "parsing.py" "lpp_json_encoder.py"; do
-            if ! curl -fsSL --retry 3 --retry-delay 2 "$BASE_URL/meshcore_py/src/meshcore/$file" -o "$TMP_DIR/meshcore_py/src/meshcore/$file" 2>/dev/null; then
-                print_warning "Could not download $file - some features may not work"
-            fi
-        done
-        
-        # Download commands directory
-        mkdir -p "$TMP_DIR/meshcore_py/src/meshcore/commands"
-        for file in "__init__.py" "base.py" "binary.py" "contact.py" "device.py" "messaging.py"; do
-            if ! curl -fsSL --retry 3 --retry-delay 2 "$BASE_URL/meshcore_py/src/meshcore/commands/$file" -o "$TMP_DIR/meshcore_py/src/meshcore/commands/$file" 2>/dev/null; then
-                print_warning "Could not download commands/$file - some features may not work"
-            fi
-        done
+        # meshcore_py no longer needed - using PyPI version
         
         # Verify Python syntax before installing
         print_info "Verifying Python syntax..."
@@ -580,7 +557,7 @@ main() {
         mv "$TMP_DIR/auth_token.py" "$INSTALL_DIR/auth_token.py"
         mv "$TMP_DIR/enums.py" "$INSTALL_DIR/enums.py"
         mv "$TMP_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
-        mv "$TMP_DIR/meshcore_py" "$INSTALL_DIR/meshcore_py"
+        # meshcore_py no longer needed - using PyPI version
         
         chmod +x "$INSTALL_DIR/packet_capture.py"
         print_success "Files downloaded and verified"

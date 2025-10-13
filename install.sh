@@ -103,84 +103,157 @@ detect_serial_devices() {
     printf '%s\n' "${devices[@]}"
 }
 
-# Scan for BLE devices
+# Scan for BLE devices using Python helper
 scan_ble_devices() {
     echo ""
     print_info "Scanning for BLE devices..."
     echo "This may take 10-15 seconds..."
     echo ""
     
-    # Check if we have the necessary tools
-    if ! command -v bluetoothctl &> /dev/null; then
-        print_warning "bluetoothctl not found - cannot scan for BLE devices"
+    # Check if Python and meshcore are available
+    if ! command -v python3 &> /dev/null; then
+        print_warning "Python3 not found - cannot scan for BLE devices"
         return 1
     fi
     
-    # Start scanning
-    bluetoothctl scan on > /dev/null 2>&1 &
-    local scan_pid=$!
+    # Create a temporary BLE scan helper script
+    local temp_script="/tmp/ble_scan_helper.py"
+    cat > "$temp_script" << 'EOF'
+#!/usr/bin/env python3
+"""
+BLE Device Scanner Helper for MeshCore Packet Capture Installer
+Uses the meshcore library to scan for MeshCore BLE devices
+"""
+
+import asyncio
+import sys
+import json
+from bleak import BleakScanner
+from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
+
+async def scan_ble_devices():
+    """Scan for MeshCore BLE devices using BleakScanner"""
+    try:
+        print("Scanning for MeshCore BLE devices...", flush=True)
+        
+        def match_meshcore_device(device: BLEDevice, advertisement_data: AdvertisementData):
+            """Filter to match MeshCore devices."""
+            if advertisement_data.local_name and advertisement_data.local_name.startswith("MeshCore"):
+                return True
+            # Also check for T1000 devices
+            if advertisement_data.local_name and "T1000" in advertisement_data.local_name:
+                return True
+            return False
+        
+        # Scan for devices
+        devices = await BleakScanner.discover(timeout=10.0, detection_callback=match_meshcore_device)
+        
+        if not devices:
+            print("No MeshCore BLE devices found", flush=True)
+            return []
+        
+        # Format devices for the installer
+        formatted_devices = []
+        for device in devices:
+            device_info = {
+                "address": device.address,
+                "name": device.name or "Unknown",
+                "rssi": None  # RSSI is not easily accessible in this context
+            }
+            formatted_devices.append(device_info)
+        
+        # Output as JSON for the installer to parse
+        print(json.dumps(formatted_devices), flush=True)
+        return formatted_devices
+        
+    except Exception as e:
+        print(f"Error scanning for BLE devices: {e}", file=sys.stderr, flush=True)
+        return []
+
+def main():
+    """Main function to run the BLE scan"""
+    try:
+        devices = asyncio.run(scan_ble_devices())
+        if not devices:
+            sys.exit(1)
+    except KeyboardInterrupt:
+        print("Scan interrupted by user", file=sys.stderr, flush=True)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+EOF
     
-    # Wait for scan to complete
-    sleep 10
-    
-    # Stop scanning
-    kill $scan_pid 2>/dev/null
-    bluetoothctl scan off > /dev/null 2>&1
-    
-    # Get discovered devices
-    local devices=()
-    while IFS= read -r line; do
-        if [[ $line =~ ^Device\ ([A-F0-9:]+)\ (.+)$ ]]; then
-            local mac="${BASH_REMATCH[1]}"
-            local name="${BASH_REMATCH[2]}"
-            if [[ "$name" == *"MeshCore"* ]] || [[ "$name" == *"meshcore"* ]] || [[ "$name" == *"T1000"* ]]; then
-                devices+=("$mac:$name")
-            fi
+    # Run the BLE scan helper
+    local scan_output
+    if scan_output=$(python3 "$temp_script" 2>/dev/null); then
+        # Parse JSON output
+        local devices_json="$scan_output"
+        local device_count=$(echo "$devices_json" | python3 -c "import sys, json; data=json.load(sys.stdin); print(len(data))" 2>/dev/null)
+        
+        if [ "$device_count" -eq 0 ]; then
+            print_warning "No MeshCore BLE devices found"
+            rm -f "$temp_script"
+            return 1
         fi
-    done < <(bluetoothctl devices)
-    
-    if [ ${#devices[@]} -eq 0 ]; then
-        print_warning "No MeshCore BLE devices found"
-        return 1
-    fi
-    
-    print_success "Found ${#devices[@]} MeshCore BLE device(s):"
-    echo ""
-    
-    local i=1
-    for device in "${devices[@]}"; do
-        local mac=$(echo "$device" | cut -d':' -f1)
-        local name=$(echo "$device" | cut -d':' -f2-)
-        echo "  $i) $name ($mac)"
-        ((i++))
-    done
-    
-    echo "  $i) Enter device manually"
-    echo ""
-    
-    while true; do
-        local choice=$(prompt_input "Select device [1-$i]" "1")
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $i ]; then
-            if [ "$choice" -eq $i ]; then
-                # Manual entry
-                local manual_mac=$(prompt_input "Enter BLE device MAC address" "")
-                local manual_name=$(prompt_input "Enter device name (optional)" "")
-                if [ -n "$manual_mac" ]; then
-                    SELECTED_BLE_DEVICE="$manual_mac"
-                    SELECTED_BLE_NAME="$manual_name"
+        
+        print_success "Found $device_count MeshCore BLE device(s):"
+        echo ""
+        
+        # Display devices
+        local i=1
+        local device_list=()
+        echo "$devices_json" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for i, device in enumerate(data, 1):
+    name = device.get('name', 'Unknown')
+    address = device.get('address', 'Unknown')
+    print(f'  {i}) {name} ({address})')
+    print(f'DEVICE_{i}={address}:{name}', file=sys.stderr)
+" 2>/tmp/device_list
+        
+        # Read device list
+        source /tmp/device_list 2>/dev/null
+        
+        echo "  $((device_count + 1))) Enter device manually"
+        echo ""
+        
+        while true; do
+            local choice=$(prompt_input "Select device [1-$((device_count + 1))]" "1")
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((device_count + 1)) ]; then
+                if [ "$choice" -eq $((device_count + 1)) ]; then
+                    # Manual entry
+                    local manual_mac=$(prompt_input "Enter BLE device MAC address" "")
+                    local manual_name=$(prompt_input "Enter device name (optional)" "")
+                    if [ -n "$manual_mac" ]; then
+                        SELECTED_BLE_DEVICE="$manual_mac"
+                        SELECTED_BLE_NAME="$manual_name"
+                        rm -f "$temp_script" /tmp/device_list
+                        return 0
+                    fi
+                else
+                    # Selected from list
+                    local selected_device_var="DEVICE_$choice"
+                    local selected_device="${!selected_device_var}"
+                    SELECTED_BLE_DEVICE=$(echo "$selected_device" | cut -d':' -f1)
+                    SELECTED_BLE_NAME=$(echo "$selected_device" | cut -d':' -f2-)
+                    rm -f "$temp_script" /tmp/device_list
                     return 0
                 fi
             else
-                # Selected from list
-                local selected_device="${devices[$((choice-1))]}"
-                SELECTED_BLE_DEVICE=$(echo "$selected_device" | cut -d':' -f1)
-                SELECTED_BLE_NAME=$(echo "$selected_device" | cut -d':' -f2-)
-                return 0
+                print_error "Invalid choice. Please enter a number between 1 and $((device_count + 1))"
             fi
-        else
-            print_error "Invalid choice. Please enter a number between 1 and $i"
-        fi
-    done
+        done
+    else
+        print_warning "Failed to scan for BLE devices using meshcore library"
+        rm -f "$temp_script" /tmp/device_list
+        return 1
+    fi
 }
 
 # Select connection type and configure device

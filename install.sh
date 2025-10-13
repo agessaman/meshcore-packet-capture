@@ -103,6 +103,161 @@ detect_serial_devices() {
     printf '%s\n' "${devices[@]}"
 }
 
+# Scan for BLE devices
+scan_ble_devices() {
+    echo ""
+    print_info "Scanning for BLE devices..."
+    echo "This may take 10-15 seconds..."
+    echo ""
+    
+    # Check if we have the necessary tools
+    if ! command -v bluetoothctl &> /dev/null; then
+        print_warning "bluetoothctl not found - cannot scan for BLE devices"
+        return 1
+    fi
+    
+    # Start scanning
+    bluetoothctl scan on > /dev/null 2>&1 &
+    local scan_pid=$!
+    
+    # Wait for scan to complete
+    sleep 10
+    
+    # Stop scanning
+    kill $scan_pid 2>/dev/null
+    bluetoothctl scan off > /dev/null 2>&1
+    
+    # Get discovered devices
+    local devices=()
+    while IFS= read -r line; do
+        if [[ $line =~ ^Device\ ([A-F0-9:]+)\ (.+)$ ]]; then
+            local mac="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            if [[ "$name" == *"MeshCore"* ]] || [[ "$name" == *"meshcore"* ]] || [[ "$name" == *"T1000"* ]]; then
+                devices+=("$mac:$name")
+            fi
+        fi
+    done < <(bluetoothctl devices)
+    
+    if [ ${#devices[@]} -eq 0 ]; then
+        print_warning "No MeshCore BLE devices found"
+        return 1
+    fi
+    
+    print_success "Found ${#devices[@]} MeshCore BLE device(s):"
+    echo ""
+    
+    local i=1
+    for device in "${devices[@]}"; do
+        local mac=$(echo "$device" | cut -d':' -f1)
+        local name=$(echo "$device" | cut -d':' -f2-)
+        echo "  $i) $name ($mac)"
+        ((i++))
+    done
+    
+    echo "  $i) Enter device manually"
+    echo ""
+    
+    while true; do
+        local choice=$(prompt_input "Select device [1-$i]" "1")
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $i ]; then
+            if [ "$choice" -eq $i ]; then
+                # Manual entry
+                local manual_mac=$(prompt_input "Enter BLE device MAC address" "")
+                local manual_name=$(prompt_input "Enter device name (optional)" "")
+                if [ -n "$manual_mac" ]; then
+                    SELECTED_BLE_DEVICE="$manual_mac"
+                    SELECTED_BLE_NAME="$manual_name"
+                    return 0
+                fi
+            else
+                # Selected from list
+                local selected_device="${devices[$((choice-1))]}"
+                SELECTED_BLE_DEVICE=$(echo "$selected_device" | cut -d':' -f1)
+                SELECTED_BLE_NAME=$(echo "$selected_device" | cut -d':' -f2-)
+                return 0
+            fi
+        else
+            print_error "Invalid choice. Please enter a number between 1 and $i"
+        fi
+    done
+}
+
+# Select connection type and configure device
+select_connection_type() {
+    echo ""
+    print_header "Device Connection Configuration"
+    echo ""
+    print_info "How would you like to connect to your MeshCore device?"
+    echo ""
+    echo "  1) Bluetooth Low Energy (BLE) - Recommended for T1000 devices"
+    echo "     • Wireless connection"
+    echo "     • Works with MeshCore T1000e and compatible devices"
+    echo ""
+    echo "  2) Serial Connection - For devices with USB/serial interface"
+    echo "     • Direct USB or serial cable connection"
+    echo "     • More reliable for continuous operation"
+    echo ""
+    echo "  3) TCP Connection - For network-connected devices (Coming Soon)"
+    echo "     • Connect over network"
+    echo "     • Not yet implemented"
+    echo ""
+    
+    while true; do
+        local choice=$(prompt_input "Select connection type [1-3]" "1")
+        case $choice in
+            1)
+                CONNECTION_TYPE="ble"
+                print_info "Selected: Bluetooth Low Energy (BLE)"
+                echo ""
+                
+                if prompt_yes_no "Would you like to scan for nearby BLE devices?" "y"; then
+                    if scan_ble_devices; then
+                        print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
+                    else
+                        # Fallback to manual entry
+                        SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
+                        SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
+                        if [ -n "$SELECTED_BLE_DEVICE" ]; then
+                            print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
+                        else
+                            print_error "No BLE device configured"
+                            continue
+                        fi
+                    fi
+                else
+                    # Manual entry without scanning
+                    SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
+                    SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
+                    if [ -n "$SELECTED_BLE_DEVICE" ]; then
+                        print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
+                    else
+                        print_error "No BLE device configured"
+                        continue
+                    fi
+                fi
+                break
+                ;;
+            2)
+                CONNECTION_TYPE="serial"
+                print_info "Selected: Serial Connection"
+                echo ""
+                select_serial_device
+                break
+                ;;
+            3)
+                print_warning "TCP connection is not yet implemented"
+                echo "Please select another connection type."
+                echo ""
+                continue
+                ;;
+            *)
+                print_error "Invalid choice. Please enter 1, 2, or 3"
+                ;;
+        esac
+    done
+}
+
 # Interactive device selection
 # Sets SELECTED_SERIAL_DEVICE variable
 select_serial_device() {
@@ -215,7 +370,7 @@ configure_mqtt_brokers() {
     # Ensure .env.local exists with update source info
     if [ ! -f "$ENV_LOCAL" ]; then
         # Interactive device selection
-        select_serial_device
+        select_connection_type
         
         cat > "$ENV_LOCAL" << EOF
 # MeshCore Packet Capture Configuration
@@ -226,8 +381,26 @@ PACKETCAPTURE_UPDATE_REPO=$REPO
 PACKETCAPTURE_UPDATE_BRANCH=$BRANCH
 
 # Connection Configuration
-PACKETCAPTURE_CONNECTION_TYPE=ble
-PACKETCAPTURE_SERIAL_PORTS=$SELECTED_SERIAL_DEVICE
+PACKETCAPTURE_CONNECTION_TYPE=$CONNECTION_TYPE
+EOF
+
+        # Add device-specific configuration
+        case $CONNECTION_TYPE in
+            "ble")
+                echo "PACKETCAPTURE_BLE_DEVICE=$SELECTED_BLE_DEVICE" >> "$ENV_LOCAL"
+                if [ -n "$SELECTED_BLE_NAME" ]; then
+                    echo "PACKETCAPTURE_BLE_NAME=$SELECTED_BLE_NAME" >> "$ENV_LOCAL"
+                fi
+                ;;
+            "serial")
+                echo "PACKETCAPTURE_SERIAL_PORTS=$SELECTED_SERIAL_DEVICE" >> "$ENV_LOCAL"
+                ;;
+            "tcp")
+                echo "# TCP configuration (not yet implemented)" >> "$ENV_LOCAL"
+                ;;
+        esac
+        
+        cat >> "$ENV_LOCAL" << EOF
 
 # Location Code
 PACKETCAPTURE_IATA=XXX

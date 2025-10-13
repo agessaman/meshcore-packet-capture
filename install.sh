@@ -286,6 +286,189 @@ for i, device in enumerate(data, 1):
     fi
 }
 
+# Check BLE pairing status and handle pairing if needed
+handle_ble_pairing() {
+    local device_address="$1"
+    local device_name="$2"
+    
+    echo ""
+    print_info "Checking BLE pairing status for $device_name ($device_address)..."
+    
+    # Create a temporary script to check pairing status and handle pairing
+    local temp_script="/tmp/ble_pairing_helper.py"
+    cat > "$temp_script" << EOF
+#!/usr/bin/env python3
+"""
+BLE Pairing Helper for MeshCore Packet Capture Installer
+Checks pairing status and handles PIN-based pairing
+"""
+
+import asyncio
+import sys
+import json
+from meshcore import MeshCore
+
+async def check_pairing_and_connect(address, name, pin=None):
+    """Check if device is paired and handle pairing if needed"""
+    try:
+        print(f"Checking pairing status for {name} ({address})...", file=sys.stderr, flush=True)
+        
+        # Try to connect without PIN first
+        try:
+            meshcore = await MeshCore.create_ble(address=address, debug=False)
+            print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
+            await meshcore.disconnect()
+            print(json.dumps({"status": "paired", "message": "Device is already paired"}), flush=True)
+            return True
+        except Exception as e:
+            error_msg = str(e)
+            if "Not paired" in error_msg or "NotPermitted" in error_msg:
+                print("Device is not paired, pairing required", file=sys.stderr, flush=True)
+                print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
+                return False
+            else:
+                print(f"Connection error: {error_msg}", file=sys.stderr, flush=True)
+                print(json.dumps({"status": "error", "message": error_msg}), flush=True)
+                return False
+                
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
+        print(json.dumps({"status": "error", "message": str(e)}), flush=True)
+        return False
+
+async def attempt_pairing(address, name, pin):
+    """Attempt to pair with the device using the provided PIN"""
+    try:
+        print(f"Attempting to pair with {name} using PIN...", file=sys.stderr, flush=True)
+        
+        meshcore = await MeshCore.create_ble(address=address, pin=pin, debug=False)
+        print("Pairing successful!", file=sys.stderr, flush=True)
+        await meshcore.disconnect()
+        print(json.dumps({"status": "paired", "message": "Pairing successful"}), flush=True)
+        return True
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Pairing failed: {error_msg}", file=sys.stderr, flush=True)
+        print(json.dumps({"status": "pairing_failed", "message": error_msg}), flush=True)
+        return False
+
+def main():
+    """Main function to handle BLE pairing"""
+    if len(sys.argv) < 3:
+        print(json.dumps({"status": "error", "message": "Usage: script.py <address> <name> [pin]"}))
+        sys.exit(1)
+    
+    address = sys.argv[1]
+    name = sys.argv[2]
+    pin = sys.argv[3] if len(sys.argv) > 3 else None
+    
+    try:
+        if pin:
+            # Attempt pairing with PIN
+            success = asyncio.run(attempt_pairing(address, name, pin))
+        else:
+            # Check pairing status
+            success = asyncio.run(check_pairing_and_connect(address, name))
+        
+        if not success:
+            sys.exit(1)
+            
+    except KeyboardInterrupt:
+        print("Operation interrupted by user", file=sys.stderr, flush=True)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+EOF
+    
+    # Check pairing status first
+    local pairing_output
+    if pairing_output=$(python3 "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
+        local pairing_status=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
+        
+        if [ "$pairing_status" = "paired" ]; then
+            print_success "Device is already paired and ready to use"
+            rm -f "$temp_script" /tmp/ble_pairing_error
+            return 0
+        elif [ "$pairing_status" = "not_paired" ]; then
+            print_info "Device requires pairing. You'll need to enter the PIN displayed on your MeshCore device."
+            echo ""
+            
+            # Get PIN from user
+            local pin
+            while true; do
+                pin=$(prompt_input "Enter the 6-digit PIN displayed on your MeshCore device" "")
+                if [[ "$pin" =~ ^[0-9]{6}$ ]]; then
+                    break
+                else
+                    print_error "Please enter a 6-digit PIN (numbers only)"
+                fi
+            done
+            
+            # Attempt pairing with PIN
+            echo ""
+            print_info "Attempting to pair with device..."
+            if pairing_output=$(python3 "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error); then
+                local pairing_result=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
+                
+                if [ "$pairing_result" = "paired" ]; then
+                    print_success "BLE pairing successful! Device is now ready to use."
+                    rm -f "$temp_script" /tmp/ble_pairing_error
+                    return 0
+                else
+                    print_error "BLE pairing failed"
+                    if [ -f /tmp/ble_pairing_error ]; then
+                        local error_msg=$(cat /tmp/ble_pairing_error)
+                        if [ -n "$error_msg" ]; then
+                            print_info "Error details: $error_msg"
+                        fi
+                        rm -f /tmp/ble_pairing_error
+                    fi
+                    rm -f "$temp_script"
+                    return 1
+                fi
+            else
+                print_error "Failed to attempt BLE pairing"
+                if [ -f /tmp/ble_pairing_error ]; then
+                    local error_msg=$(cat /tmp/ble_pairing_error)
+                    if [ -n "$error_msg" ]; then
+                        print_info "Error details: $error_msg"
+                    fi
+                    rm -f /tmp/ble_pairing_error
+                fi
+                rm -f "$temp_script"
+                return 1
+            fi
+        else
+            print_error "Failed to check pairing status"
+            if [ -f /tmp/ble_pairing_error ]; then
+                local error_msg=$(cat /tmp/ble_pairing_error)
+                if [ -n "$error_msg" ]; then
+                    print_info "Error details: $error_msg"
+                fi
+                rm -f /tmp/ble_pairing_error
+            fi
+            rm -f "$temp_script"
+            return 1
+        fi
+    else
+        print_error "Failed to check BLE pairing status"
+        if [ -f /tmp/ble_pairing_error ]; then
+            local error_msg=$(cat /tmp/ble_pairing_error)
+            if [ -n "$error_msg" ]; then
+                print_info "Error details: $error_msg"
+            fi
+            rm -f /tmp/ble_pairing_error
+        fi
+        rm -f "$temp_script"
+        return 1
+    fi
+}
+
 # Select connection type and configure device
 select_connection_type() {
     echo ""
@@ -317,8 +500,14 @@ select_connection_type() {
                 if prompt_yes_no "Would you like to scan for nearby BLE devices?" "y"; then
                     while true; do
                         if scan_ble_devices; then
-                            print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
-                            break
+                            # Device selected, now handle pairing
+                            if handle_ble_pairing "$SELECTED_BLE_DEVICE" "$SELECTED_BLE_NAME"; then
+                                print_success "BLE device configured and paired: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
+                                break
+                            else
+                                print_error "BLE pairing failed. Please try selecting a different device or check your device."
+                                continue
+                            fi
                         elif [ $? -eq 2 ]; then
                             # Rescan requested, continue the loop
                             continue
@@ -328,8 +517,14 @@ select_connection_type() {
                             SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
                             SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
                             if [ -n "$SELECTED_BLE_DEVICE" ]; then
-                                print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
-                                break
+                                # Handle pairing for manually entered device
+                                if handle_ble_pairing "$SELECTED_BLE_DEVICE" "$SELECTED_BLE_NAME"; then
+                                    print_success "BLE device configured and paired: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
+                                    break
+                                else
+                                    print_error "BLE pairing failed. Please check your device and try again."
+                                    continue
+                                fi
                             else
                                 print_error "No BLE device configured"
                                 continue
@@ -341,7 +536,13 @@ select_connection_type() {
                     SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
                     SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
                     if [ -n "$SELECTED_BLE_DEVICE" ]; then
-                        print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
+                        # Handle pairing for manually entered device
+                        if handle_ble_pairing "$SELECTED_BLE_DEVICE" "$SELECTED_BLE_NAME"; then
+                            print_success "BLE device configured and paired: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
+                        else
+                            print_error "BLE pairing failed. Please check your device and try again."
+                            continue
+                        fi
                     else
                         print_error "No BLE device configured"
                         continue

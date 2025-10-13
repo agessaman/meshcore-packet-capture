@@ -27,6 +27,10 @@ async def check_pairing_and_connect(address, name, pin=None):
                 print("Device is not paired, pairing required", file=sys.stderr, flush=True)
                 print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
                 return False
+            elif "No MeshCore device found" in error_msg or "Failed to connect" in error_msg:
+                print("Device not found or not in range, may need to be in pairing mode", file=sys.stderr, flush=True)
+                print(json.dumps({"status": "not_found", "message": "Device not found or not in range"}), flush=True)
+                return False
             else:
                 print(f"Connection error: {error_msg}", file=sys.stderr, flush=True)
                 print(json.dumps({"status": "error", "message": error_msg}), flush=True)

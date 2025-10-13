@@ -230,7 +230,7 @@ for i, device in enumerate(data, 1):
     name = device.get('name', 'Unknown')
     address = device.get('address', 'Unknown')
     print(f'  {i}) {name} ({address})')
-    print(f'DEVICE_{i}={address}:{name}', file=sys.stderr)
+    print(f'DEVICE_{i}={address}|{name}', file=sys.stderr)
 " 2>/tmp/device_list
         
         # Read device list
@@ -263,8 +263,8 @@ for i, device in enumerate(data, 1):
                     # Selected from list
                     local selected_device_var="DEVICE_$choice"
                     local selected_device="${!selected_device_var}"
-                    SELECTED_BLE_DEVICE=$(echo "$selected_device" | cut -d':' -f1)
-                    SELECTED_BLE_NAME=$(echo "$selected_device" | cut -d':' -f2-)
+                    SELECTED_BLE_DEVICE=$(echo "$selected_device" | cut -d'|' -f1)
+                    SELECTED_BLE_NAME=$(echo "$selected_device" | cut -d'|' -f2-)
                     rm -f "$temp_script" /tmp/device_list
                     return 0
                 fi
@@ -325,6 +325,10 @@ async def check_pairing_and_connect(address, name, pin=None):
             if "Not paired" in error_msg or "NotPermitted" in error_msg:
                 print("Device is not paired, pairing required", file=sys.stderr, flush=True)
                 print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
+                return False
+            elif "No MeshCore device found" in error_msg or "Failed to connect" in error_msg:
+                print("Device not found or not in range, may need to be in pairing mode", file=sys.stderr, flush=True)
+                print(json.dumps({"status": "not_found", "message": "Device not found or not in range"}), flush=True)
                 return False
             else:
                 print(f"Connection error: {error_msg}", file=sys.stderr, flush=True)
@@ -394,6 +398,14 @@ EOF
             print_success "Device is already paired and ready to use"
             rm -f "$temp_script" /tmp/ble_pairing_error
             return 0
+        elif [ "$pairing_status" = "not_found" ]; then
+            print_warning "Device not found or not in range"
+            print_info "Make sure your MeshCore device is:"
+            print_info "  • Powered on and within range"
+            print_info "  • In pairing mode (if not already paired)"
+            print_info "  • Not connected to another device"
+            rm -f "$temp_script" /tmp/ble_pairing_error
+            return 1
         elif [ "$pairing_status" = "not_paired" ]; then
             print_info "Device requires pairing. You'll need to enter the PIN displayed on your MeshCore device."
             echo ""

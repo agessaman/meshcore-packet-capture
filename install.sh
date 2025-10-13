@@ -237,12 +237,19 @@ for i, device in enumerate(data, 1):
         source /tmp/device_list 2>/dev/null
         
         echo "  $((device_count + 1))) Enter device manually"
+        echo "  0) Scan again"
         echo ""
         
         while true; do
-            local choice=$(prompt_input "Select device [1-$((device_count + 1))]" "1")
-            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $((device_count + 1)) ]; then
-                if [ "$choice" -eq $((device_count + 1)) ]; then
+            local choice=$(prompt_input "Select device [0-$((device_count + 1))]" "1")
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 0 ] && [ "$choice" -le $((device_count + 1)) ]; then
+                if [ "$choice" -eq 0 ]; then
+                    # Rescan for devices
+                    echo ""
+                    print_info "Rescanning for BLE devices..."
+                    rm -f "$temp_script" /tmp/device_list
+                    return 2  # Special return code to indicate rescan requested
+                elif [ "$choice" -eq $((device_count + 1)) ]; then
                     # Manual entry
                     local manual_mac=$(prompt_input "Enter BLE device MAC address" "")
                     local manual_name=$(prompt_input "Enter device name (optional)" "")
@@ -262,7 +269,7 @@ for i, device in enumerate(data, 1):
                     return 0
                 fi
             else
-                print_error "Invalid choice. Please enter a number between 1 and $((device_count + 1))"
+                print_error "Invalid choice. Please enter a number between 0 and $((device_count + 1))"
             fi
         done
     else
@@ -308,20 +315,27 @@ select_connection_type() {
                 echo ""
                 
                 if prompt_yes_no "Would you like to scan for nearby BLE devices?" "y"; then
-                    if scan_ble_devices; then
-                        print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
-                    else
-                        # Fallback to manual entry
-                        print_info "BLE scanning failed or no devices found. Please enter device details manually."
-                        SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
-                        SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
-                        if [ -n "$SELECTED_BLE_DEVICE" ]; then
+                    while true; do
+                        if scan_ble_devices; then
                             print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
-                        else
-                            print_error "No BLE device configured"
+                            break
+                        elif [ $? -eq 2 ]; then
+                            # Rescan requested, continue the loop
                             continue
+                        else
+                            # Fallback to manual entry
+                            print_info "BLE scanning failed or no devices found. Please enter device details manually."
+                            SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
+                            SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
+                            if [ -n "$SELECTED_BLE_DEVICE" ]; then
+                                print_success "BLE device configured: $SELECTED_BLE_NAME ($SELECTED_BLE_DEVICE)"
+                                break
+                            else
+                                print_error "No BLE device configured"
+                                continue
+                            fi
                         fi
-                    fi
+                    done
                 else
                     # Manual entry without scanning
                     SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")

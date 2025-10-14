@@ -273,9 +273,8 @@ async def attempt_pairing_linux(address, name, pin):
             }), flush=True)
             return False
         
-        # Trust the device
-        child.sendline(f'trust {address}')
-        child.expect('trust succeeded')
+        # Note: We don't set 'trust' to avoid automatic reconnection
+        # The device will be paired but won't automatically reconnect
         
         child.sendline('quit')
         child.close()

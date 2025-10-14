@@ -305,12 +305,13 @@ handle_ble_pairing() {
     if command -v bluetoothctl &> /dev/null; then
         print_info "Ensuring device is disconnected before pairing check..."
         bluetoothctl disconnect "$device_address" 2>/dev/null || true
-        sleep 2
+        print_info "Waiting for device to become available..."
+        sleep 5  # Increased wait time for device to become available
     fi
     
     # Check pairing status first (with timeout to prevent hanging)
     local pairing_output
-    if pairing_output=$(timeout 30 python3 "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
+    if pairing_output=$(timeout 45 python3 "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
         local pairing_status=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
         
         if [ "$pairing_status" = "paired" ]; then

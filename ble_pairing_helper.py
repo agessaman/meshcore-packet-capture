@@ -21,9 +21,26 @@ async def check_pairing_and_connect(address, name, pin=None):
     try:
         print(f"Checking pairing status for {name} ({address})...", file=sys.stderr, flush=True)
         
+        # Check if device is available/visible first
+        print(f"Checking if device {address} is available...", file=sys.stderr, flush=True)
+        
+        # Quick scan to verify device is still visible
+        try:
+            from bleak import BleakScanner
+            print("Scanning for device availability...", file=sys.stderr, flush=True)
+            devices = await BleakScanner.discover(timeout=5.0)
+            device_found = any(device.address.upper() == address.upper() for device in devices)
+            if device_found:
+                print(f"Device {address} is visible and available", file=sys.stderr, flush=True)
+            else:
+                print(f"Device {address} not found in scan - may be busy or out of range", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"Could not scan for device availability: {e}", file=sys.stderr, flush=True)
+        
         # Try to connect without PIN first (with timeout)
         try:
             print(f"Attempting to connect to {name} ({address}) without PIN...", file=sys.stderr, flush=True)
+            print(f"Connection timeout set to 25 seconds...", file=sys.stderr, flush=True)
             
             # Create the connection with a reasonable timeout
             meshcore = await asyncio.wait_for(

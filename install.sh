@@ -618,6 +618,70 @@ prompt_input() {
     fi
 }
 
+# Configure MQTT topics for a broker
+configure_mqtt_topics() {
+    local BROKER_NUM=$1
+    ENV_LOCAL="$INSTALL_DIR/.env.local"
+    
+    echo ""
+    print_header "MQTT Topic Configuration for Broker $BROKER_NUM"
+    echo ""
+    print_info "MQTT topics define where different types of data are published."
+    print_info "You can use template variables: {IATA}, {IATA_lower}, {PUBLIC_KEY}"
+    echo ""
+    
+    # Topic options
+    echo "Choose topic configuration:"
+    echo "  1) Default pattern (meshcore/{IATA}/{PUBLIC_KEY}/status, meshcore/{IATA}/{PUBLIC_KEY}/packets)"
+    echo "  2) Classic pattern (meshcore/status, meshcore/packets)"
+    echo "  3) Custom topics (enter your own)"
+    echo ""
+    
+    local topic_choice=$(prompt_input "Select topic configuration [1-3]" "1")
+    
+    case "$topic_choice" in
+        1)
+            # Default pattern (IATA + PUBLIC_KEY)
+            echo "" >> "$ENV_LOCAL"
+            echo "# MQTT Topics for Broker $BROKER_NUM - Default Pattern" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets" >> "$ENV_LOCAL"
+            print_success "Default pattern topics configured"
+            ;;
+        2)
+            # Classic pattern (simple meshcore topics)
+            echo "" >> "$ENV_LOCAL"
+            echo "# MQTT Topics for Broker $BROKER_NUM - Classic Pattern" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_STATUS=meshcore/status" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_PACKETS=meshcore/packets" >> "$ENV_LOCAL"
+            print_success "Classic pattern topics configured"
+            ;;
+        3)
+            # Custom topics
+            echo ""
+            print_info "Enter custom topic paths (use {IATA}, {IATA_lower}, {PUBLIC_KEY} for templates)"
+            print_info "You can also manually edit the .env.local file after installation to customize topics"
+            echo ""
+            
+            local status_topic=$(prompt_input "Status topic" "meshcore/{IATA}/{PUBLIC_KEY}/status")
+            local packets_topic=$(prompt_input "Packets topic" "meshcore/{IATA}/{PUBLIC_KEY}/packets")
+            
+            echo "" >> "$ENV_LOCAL"
+            echo "# MQTT Topics for Broker $BROKER_NUM - Custom" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_STATUS=$status_topic" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_PACKETS=$packets_topic" >> "$ENV_LOCAL"
+            print_success "Custom topics configured"
+            ;;
+        *)
+            print_error "Invalid choice, using default pattern"
+            echo "" >> "$ENV_LOCAL"
+            echo "# MQTT Topics for Broker $BROKER_NUM - Default Pattern" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets" >> "$ENV_LOCAL"
+            ;;
+    esac
+}
+
 # Configure MQTT brokers only (skip device configuration)
 configure_mqtt_brokers_only() {
     ENV_LOCAL="$INSTALL_DIR/.env.local"
@@ -679,6 +743,9 @@ PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN=true
 PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt-us-v1.letsmesh.net
 EOF
             print_success "LetsMesh Packet Analyzer enabled"
+            
+            # Configure topics for LetsMesh
+            configure_mqtt_topics 1
             
             if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
                 configure_additional_brokers
@@ -813,6 +880,9 @@ PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt-us-v1.letsmesh.net
 EOF
             print_success "LetsMesh Packet Analyzer enabled"
             
+            # Configure topics for LetsMesh
+            configure_mqtt_topics 1
+            
             if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
                 configure_additional_brokers
             fi
@@ -929,6 +999,9 @@ configure_custom_broker() {
     fi
     
     print_success "Broker $BROKER_NUM configured"
+    
+    # Configure topics for this broker
+    configure_mqtt_topics $BROKER_NUM
 }
 
 # Check for old installations

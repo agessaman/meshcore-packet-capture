@@ -18,12 +18,11 @@ async def scan_ble_devices():
         print("Scanning for MeshCore BLE devices...", file=sys.stderr, flush=True)
         
         def match_meshcore_device(device: BLEDevice, advertisement_data: AdvertisementData):
-            """Filter to match MeshCore devices."""
-            if advertisement_data.local_name and advertisement_data.local_name.startswith("MeshCore"):
-                return True
-            # Also check for T1000 devices
-            if advertisement_data.local_name and "T1000" in advertisement_data.local_name:
-                return True
+            """Filter to match MeshCore devices with names starting with 'Meshcore-' or 'MeshCore-'."""
+            if advertisement_data.local_name:
+                name = advertisement_data.local_name
+                if name.startswith("Meshcore-") or name.startswith("MeshCore-"):
+                    return True
             return False
         
         # Scan for devices

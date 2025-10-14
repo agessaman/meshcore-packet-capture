@@ -120,6 +120,7 @@ async def attempt_pairing_linux(address, name, pin):
     """Attempt to pair with the device using bluetoothctl on Linux"""
     try:
         print(f"Attempting to pair with {name} using PIN {pin} on Linux...", file=sys.stderr, flush=True)
+        print(f"Make sure {name} is in pairing mode and displaying the PIN code.", file=sys.stderr, flush=True)
         
         # Remove any existing pairing
         subprocess.run(['bluetoothctl', 'remove', address], 
@@ -139,7 +140,29 @@ async def attempt_pairing_linux(address, name, pin):
         child.expect('Agent registered')
         child.sendline('default-agent')
         
+        # First, try to scan and discover the device
+        print("Scanning for device...", file=sys.stderr, flush=True)
+        child.sendline('scan on')
+        child.expect('Discovery started')
+        
+        # Wait a bit for discovery
+        await asyncio.sleep(3)
+        
+        # Check if device is available
+        child.sendline(f'info {address}')
+        try:
+            child.expect(['Device', 'not available'], timeout=5)
+            if 'not available' in child.before + child.after:
+                print("Device not available, trying to connect anyway...", file=sys.stderr, flush=True)
+        except pexpect.TIMEOUT:
+            print("Device info check timed out, proceeding with pairing...", file=sys.stderr, flush=True)
+        
+        # Stop scanning
+        child.sendline('scan off')
+        child.expect('Discovery stopped')
+        
         # Initiate pairing
+        print(f"Initiating pairing with {address}...", file=sys.stderr, flush=True)
         child.sendline(f'pair {address}')
         
         # Wait for PIN request or confirmation
@@ -148,28 +171,69 @@ async def attempt_pairing_linux(address, name, pin):
             r'Confirm passkey.*\(yes/no\)',
             'Pairing successful',
             'Failed to pair',
+            'not available',
+            'not found',
             pexpect.TIMEOUT
         ])
         
         if index == 0:  # PIN entry
-            print(f"Entering PIN {pin}...", file=sys.stderr, flush=True)
+            print(f"Device is requesting PIN entry. Entering PIN {pin}...", file=sys.stderr, flush=True)
             child.sendline(pin)
-            child.expect(['Pairing successful', 'Failed to pair'], timeout=10)
+            # Wait for result after entering PIN
+            result_index = child.expect(['Pairing successful', 'Failed to pair', 'Authentication Failed'], timeout=15)
+            if result_index == 0:
+                print("PIN accepted, pairing successful!", file=sys.stderr, flush=True)
+            elif result_index == 1:
+                print("Pairing failed after PIN entry", file=sys.stderr, flush=True)
+                child.close()
+                print(json.dumps({
+                    "status": "pairing_failed",
+                    "message": "Pairing failed after PIN entry - PIN may be incorrect"
+                }), flush=True)
+                return False
+            else:  # Authentication Failed
+                print("Authentication failed - PIN was incorrect", file=sys.stderr, flush=True)
+                child.close()
+                print(json.dumps({
+                    "status": "pairing_failed",
+                    "message": "Authentication failed - PIN was incorrect"
+                }), flush=True)
+                return False
             
         elif index == 1:  # Passkey confirmation
-            print(f"Confirming passkey...", file=sys.stderr, flush=True)
+            print(f"Device is requesting passkey confirmation. Confirming...", file=sys.stderr, flush=True)
             child.sendline('yes')
-            child.expect(['Pairing successful', 'Failed to pair'], timeout=10)
+            result_index = child.expect(['Pairing successful', 'Failed to pair'], timeout=10)
+            if result_index == 0:
+                print("Passkey confirmed, pairing successful!", file=sys.stderr, flush=True)
+            else:
+                print("Pairing failed after passkey confirmation", file=sys.stderr, flush=True)
+                child.close()
+                print(json.dumps({
+                    "status": "pairing_failed",
+                    "message": "Pairing failed after passkey confirmation"
+                }), flush=True)
+                return False
             
         elif index == 2:  # Already successful
+            print("Pairing was already successful!", file=sys.stderr, flush=True)
             pass
             
-        else:  # Failed or timeout
-            print("Pairing failed or timed out", file=sys.stderr, flush=True)
+        elif index in [3, 4, 5]:  # Failed, not available, or not found
+            print(f"Device pairing failed: {child.after}", file=sys.stderr, flush=True)
             child.close()
             print(json.dumps({
                 "status": "pairing_failed",
-                "message": "Pairing failed via bluetoothctl"
+                "message": f"Device not available or not in pairing mode. Make sure {name} is in pairing mode and nearby."
+            }), flush=True)
+            return False
+            
+        else:  # Timeout
+            print("Pairing timed out", file=sys.stderr, flush=True)
+            child.close()
+            print(json.dumps({
+                "status": "pairing_failed",
+                "message": "Pairing timed out - device may not be in pairing mode"
             }), flush=True)
             return False
         

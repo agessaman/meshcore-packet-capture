@@ -17,7 +17,10 @@ async def test_ble_connection(address, name):
         meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=True), timeout=10.0)
         print("✅ Connection successful!")
         
-        print("2. Testing device communication via appstart command...")
+        print("2. Waiting for device to stabilize...")
+        await asyncio.sleep(2)
+        
+        print("3. Testing device communication via appstart command...")
         try:
             result = await meshcore.commands.send_appstart()
             if result.payload:
@@ -31,7 +34,7 @@ async def test_ble_connection(address, name):
             print(f"⚠️  appstart command failed: {info_e}")
             print("✅ Device is connected but command failed")
         
-        print("3. Disconnecting...")
+        print("4. Disconnecting...")
         await meshcore.disconnect()
         print("✅ Disconnected successfully")
         

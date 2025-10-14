@@ -21,6 +21,10 @@ async def check_pairing_and_connect(address, name, pin=None):
             meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=True), timeout=10.0)
             print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
             
+            # Wait a moment for the device to stabilize after connection
+            print("Waiting for device to stabilize...", file=sys.stderr, flush=True)
+            await asyncio.sleep(2)
+            
             # Verify device communication by sending appstart command
             try:
                 print("Verifying device communication by sending appstart command...", file=sys.stderr, flush=True)

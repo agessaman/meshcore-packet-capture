@@ -47,10 +47,25 @@ async def attempt_pairing(address, name, pin):
         print(f"Attempting to pair with {name} using PIN...", file=sys.stderr, flush=True)
         
         meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, pin=pin, debug=False), timeout=60.0)
-        print("Pairing successful!", file=sys.stderr, flush=True)
+        print("Pairing successful! Verifying connection...", file=sys.stderr, flush=True)
         await meshcore.disconnect()
-        print(json.dumps({"status": "paired", "message": "Pairing successful"}), flush=True)
-        return True
+        
+        # Wait a moment for the connection to fully close
+        await asyncio.sleep(2)
+        
+        # Attempt to reconnect to verify pairing was successful
+        print("Verifying pairing by attempting reconnection...", file=sys.stderr, flush=True)
+        try:
+            meshcore_verify = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=False), timeout=30.0)
+            await meshcore_verify.disconnect()
+            print("Connection verification successful!", file=sys.stderr, flush=True)
+            print(json.dumps({"status": "paired", "message": "Pairing and connection verification successful"}), flush=True)
+            return True
+        except Exception as verify_e:
+            print(f"Connection verification failed: {verify_e}", file=sys.stderr, flush=True)
+            print("Pairing may have succeeded but device is not immediately available", file=sys.stderr, flush=True)
+            print(json.dumps({"status": "paired", "message": "Pairing successful but connection verification failed - device may need time to become available"}), flush=True)
+            return True  # Still consider pairing successful
         
     except Exception as e:
         error_msg = str(e)

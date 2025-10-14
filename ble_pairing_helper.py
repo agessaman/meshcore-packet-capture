@@ -17,20 +17,34 @@ async def check_pairing_and_connect(address, name, pin=None):
         # Try to connect without PIN first (with timeout)
         try:
             print(f"Attempting to connect to {name} ({address}) without PIN...", file=sys.stderr, flush=True)
-            meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=True), timeout=30.0)
+            # Try the address as-is first (could be MAC or UUID format)
+            try:
+                meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=True), timeout=10.0)
+            except Exception as conn_e:
+                # If connection fails, try converting MAC to UUID format (for Linux compatibility)
+                if ":" in address and len(address) == 17:  # MAC address format
+                    print(f"MAC address format detected, trying UUID conversion...", file=sys.stderr, flush=True)
+                    # Convert MAC address to UUID format for Linux compatibility
+                    mac_clean = address.replace(":", "").upper()
+                    uuid_address = f"{mac_clean[0:8]}-{mac_clean[8:12]}-{mac_clean[12:16]}-{mac_clean[16:20]}-{mac_clean[20:24]}"
+                    print(f"Converted MAC {address} to UUID {uuid_address}", file=sys.stderr, flush=True)
+                    meshcore = await asyncio.wait_for(MeshCore.create_ble(address=uuid_address, debug=True), timeout=10.0)
+                else:
+                    # Re-raise the original exception if it's not a MAC address format issue
+                    raise conn_e
             print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
             
-            # Try to fetch some basic device information to verify communication
+            # Verify device communication by checking self_info
             try:
-                print("Verifying device communication by fetching device info...", file=sys.stderr, flush=True)
-                # Try to get device info - this will fail if device is not properly connected
-                device_info = await meshcore.get_device_info()
+                print("Verifying device communication by checking self_info...", file=sys.stderr, flush=True)
+                device_name = meshcore.self_info.get('name', 'Unknown')
+                print(f"Device name from self_info: {device_name}", file=sys.stderr, flush=True)
                 print("Device communication verified successfully", file=sys.stderr, flush=True)
                 await meshcore.disconnect()
                 print(json.dumps({"status": "paired", "message": "Device is already paired and communicating properly"}), flush=True)
                 return True
             except Exception as info_e:
-                print(f"Device connected but communication test failed: {info_e}", file=sys.stderr, flush=True)
+                print(f"Device connected but self_info check failed: {info_e}", file=sys.stderr, flush=True)
                 print("Device may be connected but not fully ready", file=sys.stderr, flush=True)
                 await meshcore.disconnect()
                 print(json.dumps({"status": "paired", "message": "Device is paired but may need time to be fully ready"}), flush=True)
@@ -67,7 +81,22 @@ async def attempt_pairing(address, name, pin):
     try:
         print(f"Attempting to pair with {name} using PIN...", file=sys.stderr, flush=True)
         
-        meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, pin=pin, debug=False), timeout=60.0)
+        try:
+            meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, pin=pin, debug=False), timeout=60.0)
+        except Exception as conn_e:
+            # If connection fails, try converting MAC to UUID format (for Linux compatibility)
+            if ":" in address and len(address) == 17:  # MAC address format
+                print(f"MAC address format detected for pairing, trying UUID conversion...", file=sys.stderr, flush=True)
+                # Convert MAC address to UUID format for Linux compatibility
+                mac_clean = address.replace(":", "").upper()
+                # Pad MAC address to create a proper UUID format
+                padded_mac = mac_clean + "0000000000000000000000000000"  # Pad to 32 chars
+                uuid_address = f"{padded_mac[0:8]}-{padded_mac[8:12]}-{padded_mac[12:16]}-{padded_mac[16:20]}-{padded_mac[20:32]}"
+                print(f"Converted MAC {address} to UUID {uuid_address}", file=sys.stderr, flush=True)
+                meshcore = await asyncio.wait_for(MeshCore.create_ble(address=uuid_address, pin=pin, debug=False), timeout=60.0)
+            else:
+                # Re-raise the original exception if it's not a MAC address format issue
+                raise conn_e
         print("Pairing successful! Verifying connection...", file=sys.stderr, flush=True)
         await meshcore.disconnect()
         
@@ -77,7 +106,9 @@ async def attempt_pairing(address, name, pin):
         # Attempt to reconnect to verify pairing was successful
         print("Verifying pairing by attempting reconnection...", file=sys.stderr, flush=True)
         try:
-            meshcore_verify = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=False), timeout=30.0)
+            # Use the same address format that worked for pairing
+            verify_address = uuid_address if 'uuid_address' in locals() else address
+            meshcore_verify = await asyncio.wait_for(MeshCore.create_ble(address=verify_address, debug=False), timeout=30.0)
             await meshcore_verify.disconnect()
             print("Connection verification successful!", file=sys.stderr, flush=True)
             print(json.dumps({"status": "paired", "message": "Pairing and connection verification successful"}), flush=True)

@@ -21,29 +21,11 @@ async def check_pairing_and_connect(address, name, pin=None):
             meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=True), timeout=10.0)
             print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
             
-            # Wait a moment for the device to stabilize and receive self_info
-            print("Waiting for device to stabilize and receive device information...", file=sys.stderr, flush=True)
-            await asyncio.sleep(3)
-            
-            # Verify device communication by checking if self_info is available
-            try:
-                print("Verifying device communication by checking self_info...", file=sys.stderr, flush=True)
-                if hasattr(meshcore, 'self_info') and meshcore.self_info:
-                    device_name = meshcore.self_info.get('name', 'Unknown')
-                    print(f"Device name from self_info: {device_name}", file=sys.stderr, flush=True)
-                    print("Device communication verified successfully", file=sys.stderr, flush=True)
-                else:
-                    print("Device connected but self_info not yet available", file=sys.stderr, flush=True)
-                    print("Device is paired and ready (self_info will be available during normal operation)", file=sys.stderr, flush=True)
-                await meshcore.disconnect()
-                print(json.dumps({"status": "paired", "message": "Device is already paired and communicating properly"}), flush=True)
-                return True
-            except Exception as info_e:
-                print(f"Device connected but self_info check failed: {info_e}", file=sys.stderr, flush=True)
-                print("Device is paired and ready (connection successful)", file=sys.stderr, flush=True)
-                await meshcore.disconnect()
-                print(json.dumps({"status": "paired", "message": "Device is paired and ready to use"}), flush=True)
-                return True  # Still consider it paired since connection worked
+            # Connection successful - device is paired and ready
+            print("Connection verification successful - device is paired and ready to use", file=sys.stderr, flush=True)
+            await meshcore.disconnect()
+            print(json.dumps({"status": "paired", "message": "Device is already paired and ready to use"}), flush=True)
+            return True
         except Exception as e:
             error_msg = str(e)
             print(f"Connection attempt failed with error: {error_msg}", file=sys.stderr, flush=True)

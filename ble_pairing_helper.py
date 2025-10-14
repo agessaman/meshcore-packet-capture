@@ -18,9 +18,22 @@ async def check_pairing_and_connect(address, name, pin=None):
         try:
             meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=False), timeout=30.0)
             print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
-            await meshcore.disconnect()
-            print(json.dumps({"status": "paired", "message": "Device is already paired"}), flush=True)
-            return True
+            
+            # Try to fetch some basic device information to verify communication
+            try:
+                print("Verifying device communication by fetching device info...", file=sys.stderr, flush=True)
+                # Try to get device info - this will fail if device is not properly connected
+                device_info = await meshcore.get_device_info()
+                print("Device communication verified successfully", file=sys.stderr, flush=True)
+                await meshcore.disconnect()
+                print(json.dumps({"status": "paired", "message": "Device is already paired and communicating properly"}), flush=True)
+                return True
+            except Exception as info_e:
+                print(f"Device connected but communication test failed: {info_e}", file=sys.stderr, flush=True)
+                print("Device may be connected but not fully ready", file=sys.stderr, flush=True)
+                await meshcore.disconnect()
+                print(json.dumps({"status": "paired", "message": "Device is paired but may need time to be fully ready"}), flush=True)
+                return True  # Still consider it paired since connection worked
         except Exception as e:
             error_msg = str(e)
             if "Not paired" in error_msg or "NotPermitted" in error_msg:

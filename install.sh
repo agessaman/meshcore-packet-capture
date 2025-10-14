@@ -326,21 +326,21 @@ async def check_pairing_and_connect(address, name, pin=None):
             meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=True), timeout=10.0)
             print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
             
-            # Wait a moment for the device to stabilize and send self_info
-            print("Waiting for device to stabilize...", file=sys.stderr, flush=True)
-            await asyncio.sleep(3)
-            
-            # Verify device communication by checking self_info
+            # Verify device communication by sending appstart command
             try:
-                print("Verifying device communication by checking self_info...", file=sys.stderr, flush=True)
-                device_name = meshcore.self_info.get('name', 'Unknown')
-                print(f"Device name from self_info: {device_name}", file=sys.stderr, flush=True)
-                print("Device communication verified successfully", file=sys.stderr, flush=True)
+                print("Verifying device communication by sending appstart command...", file=sys.stderr, flush=True)
+                result = await meshcore.commands.send_appstart()
+                if result.payload:
+                    public_key = result.payload.get('public_key', 'Unknown')
+                    print(f"Device public key: {public_key[:16]}...", file=sys.stderr, flush=True)
+                    print("Device communication verified successfully", file=sys.stderr, flush=True)
+                else:
+                    print("Device responded to appstart but no payload received", file=sys.stderr, flush=True)
                 await meshcore.disconnect()
                 print(json.dumps({"status": "paired", "message": "Device is already paired and communicating properly"}), flush=True)
                 return True
             except Exception as info_e:
-                print(f"Device connected but self_info check failed: {info_e}", file=sys.stderr, flush=True)
+                print(f"Device connected but appstart command failed: {info_e}", file=sys.stderr, flush=True)
                 print("Device may be connected but not fully ready", file=sys.stderr, flush=True)
                 await meshcore.disconnect()
                 print(json.dumps({"status": "paired", "message": "Device is paired but may need time to be fully ready"}), flush=True)

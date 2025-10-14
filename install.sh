@@ -207,13 +207,11 @@ EOF
         # Check if device_count is a valid number
         if ! [[ "$device_count" =~ ^[0-9]+$ ]]; then
             print_warning "Failed to parse BLE scan results"
-            rm -f "$temp_script"
             return 1
         fi
         
         if [ "$device_count" -eq 0 ]; then
             print_warning "No MeshCore BLE devices found"
-            rm -f "$temp_script"
             return 1
         fi
         
@@ -247,7 +245,7 @@ for i, device in enumerate(data, 1):
                     # Rescan for devices
                     echo ""
                     print_info "Rescanning for BLE devices..."
-                    rm -f "$temp_script" /tmp/device_list
+ /tmp/device_list
                     return 2  # Special return code to indicate rescan requested
                 elif [ "$choice" -eq $((device_count + 1)) ]; then
                     # Manual entry
@@ -256,7 +254,7 @@ for i, device in enumerate(data, 1):
                     if [ -n "$manual_mac" ]; then
                         SELECTED_BLE_DEVICE="$manual_mac"
                         SELECTED_BLE_NAME="$manual_name"
-                        rm -f "$temp_script" /tmp/device_list
+ /tmp/device_list
                         return 0
                     fi
                 else
@@ -265,7 +263,7 @@ for i, device in enumerate(data, 1):
                     local selected_device="${!selected_device_var}"
                     SELECTED_BLE_DEVICE=$(echo "$selected_device" | cut -d'|' -f1)
                     SELECTED_BLE_NAME=$(echo "$selected_device" | cut -d'|' -f2-)
-                    rm -f "$temp_script" /tmp/device_list
+ /tmp/device_list
                     return 0
                 fi
             else
@@ -281,7 +279,7 @@ for i, device in enumerate(data, 1):
             fi
             rm -f /tmp/ble_scan_error
         fi
-        rm -f "$temp_script" /tmp/device_list
+ /tmp/device_list
         return 1
     fi
 }
@@ -300,267 +298,8 @@ handle_ble_pairing() {
         return 1
     fi
     
-    # Create a temporary script to check pairing status and handle pairing
-    local temp_script="/tmp/ble_pairing_helper.py"
-    cat > "$temp_script" << 'EOF'
-#!/usr/bin/env python3
-"""
-BLE Pairing Helper for MeshCore Packet Capture Installer
-Checks pairing status and handles PIN-based pairing
-"""
-
-import asyncio
-import sys
-import json
-from meshcore import MeshCore
-
-async def check_pairing_and_connect(address, name, pin=None):
-    """Check if device is paired and handle pairing if needed"""
-    meshcore = None
-    try:
-        print(f"Checking pairing status for {name} ({address})...", file=sys.stderr, flush=True)
-        
-        # Try to connect without PIN first (with timeout)
-        try:
-            print(f"Attempting to connect to {name} ({address}) without PIN...", file=sys.stderr, flush=True)
-            
-            # Create the connection with a reasonable timeout
-            meshcore = await asyncio.wait_for(
-                MeshCore.create_ble(address=address, debug=True), 
-                timeout=25.0
-            )
-            
-            print("BLE connection established successfully", file=sys.stderr, flush=True)
-            
-            # Connection succeeded - device is paired
-            await meshcore.disconnect()
-            
-            print(json.dumps({
-                "status": "paired", 
-                "message": "Device is already paired and ready to use"
-            }), flush=True)
-            return True
-            
-        except EOFError as e:
-            # This is the key indicator that pairing is required
-            # Device connected but immediately disconnected - needs pairing
-            print("Device connected but immediately disconnected - pairing required", file=sys.stderr, flush=True)
-            print(json.dumps({
-                "status": "not_paired", 
-                "message": "Device requires pairing"
-            }), flush=True)
-            return False
-                
-        except asyncio.TimeoutError:
-            # Timeout could mean device is busy or needs pairing
-            print("Connection timed out", file=sys.stderr, flush=True)
-            print(json.dumps({
-                "status": "timeout", 
-                "message": "Connection timed out - device may be busy or require pairing"
-            }), flush=True)
-            return False
-            
-        except ConnectionError as e:
-            error_msg = str(e)
-            print(f"Connection error: {error_msg}", file=sys.stderr, flush=True)
-            
-            # Check for pairing-related errors
-            if any(keyword in error_msg.lower() for keyword in 
-                   ['pair', 'auth', 'permission', 'not permitted', 'not authorized']):
-                print("Device requires pairing", file=sys.stderr, flush=True)
-                print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
-                return False
-            else:
-                print(json.dumps({"status": "error", "message": error_msg}), flush=True)
-                return False
-                
-        except Exception as e:
-            error_msg = str(e)
-            error_type = type(e).__name__
-            print(f"Connection attempt failed: {error_msg}", file=sys.stderr, flush=True)
-            print(f"Error type: {error_type}", file=sys.stderr, flush=True)
-            
-            # Check if this is clearly a "device not found" error
-            if "No MeshCore device found" in error_msg or "not found" in error_msg.lower():
-                print("Device not found or not in range", file=sys.stderr, flush=True)
-                print(json.dumps({"status": "not_found", "message": "Device not found or not in range"}), flush=True)
-                return False
-            # Check for pairing errors
-            elif any(keyword in error_msg.lower() for keyword in 
-                     ['pair', 'auth', 'permission', 'not permitted', 'not authorized']):
-                print("Device requires pairing", file=sys.stderr, flush=True)
-                print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
-                return False
-            else:
-                print(f"Connection error: {error_msg}", file=sys.stderr, flush=True)
-                print(json.dumps({"status": "error", "message": error_msg}), flush=True)
-                return False
-                
-    except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
-        print(json.dumps({"status": "error", "message": str(e)}), flush=True)
-        return False
-    finally:
-        # Ensure we always disconnect
-        if meshcore:
-            try:
-                await meshcore.disconnect()
-            except:
-                pass
-
-async def attempt_pairing(address, name, pin):
-    """Attempt to pair with the device using the provided PIN"""
-    meshcore = None
-    try:
-        print(f"Attempting to pair with {name} using PIN {pin}...", file=sys.stderr, flush=True)
-        
-        # First, try to remove any existing pairing to start fresh
-        try:
-            import subprocess
-            print("Removing any existing pairing...", file=sys.stderr, flush=True)
-            result = subprocess.run(
-                ['bluetoothctl', 'remove', address], 
-                capture_output=True, 
-                timeout=5,
-                text=True
-            )
-            if result.returncode == 0:
-                print(f"Existing pairing removed", file=sys.stderr, flush=True)
-            await asyncio.sleep(1)
-        except FileNotFoundError:
-            print("bluetoothctl not found, skipping unpair step", file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"Could not remove existing pairing (this is OK): {e}", file=sys.stderr, flush=True)
-        
-        # Connect with PIN
-        print(f"Connecting with PIN...", file=sys.stderr, flush=True)
-        meshcore = await asyncio.wait_for(
-            MeshCore.create_ble(address=address, pin=pin, debug=True), 
-            timeout=60.0
-        )
-        
-        print("BLE connection with PIN established successfully!", file=sys.stderr, flush=True)
-        
-        # If we get here, pairing succeeded
-        await meshcore.disconnect()
-        
-        # Wait a moment for disconnection
-        await asyncio.sleep(2)
-        
-        # Try reconnecting without PIN to confirm pairing persisted
-        print("Verifying pairing persisted by reconnecting without PIN...", file=sys.stderr, flush=True)
-        try:
-            meshcore_verify = await asyncio.wait_for(
-                MeshCore.create_ble(address=address, debug=False), 
-                timeout=25.0
-            )
-            
-            print("Verification connection successful", file=sys.stderr, flush=True)
-            await meshcore_verify.disconnect()
-            
-            print("Pairing verification successful!", file=sys.stderr, flush=True)
-            print(json.dumps({
-                "status": "paired", 
-                "message": "Pairing and connection verification successful"
-            }), flush=True)
-            return True
-            
-        except EOFError:
-            # Even verification failed with EOF - but initial pairing worked
-            print("Verification disconnected immediately, but pairing may have succeeded", file=sys.stderr, flush=True)
-            print(json.dumps({
-                "status": "paired", 
-                "message": "Pairing completed but verification unclear - try using the device"
-            }), flush=True)
-            return True
-            
-        except Exception as verify_e:
-            print(f"Reconnection test failed: {verify_e}", file=sys.stderr, flush=True)
-            print("Pairing may have succeeded but verification failed", file=sys.stderr, flush=True)
-            print(json.dumps({
-                "status": "paired", 
-                "message": "Pairing successful but verification failed - device should work"
-            }), flush=True)
-            return True  # Still consider success since initial pairing worked
-        
-    except asyncio.TimeoutError:
-        print("Pairing connection timed out", file=sys.stderr, flush=True)
-        print(json.dumps({
-            "status": "pairing_failed", 
-            "message": "Pairing timed out - device may not be in pairing mode or PIN may be incorrect"
-        }), flush=True)
-        return False
-        
-    except EOFError as e:
-        print("Connection dropped during pairing - authentication likely failed", file=sys.stderr, flush=True)
-        print(json.dumps({
-            "status": "pairing_failed", 
-            "message": "Pairing failed - PIN may be incorrect or expired"
-        }), flush=True)
-        return False
-        
-    except Exception as e:
-        error_msg = str(e)
-        print(f"Pairing failed: {error_msg}", file=sys.stderr, flush=True)
-        
-        # Check for specific authentication failure
-        if "AuthenticationFailed" in error_msg or "Authentication Failed" in error_msg:
-            print(json.dumps({
-                "status": "pairing_failed", 
-                "message": "Authentication failed - PIN may be incorrect, expired, or device not in pairing mode"
-            }), flush=True)
-        elif "timeout" in error_msg.lower():
-            print(json.dumps({
-                "status": "pairing_failed", 
-                "message": "Pairing timed out - device may be busy or not responding to pairing request"
-            }), flush=True)
-        else:
-            print(json.dumps({"status": "pairing_failed", "message": error_msg}), flush=True)
-        return False
-        
-    finally:
-        if meshcore:
-            try:
-                await meshcore.disconnect()
-            except:
-                pass
-
-def main():
-    """Main function to handle BLE pairing"""
-    if len(sys.argv) < 3:
-        print(json.dumps({"status": "error", "message": "Usage: script.py <address> <name> [pin]"}))
-        sys.exit(1)
-    
-    address = sys.argv[1]
-    name = sys.argv[2]
-    pin = sys.argv[3] if len(sys.argv) > 3 else None
-    
-    try:
-        if pin:
-            # Attempt pairing with PIN
-            success = asyncio.run(attempt_pairing(address, name, pin))
-        else:
-            # Check pairing status
-            success = asyncio.run(check_pairing_and_connect(address, name))
-        
-        # Don't exit with error code for not_paired status - let shell script handle it
-        if not success and pin is None:
-            # This is a pairing check that failed, but we want to return the status
-            sys.exit(0)
-        elif not success:
-            # This is a pairing attempt that failed
-            sys.exit(1)
-            
-    except KeyboardInterrupt:
-        print("Operation interrupted by user", file=sys.stderr, flush=True)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
-EOF
+    # Use the actual ble_pairing_helper.py script instead of embedded code
+    local temp_script="$INSTALL_DIR/ble_pairing_helper.py"
     
     # Check pairing status first (with timeout to prevent hanging)
     local pairing_output
@@ -569,7 +308,7 @@ EOF
         
         if [ "$pairing_status" = "paired" ]; then
             print_success "Device is paired and ready to use"
-            rm -f "$temp_script" /tmp/ble_pairing_error
+            rm -f /tmp/ble_pairing_error
             return 0
         elif [ "$pairing_status" = "not_found" ]; then
             print_warning "Device not found or not in range"
@@ -577,13 +316,13 @@ EOF
             print_info "  • Powered on and within range"
             print_info "  • In pairing mode (if not already paired)"
             print_info "  • Not connected to another device"
-            rm -f "$temp_script" /tmp/ble_pairing_error
+            rm -f /tmp/ble_pairing_error
             return 1
         elif [ "$pairing_status" = "timeout" ]; then
             print_warning "Connection timed out"
             print_info "The device may be busy or not responding. Please try again."
             print_info "If the device shows as connected, try disconnecting it first."
-            rm -f "$temp_script" /tmp/ble_pairing_error
+            rm -f /tmp/ble_pairing_error
             return 1
         elif [ "$pairing_status" = "not_paired" ]; then
             print_info "Device requires pairing. You'll need to enter the PIN displayed on your MeshCore device."
@@ -608,7 +347,7 @@ EOF
                 
                 if [ "$pairing_result" = "paired" ]; then
                     print_success "BLE pairing successful! Device is now ready to use."
-                    rm -f "$temp_script" /tmp/ble_pairing_error
+                    rm -f /tmp/ble_pairing_error
                     return 0
                 else
                     print_error "BLE pairing failed"
@@ -619,7 +358,6 @@ EOF
                         fi
                         rm -f /tmp/ble_pairing_error
                     fi
-                    rm -f "$temp_script"
                     return 1
                 fi
             else
@@ -640,7 +378,6 @@ EOF
                 else
                     print_error "Failed to attempt BLE pairing"
                 fi
-                rm -f "$temp_script"
                 return 1
             fi
         else
@@ -652,7 +389,6 @@ EOF
                 fi
                 rm -f /tmp/ble_pairing_error
             fi
-            rm -f "$temp_script"
             return 1
         fi
     else
@@ -672,7 +408,6 @@ EOF
         else
             print_error "Failed to check BLE pairing status"
         fi
-        rm -f "$temp_script"
         return 1
     fi
 }
@@ -1189,6 +924,7 @@ main() {
         cp "${LOCAL_INSTALL}/packet_capture.py" "$INSTALL_DIR/"
         cp "${LOCAL_INSTALL}/auth_token.py" "$INSTALL_DIR/"
         cp "${LOCAL_INSTALL}/enums.py" "$INSTALL_DIR/"
+        cp "${LOCAL_INSTALL}/ble_pairing_helper.py" "$INSTALL_DIR/"
         cp "${LOCAL_INSTALL}/requirements.txt" "$INSTALL_DIR/"
         # meshcore_py no longer needed - using PyPI version
         if [ -f "${LOCAL_INSTALL}/.env" ]; then
@@ -1229,6 +965,12 @@ main() {
             exit 1
         fi
         
+        print_info "Downloading ble_pairing_helper.py..."
+        if ! curl -fsSL --retry 3 --retry-delay 2 "$BASE_URL/ble_pairing_helper.py" -o "$TMP_DIR/ble_pairing_helper.py"; then
+            print_error "Failed to download ble_pairing_helper.py"
+            exit 1
+        fi
+        
         print_info "Downloading requirements.txt..."
         if ! curl -fsSL --retry 3 --retry-delay 2 "$BASE_URL/requirements.txt" -o "$TMP_DIR/requirements.txt"; then
             print_error "Failed to download requirements.txt"
@@ -1240,7 +982,12 @@ main() {
         # Verify Python syntax before installing
         print_info "Verifying Python syntax..."
         if ! python3 -m py_compile "$TMP_DIR/packet_capture.py" 2>/dev/null; then
-            print_error "Downloaded Python file has syntax errors"
+            print_error "Downloaded packet_capture.py has syntax errors"
+            print_error "The repository may be in an inconsistent state"
+            exit 1
+        fi
+        if ! python3 -m py_compile "$TMP_DIR/ble_pairing_helper.py" 2>/dev/null; then
+            print_error "Downloaded ble_pairing_helper.py has syntax errors"
             print_error "The repository may be in an inconsistent state"
             exit 1
         fi
@@ -1249,6 +996,7 @@ main() {
         mv "$TMP_DIR/packet_capture.py" "$INSTALL_DIR/packet_capture.py"
         mv "$TMP_DIR/auth_token.py" "$INSTALL_DIR/auth_token.py"
         mv "$TMP_DIR/enums.py" "$INSTALL_DIR/enums.py"
+        mv "$TMP_DIR/ble_pairing_helper.py" "$INSTALL_DIR/ble_pairing_helper.py"
         mv "$TMP_DIR/requirements.txt" "$INSTALL_DIR/requirements.txt"
         # meshcore_py no longer needed - using PyPI version
         

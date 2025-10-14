@@ -618,6 +618,99 @@ prompt_input() {
     fi
 }
 
+# Configure MQTT brokers only (skip device configuration)
+configure_mqtt_brokers_only() {
+    ENV_LOCAL="$INSTALL_DIR/.env.local"
+    
+    # Get IATA from existing config
+    IATA=$(grep "^PACKETCAPTURE_IATA=" "$ENV_LOCAL" 2>/dev/null | cut -d'=' -f2)
+    
+    # Always prompt for IATA if it's XXX or empty
+    if [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; then
+        echo ""
+        print_info "IATA code is a 3-letter airport code identifying your geographic region"
+        print_info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
+        echo ""
+        
+        while [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; do
+            IATA=$(prompt_input "Enter your IATA code (3 letters)" "")
+            IATA=$(echo "$IATA" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+            
+            if [ -z "$IATA" ]; then
+                print_error "IATA code cannot be empty"
+            elif [ "$IATA" = "XXX" ]; then
+                print_error "Please enter your actual IATA code, not XXX"
+            elif [ ${#IATA} -ne 3 ]; then
+                print_warning "IATA code should be 3 letters, you entered: $IATA"
+                if ! prompt_yes_no "Use '$IATA' anyway?" "n"; then
+                    IATA="XXX"  # Reset to force re-prompt
+                fi
+            fi
+        done
+        
+        # Update IATA in config
+        sed -i.bak "s/^PACKETCAPTURE_IATA=.*/PACKETCAPTURE_IATA=$IATA/" "$ENV_LOCAL"
+        rm -f "$ENV_LOCAL.bak"
+        echo ""
+        print_success "IATA code set to: $IATA"
+        echo ""
+    fi
+    
+    echo ""
+    print_header "MQTT Broker Configuration"
+    echo ""
+    print_info "Enable the LetsMesh.net Packet Analyzer (mqtt-us-v1.letsmesh.net) broker?"
+    echo "  • Real-time packet analysis and visualization"
+    echo "  • Network health monitoring"
+    echo "  • Requires meshcore-decoder for authentication"
+    echo ""
+    
+    if [ "$DECODER_AVAILABLE" = true ]; then
+        if prompt_yes_no "Enable LetsMesh Packet Analyzer?" "y"; then
+            cat >> "$ENV_LOCAL" << EOF
+
+# MQTT Broker 1 - LetsMesh.net Packet Analyzer
+PACKETCAPTURE_MQTT1_ENABLED=true
+PACKETCAPTURE_MQTT1_SERVER=mqtt-us-v1.letsmesh.net
+PACKETCAPTURE_MQTT1_PORT=443
+PACKETCAPTURE_MQTT1_TRANSPORT=websockets
+PACKETCAPTURE_MQTT1_USE_TLS=true
+PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN=true
+PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt-us-v1.letsmesh.net
+EOF
+            print_success "LetsMesh Packet Analyzer enabled"
+            
+            if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
+                configure_additional_brokers
+            fi
+        else
+            # User declined LetsMesh, ask if they want to configure a custom broker
+            if prompt_yes_no "Would you like to configure a custom MQTT broker?" "y"; then
+                configure_custom_broker 1
+                
+                if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
+                    configure_additional_brokers
+                fi
+            else
+                print_warning "No MQTT brokers configured - you'll need to edit .env.local manually"
+            fi
+        fi
+    else
+        # No decoder available, can't use LetsMesh
+        print_warning "meshcore-decoder not available - cannot use LetsMesh auth token authentication"
+        
+        if prompt_yes_no "Would you like to configure a custom MQTT broker with username/password?" "y"; then
+            configure_custom_broker 1
+            
+            if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
+                configure_additional_brokers
+            fi
+        else
+            print_warning "No MQTT brokers configured - you'll need to edit .env.local manually"
+        fi
+    fi
+}
+
 # Configure MQTT brokers
 configure_mqtt_brokers() {
     ENV_LOCAL="$INSTALL_DIR/.env.local"
@@ -1153,6 +1246,8 @@ main() {
             configure_mqtt_brokers
         else
             print_info "Keeping existing configuration"
+            # Still need to configure MQTT brokers if not already configured
+            configure_mqtt_brokers_only
         fi
     elif [ ! -f "$INSTALL_DIR/.env.local" ]; then
         configure_mqtt_brokers

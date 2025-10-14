@@ -17,16 +17,18 @@ async def scan_ble_devices():
         # Send status message to stderr so it doesn't interfere with JSON output
         print("Scanning for MeshCore BLE devices...", file=sys.stderr, flush=True)
         
-        def match_meshcore_device(device: BLEDevice, advertisement_data: AdvertisementData):
-            """Filter to match MeshCore devices with names starting with 'Meshcore-' or 'MeshCore-'."""
-            if advertisement_data.local_name:
-                name = advertisement_data.local_name
-                if name.startswith("Meshcore-") or name.startswith("MeshCore-"):
-                    return True
-            return False
+        # Scan for all devices first
+        devices = await BleakScanner.discover(timeout=10.0)
         
-        # Scan for devices
-        devices = await BleakScanner.discover(timeout=10.0, detection_callback=match_meshcore_device)
+        # Filter to only MeshCore devices
+        meshcore_devices = []
+        for device in devices:
+            if device.name:
+                name = device.name
+                if name.startswith("Meshcore-") or name.startswith("MeshCore-"):
+                    meshcore_devices.append(device)
+        
+        devices = meshcore_devices
         
         if not devices:
             print("No MeshCore BLE devices found", file=sys.stderr, flush=True)

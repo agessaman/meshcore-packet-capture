@@ -222,21 +222,21 @@ EOF
         print_success "Found $device_count MeshCore BLE device(s):"
         echo ""
         
-        # Display devices
+        # Display devices and store device info
         local i=1
-        local device_list=()
-        echo "$devices_json" | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-for i, device in enumerate(data, 1):
-    name = device.get('name', 'Unknown')
-    address = device.get('address', 'Unknown')
-    print('  ' + str(i) + ') ' + name + ' (' + address + ')')
-    print('DEVICE_' + str(i) + '=\"' + address + '|' + name + '\"', file=sys.stderr)
-" 2>/tmp/device_list
+        local device_addresses=()
+        local device_names=()
         
-        # Read device list
-        source /tmp/device_list 2>/dev/null
+        # Parse devices and store in arrays
+        while IFS= read -r device_info; do
+            local name=$(echo "$device_info" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('name', 'Unknown'))")
+            local address=$(echo "$device_info" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('address', 'Unknown'))")
+            
+            echo "  $i) $name ($address)"
+            device_addresses+=("$address")
+            device_names+=("$name")
+            ((i++))
+        done < <(echo "$devices_json" | python3 -c "import sys, json; data=json.load(sys.stdin); [print(json.dumps(device)) for device in data]")
         
         echo "  $((device_count + 1))) Enter device manually"
         echo "  0) Scan again"
@@ -249,7 +249,6 @@ for i, device in enumerate(data, 1):
                     # Rescan for devices
                     echo ""
                     print_info "Rescanning for BLE devices..."
- /tmp/device_list
                     return 2  # Special return code to indicate rescan requested
                 elif [ "$choice" -eq $((device_count + 1)) ]; then
                     # Manual entry
@@ -258,16 +257,13 @@ for i, device in enumerate(data, 1):
                     if [ -n "$manual_mac" ]; then
                         SELECTED_BLE_DEVICE="$manual_mac"
                         SELECTED_BLE_NAME="$manual_name"
- /tmp/device_list
                         return 0
                     fi
                 else
                     # Selected from list
-                    local selected_device_var="DEVICE_$choice"
-                    local selected_device="${!selected_device_var}"
-                    SELECTED_BLE_DEVICE=$(echo "$selected_device" | cut -d'|' -f1)
-                    SELECTED_BLE_NAME=$(echo "$selected_device" | cut -d'|' -f2-)
- /tmp/device_list
+                    local device_index=$((choice - 1))
+                    SELECTED_BLE_DEVICE="${device_addresses[$device_index]}"
+                    SELECTED_BLE_NAME="${device_names[$device_index]}"
                     return 0
                 fi
             else
@@ -304,6 +300,13 @@ handle_ble_pairing() {
     
     # Use the actual ble_pairing_helper.py script instead of embedded code
     local temp_script="$INSTALL_DIR/ble_pairing_helper.py"
+    
+    # Pre-pairing disconnect to ensure device is available
+    if command -v bluetoothctl &> /dev/null; then
+        print_info "Ensuring device is disconnected before pairing check..."
+        bluetoothctl disconnect "$device_address" 2>/dev/null || true
+        sleep 2
+    fi
     
     # Check pairing status first (with timeout to prevent hanging)
     local pairing_output

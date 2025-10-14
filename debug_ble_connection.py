@@ -17,7 +17,10 @@ async def test_ble_connection(address, name):
         meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=True), timeout=10.0)
         print("✅ Connection successful!")
         
-        print("2. Testing device communication via self_info...")
+        print("2. Waiting for device to stabilize...")
+        await asyncio.sleep(3)
+        
+        print("3. Testing device communication via self_info...")
         try:
             device_name = meshcore.self_info.get('name', 'Unknown')
             print(f"✅ Device name from self_info: {device_name}")
@@ -26,7 +29,7 @@ async def test_ble_connection(address, name):
             print(f"⚠️  self_info check failed: {info_e}")
             print("✅ Device is connected but self_info not available")
         
-        print("3. Disconnecting...")
+        print("4. Disconnecting...")
         await meshcore.disconnect()
         print("✅ Disconnected successfully")
         

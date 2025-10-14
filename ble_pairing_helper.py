@@ -165,9 +165,10 @@ async def attempt_pairing_linux(address, name, pin):
         print(f"Initiating pairing with {address}...", file=sys.stderr, flush=True)
         child.sendline(f'pair {address}')
         
-        # Wait for PIN request or confirmation
+        # Wait for PIN/passkey request or confirmation
         index = child.expect([
             'Enter PIN code:',
+            'Enter passkey',
             r'Confirm passkey.*\(yes/no\)',
             'Pairing successful',
             'Failed to pair',
@@ -200,7 +201,31 @@ async def attempt_pairing_linux(address, name, pin):
                 }), flush=True)
                 return False
             
-        elif index == 1:  # Passkey confirmation
+        elif index == 1:  # Passkey entry
+            print(f"Device is requesting passkey entry. Entering passkey {pin}...", file=sys.stderr, flush=True)
+            child.sendline(pin)
+            # Wait for result after entering passkey
+            result_index = child.expect(['Pairing successful', 'Failed to pair', 'Authentication Failed'], timeout=15)
+            if result_index == 0:
+                print("Passkey accepted, pairing successful!", file=sys.stderr, flush=True)
+            elif result_index == 1:
+                print("Pairing failed after passkey entry", file=sys.stderr, flush=True)
+                child.close()
+                print(json.dumps({
+                    "status": "pairing_failed",
+                    "message": "Pairing failed after passkey entry - passkey may be incorrect"
+                }), flush=True)
+                return False
+            else:  # Authentication Failed
+                print("Authentication failed - passkey was incorrect", file=sys.stderr, flush=True)
+                child.close()
+                print(json.dumps({
+                    "status": "pairing_failed",
+                    "message": "Authentication failed - passkey was incorrect"
+                }), flush=True)
+                return False
+            
+        elif index == 2:  # Passkey confirmation
             print(f"Device is requesting passkey confirmation. Confirming...", file=sys.stderr, flush=True)
             child.sendline('yes')
             result_index = child.expect(['Pairing successful', 'Failed to pair'], timeout=10)
@@ -215,11 +240,11 @@ async def attempt_pairing_linux(address, name, pin):
                 }), flush=True)
                 return False
             
-        elif index == 2:  # Already successful
+        elif index == 3:  # Already successful
             print("Pairing was already successful!", file=sys.stderr, flush=True)
             pass
             
-        elif index in [3, 4, 5]:  # Failed, not available, or not found
+        elif index in [4, 5, 6]:  # Failed, not available, or not found
             print(f"Device pairing failed: {child.after}", file=sys.stderr, flush=True)
             child.close()
             print(json.dumps({

@@ -390,12 +390,21 @@ class PacketCapture:
                 self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=False)
             else:
                 # Create BLE connection (default)
-                ble_address = self.get_env('BLE_ADDRESS', None)
-                ble_device_name = self.get_env('BLE_DEVICE_NAME', None)
+                # Support both BLE_ADDRESS and BLE_DEVICE for MAC address
+                ble_address = self.get_env('BLE_ADDRESS', None) or self.get_env('BLE_DEVICE', None)
+                # Support both BLE_DEVICE_NAME and BLE_NAME for device name
+                ble_device_name = self.get_env('BLE_DEVICE_NAME', None) or self.get_env('BLE_NAME', None)
+                
+                if self.debug:
+                    self.logger.debug(f"BLE connection config - Address: {ble_address}, Name: {ble_device_name}")
+                    self.logger.debug(f"Environment check - BLE_ADDRESS: {self.get_env('BLE_ADDRESS', None)}, BLE_DEVICE: {self.get_env('BLE_DEVICE', None)}")
+                    self.logger.debug(f"Environment check - BLE_DEVICE_NAME: {self.get_env('BLE_DEVICE_NAME', None)}, BLE_NAME: {self.get_env('BLE_NAME', None)}")
                 
                 if ble_address:
                     # Direct address connection
                     self.logger.info(f"Connecting via BLE to address: {ble_address}")
+                    if self.debug:
+                        self.logger.debug(f"Using BLE address from environment: {ble_address}")
                     self.meshcore = await meshcore.MeshCore.create_ble(ble_address, debug=False)
                 elif ble_device_name:
                     # Try to find device by name - the meshcore library handles name matching internally

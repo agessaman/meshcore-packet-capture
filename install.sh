@@ -336,6 +336,7 @@ async def check_pairing_and_connect(address, name, pin=None):
             print(f"Connection attempt failed with error: {error_msg}", file=sys.stderr, flush=True)
             print(f"Error type: {type(e).__name__}", file=sys.stderr, flush=True)
             
+            # Check if this is a pairing error that occurred after successful connection
             if "Not paired" in error_msg or "NotPermitted" in error_msg:
                 print("Device is not paired, pairing required", file=sys.stderr, flush=True)
                 print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
@@ -408,7 +409,12 @@ def main():
             # Check pairing status
             success = asyncio.run(check_pairing_and_connect(address, name))
         
-        if not success:
+        # Don't exit with error code for not_paired status - let shell script handle it
+        if not success and pin is None:
+            # This is a pairing check that failed, but we want to return the status
+            sys.exit(0)
+        elif not success:
+            # This is a pairing attempt that failed
             sys.exit(1)
             
     except KeyboardInterrupt:

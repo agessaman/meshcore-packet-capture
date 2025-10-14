@@ -103,7 +103,12 @@ def main():
             # Check pairing status
             success = asyncio.run(check_pairing_and_connect(address, name))
         
-        if not success:
+        # Don't exit with error code for not_paired status - let shell script handle it
+        if not success and pin is None:
+            # This is a pairing check that failed, but we want to return the status
+            sys.exit(0)
+        elif not success:
+            # This is a pairing attempt that failed
             sys.exit(1)
             
     except KeyboardInterrupt:

@@ -327,50 +327,70 @@ async def check_pairing_and_connect(address, name, pin=None):
             # Create the connection with a shorter timeout
             meshcore = await asyncio.wait_for(
                 MeshCore.create_ble(address=address, debug=True), 
-                timeout=15.0
+                timeout=20.0
             )
             
-            print("Device connected successfully", file=sys.stderr, flush=True)
+            print("BLE connection established, verifying with device query...", file=sys.stderr, flush=True)
             
-            # Give it a moment to stabilize
-            await asyncio.sleep(1)
-            
-            # Try a simple operation to verify the connection works
+            # Try to send a command to verify the connection actually works
+            # This is where pairing issues will show up
             try:
-                # Just check if we're still connected
-                if meshcore and meshcore.is_connected:
-                    print("Connection verified - device is paired and ready to use", file=sys.stderr, flush=True)
+                result = await asyncio.wait_for(
+                    meshcore.commands.send_device_query(),
+                    timeout=10.0
+                )
+                
+                if result and result.payload:
+                    print(f"Device query successful - device is paired and working", file=sys.stderr, flush=True)
+                    model = result.payload.get('model', 'Unknown')
+                    fw_version = result.payload.get('fw_version', 'Unknown')
+                    print(f"Device info: {model}, firmware: {fw_version}", file=sys.stderr, flush=True)
+                    
                     await meshcore.disconnect()
-                    print(json.dumps({"status": "paired", "message": "Device is already paired and ready to use"}), flush=True)
+                    print(json.dumps({
+                        "status": "paired", 
+                        "message": "Device is already paired and ready to use",
+                        "model": model,
+                        "firmware": fw_version
+                    }), flush=True)
                     return True
                 else:
-                    print("Connection lost during verification", file=sys.stderr, flush=True)
-                    print(json.dumps({"status": "not_paired", "message": "Device connection unstable - may need pairing"}), flush=True)
+                    print("Device query returned no data - may need pairing", file=sys.stderr, flush=True)
+                    print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
                     return False
-            except Exception as verify_err:
-                print(f"Verification error: {verify_err}", file=sys.stderr, flush=True)
+                    
+            except asyncio.TimeoutError:
+                print("Device query timed out - likely needs pairing", file=sys.stderr, flush=True)
                 print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
                 return False
+            except EOFError:
+                print("Connection closed during device query - likely needs pairing", file=sys.stderr, flush=True)
+                print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
+                return False
+            except Exception as cmd_err:
+                error_msg = str(cmd_err)
+                print(f"Command error: {error_msg}", file=sys.stderr, flush=True)
+                
+                # Check for pairing-related errors
+                if any(keyword in error_msg.lower() for keyword in ['pair', 'auth', 'permission', 'not permitted']):
+                    print("Device requires pairing", file=sys.stderr, flush=True)
+                    print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
+                    return False
+                else:
+                    print(json.dumps({"status": "error", "message": error_msg}), flush=True)
+                    return False
                 
         except asyncio.TimeoutError:
             print("Connection timed out", file=sys.stderr, flush=True)
             print(json.dumps({"status": "timeout", "message": "Connection timed out"}), flush=True)
             return False
-        except EOFError as e:
-            print(f"Connection closed unexpectedly (EOFError) - device may need pairing", file=sys.stderr, flush=True)
-            print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
-            return False
         except Exception as e:
             error_msg = str(e)
-            print(f"Connection attempt failed with error: {error_msg}", file=sys.stderr, flush=True)
+            print(f"Connection attempt failed: {error_msg}", file=sys.stderr, flush=True)
             print(f"Error type: {type(e).__name__}", file=sys.stderr, flush=True)
             
-            # Check if this is a pairing error
-            if "Not paired" in error_msg or "NotPermitted" in error_msg or "NotAuthorized" in error_msg:
-                print("Device is not paired, pairing required", file=sys.stderr, flush=True)
-                print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)
-                return False
-            elif "No MeshCore device found" in error_msg or "Failed to connect" in error_msg:
+            # Check if this is clearly a "device not found" error
+            if "No MeshCore device found" in error_msg or "not found" in error_msg.lower():
                 print("Device not found or not in range", file=sys.stderr, flush=True)
                 print(json.dumps({"status": "not_found", "message": "Device not found or not in range"}), flush=True)
                 return False
@@ -394,48 +414,110 @@ async def attempt_pairing(address, name, pin):
     """Attempt to pair with the device using the provided PIN"""
     meshcore = None
     try:
-        print(f"Attempting to pair with {name} using PIN...", file=sys.stderr, flush=True)
+        print(f"Attempting to pair with {name} using PIN {pin}...", file=sys.stderr, flush=True)
         
+        # First, try to remove any existing pairing to start fresh
+        try:
+            import subprocess
+            print("Removing any existing pairing...", file=sys.stderr, flush=True)
+            subprocess.run(['bluetoothctl', 'remove', address], 
+                         capture_output=True, timeout=5)
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"Could not remove existing pairing (this is OK): {e}", file=sys.stderr, flush=True)
+        
+        # Connect with PIN
         meshcore = await asyncio.wait_for(
-            MeshCore.create_ble(address=address, pin=pin, debug=False), 
+            MeshCore.create_ble(address=address, pin=pin, debug=True), 
             timeout=60.0
         )
-        print("Pairing successful! Verifying connection...", file=sys.stderr, flush=True)
         
-        # Give it a moment to stabilize
-        await asyncio.sleep(2)
+        print("BLE connection with PIN established, verifying...", file=sys.stderr, flush=True)
         
-        await meshcore.disconnect()
-        
-        # Wait for connection to fully close
-        await asyncio.sleep(2)
-        
-        # Verify pairing by reconnecting
-        print("Verifying pairing by attempting reconnection...", file=sys.stderr, flush=True)
+        # Verify the pairing worked by sending a command
         try:
-            meshcore_verify = await asyncio.wait_for(
-                MeshCore.create_ble(address=address, debug=False), 
-                timeout=30.0
+            result = await asyncio.wait_for(
+                meshcore.commands.send_device_query(),
+                timeout=10.0
             )
-            await asyncio.sleep(1)
-            await meshcore_verify.disconnect()
-            print("Connection verification successful!", file=sys.stderr, flush=True)
-            print(json.dumps({"status": "paired", "message": "Pairing and connection verification successful"}), flush=True)
-            return True
-        except Exception as verify_e:
-            print(f"Connection verification failed: {verify_e}", file=sys.stderr, flush=True)
-            print("Pairing may have succeeded but device is not immediately available", file=sys.stderr, flush=True)
-            print(json.dumps({"status": "paired", "message": "Pairing successful but connection verification failed - device may need time to become available"}), flush=True)
-            return True  # Still consider pairing successful
+            
+            if result and result.payload:
+                print("Pairing successful! Device query returned data.", file=sys.stderr, flush=True)
+                model = result.payload.get('model', 'Unknown')
+                fw_version = result.payload.get('fw_version', 'Unknown')
+                print(f"Device info: {model}, firmware: {fw_version}", file=sys.stderr, flush=True)
+                
+                await meshcore.disconnect()
+                
+                # Wait a moment for disconnection
+                await asyncio.sleep(2)
+                
+                # Try reconnecting without PIN to confirm pairing persisted
+                print("Verifying pairing persisted by reconnecting without PIN...", file=sys.stderr, flush=True)
+                try:
+                    meshcore_verify = await asyncio.wait_for(
+                        MeshCore.create_ble(address=address, debug=False), 
+                        timeout=20.0
+                    )
+                    
+                    # Try a command
+                    result = await asyncio.wait_for(
+                        meshcore_verify.commands.send_device_query(),
+                        timeout=10.0
+                    )
+                    
+                    await meshcore_verify.disconnect()
+                    
+                    print("Pairing verification successful!", file=sys.stderr, flush=True)
+                    print(json.dumps({
+                        "status": "paired", 
+                        "message": "Pairing and connection verification successful",
+                        "model": model,
+                        "firmware": fw_version
+                    }), flush=True)
+                    return True
+                    
+                except Exception as verify_e:
+                    print(f"Reconnection test failed: {verify_e}", file=sys.stderr, flush=True)
+                    print("Pairing may have succeeded but verification failed", file=sys.stderr, flush=True)
+                    print(json.dumps({
+                        "status": "paired", 
+                        "message": "Pairing successful but verification failed - device should work",
+                        "model": model,
+                        "firmware": fw_version
+                    }), flush=True)
+                    return True  # Still consider success
+            else:
+                print("Device query after pairing returned no data", file=sys.stderr, flush=True)
+                print(json.dumps({"status": "pairing_failed", "message": "Pairing completed but device not responding"}), flush=True)
+                return False
+                
+        except asyncio.TimeoutError:
+            print("Device query timed out after pairing", file=sys.stderr, flush=True)
+            print(json.dumps({"status": "pairing_failed", "message": "Device not responding after pairing"}), flush=True)
+            return False
+        except Exception as cmd_err:
+            error_msg = str(cmd_err)
+            print(f"Command error after pairing: {error_msg}", file=sys.stderr, flush=True)
+            print(json.dumps({"status": "pairing_failed", "message": f"Pairing may have failed: {error_msg}"}), flush=True)
+            return False
         
     except asyncio.TimeoutError:
-        print("Pairing timed out", file=sys.stderr, flush=True)
-        print(json.dumps({"status": "pairing_failed", "message": "Pairing timed out"}), flush=True)
+        print("Pairing connection timed out", file=sys.stderr, flush=True)
+        print(json.dumps({"status": "pairing_failed", "message": "Pairing timed out - device may not be in pairing mode"}), flush=True)
         return False
     except Exception as e:
         error_msg = str(e)
         print(f"Pairing failed: {error_msg}", file=sys.stderr, flush=True)
-        print(json.dumps({"status": "pairing_failed", "message": error_msg}), flush=True)
+        
+        # Check for specific authentication failure
+        if "AuthenticationFailed" in error_msg or "Authentication Failed" in error_msg:
+            print(json.dumps({
+                "status": "pairing_failed", 
+                "message": "Authentication failed - PIN may be incorrect, expired, or device not in pairing mode"
+            }), flush=True)
+        else:
+            print(json.dumps({"status": "pairing_failed", "message": error_msg}), flush=True)
         return False
     finally:
         if meshcore:

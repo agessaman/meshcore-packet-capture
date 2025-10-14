@@ -321,7 +321,8 @@ async def check_pairing_and_connect(address, name, pin=None):
         
         # Try to connect without PIN first (with timeout)
         try:
-            meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=False), timeout=30.0)
+            print(f"Attempting to connect to {name} ({address}) without PIN...", file=sys.stderr, flush=True)
+            meshcore = await asyncio.wait_for(MeshCore.create_ble(address=address, debug=True), timeout=30.0)
             print("Device is already paired and connected successfully", file=sys.stderr, flush=True)
             
             # Try to fetch some basic device information to verify communication
@@ -341,6 +342,9 @@ async def check_pairing_and_connect(address, name, pin=None):
                 return True  # Still consider it paired since connection worked
         except Exception as e:
             error_msg = str(e)
+            print(f"Connection attempt failed with error: {error_msg}", file=sys.stderr, flush=True)
+            print(f"Error type: {type(e).__name__}", file=sys.stderr, flush=True)
+            
             if "Not paired" in error_msg or "NotPermitted" in error_msg:
                 print("Device is not paired, pairing required", file=sys.stderr, flush=True)
                 print(json.dumps({"status": "not_paired", "message": "Device requires pairing"}), flush=True)

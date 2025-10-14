@@ -8,3 +8,6 @@ meshcore>=2.1.10
 bleak>=0.21.0
 pyserial-asyncio>=0.6
 pycayennelpp>=1.0.0
+
+# Linux BLE pairing support
+pexpect>=4.8.0

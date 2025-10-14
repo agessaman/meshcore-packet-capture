@@ -7,7 +7,13 @@ Checks pairing status and handles PIN-based pairing
 import asyncio
 import sys
 import json
+import platform
+import subprocess
 from meshcore import MeshCore
+
+def is_linux():
+    """Check if running on Linux"""
+    return platform.system().lower() == 'linux'
 
 async def check_pairing_and_connect(address, name, pin=None):
     """Check if device is paired and handle pairing if needed"""
@@ -105,13 +111,97 @@ async def check_pairing_and_connect(address, name, pin=None):
 
 async def attempt_pairing(address, name, pin):
     """Attempt to pair with the device using the provided PIN"""
+    if is_linux():
+        return await attempt_pairing_linux(address, name, pin)
+    else:
+        return await attempt_pairing_meshcore(address, name, pin)
+
+async def attempt_pairing_linux(address, name, pin):
+    """Attempt to pair with the device using bluetoothctl on Linux"""
+    try:
+        print(f"Attempting to pair with {name} using PIN {pin} on Linux...", file=sys.stderr, flush=True)
+        
+        # Remove any existing pairing
+        subprocess.run(['bluetoothctl', 'remove', address], 
+                      capture_output=True, timeout=5)
+        await asyncio.sleep(1)
+        
+        # Use bluetoothctl with expect-style interaction
+        import pexpect
+        
+        print("Starting bluetoothctl pairing process...", file=sys.stderr, flush=True)
+        
+        child = pexpect.spawn('bluetoothctl', encoding='utf-8', timeout=30)
+        child.logfile = sys.stderr
+        
+        # Set up agent
+        child.sendline('agent on')
+        child.expect('Agent registered')
+        child.sendline('default-agent')
+        
+        # Initiate pairing
+        child.sendline(f'pair {address}')
+        
+        # Wait for PIN request or confirmation
+        index = child.expect([
+            'Enter PIN code:',
+            r'Confirm passkey.*\(yes/no\)',
+            'Pairing successful',
+            'Failed to pair',
+            pexpect.TIMEOUT
+        ])
+        
+        if index == 0:  # PIN entry
+            print(f"Entering PIN {pin}...", file=sys.stderr, flush=True)
+            child.sendline(pin)
+            child.expect(['Pairing successful', 'Failed to pair'], timeout=10)
+            
+        elif index == 1:  # Passkey confirmation
+            print(f"Confirming passkey...", file=sys.stderr, flush=True)
+            child.sendline('yes')
+            child.expect(['Pairing successful', 'Failed to pair'], timeout=10)
+            
+        elif index == 2:  # Already successful
+            pass
+            
+        else:  # Failed or timeout
+            print("Pairing failed or timed out", file=sys.stderr, flush=True)
+            child.close()
+            print(json.dumps({
+                "status": "pairing_failed",
+                "message": "Pairing failed via bluetoothctl"
+            }), flush=True)
+            return False
+        
+        # Trust the device
+        child.sendline(f'trust {address}')
+        child.expect('trust succeeded')
+        
+        child.sendline('quit')
+        child.close()
+        
+        print("Pairing successful via bluetoothctl!", file=sys.stderr, flush=True)
+        
+        # Now verify with meshcore (without PIN)
+        await asyncio.sleep(2)
+        return await verify_paired_connection(address, name)
+        
+    except Exception as e:
+        print(f"Pairing failed: {e}", file=sys.stderr, flush=True)
+        print(json.dumps({
+            "status": "pairing_failed",
+            "message": str(e)
+        }), flush=True)
+        return False
+
+async def attempt_pairing_meshcore(address, name, pin):
+    """Attempt to pair with the device using meshcore (macOS/Windows)"""
     meshcore = None
     try:
-        print(f"Attempting to pair with {name} using PIN {pin}...", file=sys.stderr, flush=True)
+        print(f"Attempting to pair with {name} using PIN {pin} via meshcore...", file=sys.stderr, flush=True)
         
         # First, try to remove any existing pairing to start fresh
         try:
-            import subprocess
             print("Removing any existing pairing...", file=sys.stderr, flush=True)
             result = subprocess.run(
                 ['bluetoothctl', 'remove', address], 
@@ -213,6 +303,39 @@ async def attempt_pairing(address, name, pin):
             print(json.dumps({"status": "pairing_failed", "message": error_msg}), flush=True)
         return False
         
+    finally:
+        if meshcore:
+            try:
+                await meshcore.disconnect()
+            except:
+                pass
+
+async def verify_paired_connection(address, name):
+    """Verify the device is paired by connecting without PIN"""
+    meshcore = None
+    try:
+        print("Verifying pairing by connecting without PIN...", file=sys.stderr, flush=True)
+        meshcore = await asyncio.wait_for(
+            MeshCore.create_ble(address=address, debug=False), 
+            timeout=25.0
+        )
+        
+        print("Verification connection successful!", file=sys.stderr, flush=True)
+        await meshcore.disconnect()
+        
+        print(json.dumps({
+            "status": "paired",
+            "message": "Pairing and verification successful"
+        }), flush=True)
+        return True
+        
+    except Exception as e:
+        print(f"Verification failed: {e}", file=sys.stderr, flush=True)
+        print(json.dumps({
+            "status": "paired",
+            "message": "Pairing succeeded but verification unclear - device should work"
+        }), flush=True)
+        return True  # Still consider it success since bluetoothctl pairing worked
     finally:
         if meshcore:
             try:

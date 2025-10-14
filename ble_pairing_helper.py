@@ -36,6 +36,17 @@ async def check_pairing_and_connect(address, name, pin=None):
             # Connection succeeded - device is paired
             await meshcore.disconnect()
             
+            # Additional safety: Force disconnect on Linux using bluetoothctl if available
+            if is_linux():
+                try:
+                    print("Ensuring already-paired device is fully disconnected...", file=sys.stderr, flush=True)
+                    subprocess.run([
+                        "bluetoothctl", "disconnect", address
+                    ], capture_output=True, timeout=10)
+                    await asyncio.sleep(1)
+                except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
+                    print(f"Could not force disconnect already-paired device via bluetoothctl (this is OK): {e}", file=sys.stderr, flush=True)
+            
             print(json.dumps({
                 "status": "paired", 
                 "message": "Device is already paired and ready to use"
@@ -321,6 +332,17 @@ async def attempt_pairing_meshcore(address, name, pin):
         # Wait a moment for disconnection
         await asyncio.sleep(2)
         
+        # Additional safety: Force disconnect on Linux using bluetoothctl if available
+        if is_linux():
+            try:
+                print("Ensuring device is fully disconnected...", file=sys.stderr, flush=True)
+                subprocess.run([
+                    "bluetoothctl", "disconnect", address
+                ], capture_output=True, timeout=10)
+                await asyncio.sleep(1)
+            except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
+                print(f"Could not force disconnect via bluetoothctl (this is OK): {e}", file=sys.stderr, flush=True)
+        
         # Try reconnecting without PIN to confirm pairing persisted
         print("Verifying pairing persisted by reconnecting without PIN...", file=sys.stderr, flush=True)
         try:
@@ -332,11 +354,34 @@ async def attempt_pairing_meshcore(address, name, pin):
             print("Verification connection successful", file=sys.stderr, flush=True)
             await meshcore_verify.disconnect()
             
+            # Additional safety: Force disconnect on Linux using bluetoothctl if available
+            if is_linux():
+                try:
+                    print("Ensuring verification device is fully disconnected...", file=sys.stderr, flush=True)
+                    subprocess.run([
+                        "bluetoothctl", "disconnect", address
+                    ], capture_output=True, timeout=10)
+                    await asyncio.sleep(1)
+                except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
+                    print(f"Could not force disconnect verification device via bluetoothctl (this is OK): {e}", file=sys.stderr, flush=True)
+            
             print("Pairing verification successful!", file=sys.stderr, flush=True)
             print(json.dumps({
                 "status": "paired", 
                 "message": "Pairing and connection verification successful"
             }), flush=True)
+            
+            # Final safety: Ensure device is completely disconnected before returning
+            if is_linux():
+                try:
+                    print("Final disconnect to ensure device is ready for packet capture...", file=sys.stderr, flush=True)
+                    subprocess.run([
+                        "bluetoothctl", "disconnect", address
+                    ], capture_output=True, timeout=10)
+                    await asyncio.sleep(1)
+                except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
+                    print(f"Could not perform final disconnect via bluetoothctl (this is OK): {e}", file=sys.stderr, flush=True)
+            
             return True
             
         except EOFError:
@@ -346,6 +391,18 @@ async def attempt_pairing_meshcore(address, name, pin):
                 "status": "paired", 
                 "message": "Pairing completed but verification unclear - try using the device"
             }), flush=True)
+            
+            # Final safety: Ensure device is completely disconnected before returning
+            if is_linux():
+                try:
+                    print("Final disconnect to ensure device is ready for packet capture...", file=sys.stderr, flush=True)
+                    subprocess.run([
+                        "bluetoothctl", "disconnect", address
+                    ], capture_output=True, timeout=10)
+                    await asyncio.sleep(1)
+                except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
+                    print(f"Could not perform final disconnect via bluetoothctl (this is OK): {e}", file=sys.stderr, flush=True)
+            
             return True
             
         except Exception as verify_e:
@@ -355,6 +412,18 @@ async def attempt_pairing_meshcore(address, name, pin):
                 "status": "paired", 
                 "message": "Pairing successful but verification failed - device should work"
             }), flush=True)
+            
+            # Final safety: Ensure device is completely disconnected before returning
+            if is_linux():
+                try:
+                    print("Final disconnect to ensure device is ready for packet capture...", file=sys.stderr, flush=True)
+                    subprocess.run([
+                        "bluetoothctl", "disconnect", address
+                    ], capture_output=True, timeout=10)
+                    await asyncio.sleep(1)
+                except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as e:
+                    print(f"Could not perform final disconnect via bluetoothctl (this is OK): {e}", file=sys.stderr, flush=True)
+            
             return True  # Still consider success since initial pairing worked
         
     except asyncio.TimeoutError:

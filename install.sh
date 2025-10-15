@@ -1255,6 +1255,20 @@ main() {
     # Configuration
     print_header "Configuration"
     
+    # Check for existing config.ini and offer migration
+    if [ -f "$INSTALL_DIR/config.ini" ] && [ ! -f "$INSTALL_DIR/.env.local" ]; then
+        print_info "Found existing config.ini file"
+        if prompt_yes_no "Would you like to migrate your config.ini to the new .env.local format?" "y"; then
+            print_info "Migrating config.ini to .env.local..."
+            if python3 "$INSTALL_DIR/migrate_config.py"; then
+                print_success "Configuration migrated successfully"
+                print_info "You can now remove config.ini if everything works correctly"
+            else
+                print_error "Migration failed, continuing with manual configuration"
+            fi
+        fi
+    fi
+    
     # Check if config URL was provided
     if [ -n "$CONFIG_URL" ]; then
         print_info "Downloading configuration from: $CONFIG_URL"

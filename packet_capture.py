@@ -174,12 +174,31 @@ class PacketCapture:
     
     def setup_logging(self):
         """Setup logging configuration"""
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        # Clear any existing handlers to avoid conflicts
+        for handler in logging.root.handlers[:]:
+            logging.root.removeHandler(handler)
+        
+        # Create a custom formatter with timestamp
+        formatter = logging.Formatter(
+            fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
+        
+        # Create console handler with the formatter
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        
+        # Configure root logger
+        logging.basicConfig(
+            level=logging.INFO,
+            handlers=[console_handler],
+            force=True
+        )
+        
         self.logger = logging.getLogger('PacketCapture')
+        
+        # Test the logging format
+        self.logger.info("Logging initialized with timestamp format")
     
     def get_env(self, key, fallback=''):
         """Get environment variable with fallback (all vars are PACKETCAPTURE_ prefixed)"""
@@ -1453,7 +1472,7 @@ class PacketCapture:
             if self.verbose:
                 self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, SNR: {packet_data['SNR']}, RSSI: {packet_data['RSSI']}, hash: {packet_data['hash']}")
             else:
-                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes")
+                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, hash: {packet_data['hash']}")
             
             # Output full packet data structure in debug mode only
             if self.debug:
@@ -1495,7 +1514,7 @@ class PacketCapture:
                 self.output_packet(packet_data)
                 
                 self.packet_count += 1
-                self.logger.info(f"Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes")
+                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, hash: {packet_data['hash']}")
                 
         except Exception as e:
             self.logger.error(f"Error handling raw data event: {e}")
@@ -1507,9 +1526,9 @@ class PacketCapture:
         
         # Output to console only in verbose or debug mode
         if self.verbose or self.debug:
-            print("=" * 80)
-            print(json_data)
-            print("=" * 80)
+            self.logger.info("=" * 80)
+            self.logger.info(json_data)
+            self.logger.info("=" * 80)
         
         # Output to file if specified
         if self.output_handle:

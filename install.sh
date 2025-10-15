@@ -1466,10 +1466,10 @@ main() {
         esac
     elif [ "$DOCKER_INSTALLED" = true ]; then
         echo "Docker management:"
-        echo "  Start:   docker-compose -f $INSTALL_DIR/docker-compose.yml up -d"
-        echo "  Stop:    docker-compose -f $INSTALL_DIR/docker-compose.yml down"
-        echo "  Logs:    docker-compose -f $INSTALL_DIR/docker-compose.yml logs -f"
-        echo "  Status:  docker-compose -f $INSTALL_DIR/docker-compose.yml ps"
+        echo "  Start:   $COMPOSE_CMD -f $INSTALL_DIR/docker-compose.yml up -d"
+        echo "  Stop:    $COMPOSE_CMD -f $INSTALL_DIR/docker-compose.yml down"
+        echo "  Logs:    $COMPOSE_CMD -f $INSTALL_DIR/docker-compose.yml logs -f"
+        echo "  Status:  $COMPOSE_CMD -f $INSTALL_DIR/docker-compose.yml ps"
     else
         echo "Manual run: cd $INSTALL_DIR && ./venv/bin/python3 packet_capture.py"
     fi
@@ -1661,14 +1661,19 @@ install_docker() {
         print_info "Please install Docker first: https://docs.docker.com/get-docker/"
         exit 1
     fi
-    
-    if ! command -v docker-compose &> /dev/null; then
+
+    # Determine docker compose command (prefer modern 'docker compose')
+    if docker compose version &> /dev/null; then
+        COMPOSE_CMD="docker compose"
+    elif command -v docker-compose &> /dev/null; then
+        COMPOSE_CMD="docker-compose"
+    else
         print_error "Docker Compose is not installed or not available in PATH"
-        print_info "Please install Docker Compose first: https://docs.docker.com/compose/install/"
+        print_info "Install Docker Desktop or Compose Plugin: https://docs.docker.com/compose/install/"
         exit 1
     fi
-    
-    print_success "Docker and Docker Compose found"
+
+    print_success "Docker and Compose found (${COMPOSE_CMD})"
     
     # Create Docker configuration files
     print_info "Creating Docker configuration..."
@@ -1871,16 +1876,16 @@ EOF
     if prompt_yes_no "Start the Docker container now?" "y"; then
         print_info "Starting Docker container..."
         cd "$INSTALL_DIR"
-        if docker-compose up -d; then
+        if $COMPOSE_CMD up -d; then
             print_success "Docker container started"
             
             # Wait a moment and check logs
             sleep 3
             print_info "Container logs:"
-            docker-compose logs --tail=20
+            $COMPOSE_CMD logs --tail=20
         else
             print_error "Failed to start Docker container"
-            print_info "You can start it manually later with: docker-compose up -d"
+            print_info "You can start it manually later with: $COMPOSE_CMD up -d"
         fi
     fi
     

@@ -1012,28 +1012,28 @@ class PacketCapture:
             self.logger.debug(f"Published status: {status}")
 
     def safe_publish(self, topic, payload, retain=False, client=None, broker_num=None, topic_type=None):
-        """Publish to one or all MQTT brokers"""
+        """Publish to one or all MQTT brokers and return publish metrics."""
+        metrics = {"attempted": 0, "succeeded": 0}
+
         if not self.mqtt_connected:
             self.logger.warning(f"Not connected - skipping publish to {topic or topic_type}")
-            return False
+            return metrics
 
-        success = False
-        
         if client:
             clients_to_publish = [info for info in self.mqtt_clients if info['client'] == client]
         else:
             clients_to_publish = self.mqtt_clients
-        
+
         for mqtt_client_info in clients_to_publish:
             current_broker_num = mqtt_client_info['broker_num']
             try:
                 mqtt_client = mqtt_client_info['client']
-                
+
                 # Check individual client connection status
                 if not mqtt_client.is_connected():
                     self.logger.warning(f"MQTT{current_broker_num} client not connected - skipping publish")
                     continue
-                
+
                 # CRITICAL FIX: Resolve topic properly
                 if topic_type:
                     resolved_topic = self.get_topic(topic_type, current_broker_num)
@@ -1042,28 +1042,29 @@ class PacketCapture:
                 else:
                     self.logger.error("Neither topic nor topic_type provided to safe_publish")
                     continue
-                
+
                 # Validate topic before publishing
                 if not resolved_topic:
                     self.logger.error(f"Failed to resolve topic (type={topic_type}, topic={topic})")
                     continue
-                
+
                 qos = self.get_env_int(f'MQTT{current_broker_num}_QOS', 0)
                 # Force QoS 1 to 0 to prevent retry storms (like mctomqtt.py)
                 if qos == 1:
                     qos = 0
-                
+
+                metrics["attempted"] += 1
                 result = mqtt_client.publish(resolved_topic, payload, qos=qos, retain=retain)
                 if result.rc != mqtt.MQTT_ERR_SUCCESS:
                     self.logger.error(f"Publish failed to {resolved_topic} on MQTT{current_broker_num}: {mqtt.error_string(result.rc)}")
                 else:
                     if self.verbose:
                         self.logger.info(f"✓ Published to {resolved_topic} on MQTT{current_broker_num} (len={len(payload)})")
-                    success = True
+                    metrics["succeeded"] += 1
             except Exception as e:
                 self.logger.error(f"Publish error on MQTT{current_broker_num}: {str(e)}", exc_info=True)
-        
-        return success
+
+        return metrics
     
     def parse_advert(self, payload):
         """Parse advert payload - matches C++ AdvertDataHelpers.h implementation"""
@@ -1466,13 +1467,11 @@ class PacketCapture:
             packet_data = self.format_packet_data(raw_hex, rf_data)
             
             # Output the packet data
-            self.output_packet(packet_data)
+            publish_metrics = self.output_packet(packet_data)
             
             self.packet_count += 1
-            if self.verbose:
-                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, SNR: {packet_data['SNR']}, RSSI: {packet_data['RSSI']}, hash: {packet_data['hash']}")
-            else:
-                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, hash: {packet_data['hash']}")
+            # Standard log line format for both modes
+            self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, SNR: {packet_data['SNR']}, RSSI: {packet_data['RSSI']}, hash: {packet_data['hash']} (MQTT: {publish_metrics['succeeded']}/{publish_metrics['attempted']})")
             
             # Output full packet data structure in debug mode only
             if self.debug:
@@ -1511,10 +1510,10 @@ class PacketCapture:
                 packet_data = self.format_packet_data(raw_hex, rf_data)
                 
                 # Output the packet data
-                self.output_packet(packet_data)
+                publish_metrics = self.output_packet(packet_data)
                 
                 self.packet_count += 1
-                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, hash: {packet_data['hash']}")
+                self.logger.info(f"📦 Captured packet #{self.packet_count}: {packet_data['route']} type {packet_data['packet_type']}, {packet_data['len']} bytes, SNR: {packet_data['SNR']}, RSSI: {packet_data['RSSI']}, hash: {packet_data['hash']} (MQTT: {publish_metrics['succeeded']}/{publish_metrics['attempted']})")
                 
         except Exception as e:
             self.logger.error(f"Error handling raw data event: {e}")
@@ -1524,8 +1523,8 @@ class PacketCapture:
         # Convert to JSON
         json_data = json.dumps(packet_data, indent=2)
         
-        # Output to console only in verbose or debug mode
-        if self.verbose or self.debug:
+        # Output JSON packet data to console only in verbose mode
+        if self.verbose:
             self.logger.info("=" * 80)
             self.logger.info(json_data)
             self.logger.info("=" * 80)
@@ -1536,8 +1535,11 @@ class PacketCapture:
             self.output_handle.flush()
         
         # Publish to MQTT if enabled
+        publish_metrics = {"attempted": 0, "succeeded": 0}
         if self.enable_mqtt:
-            self.safe_publish(None, json.dumps(packet_data), topic_type="packets")
+            publish_metrics = self.safe_publish(None, json.dumps(packet_data), topic_type="packets")
+
+        return publish_metrics
     
     async def setup_event_handlers(self):
         """Setup event handlers for packet capture"""

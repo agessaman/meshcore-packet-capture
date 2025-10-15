@@ -1382,9 +1382,17 @@ main() {
         else
             print_info "Keeping existing configuration"
             # Check if MQTT brokers are already configured
-            if grep -q "^PACKETCAPTURE_MQTT[1-4]_ENABLED=true" "$INSTALL_DIR/.env.local" 2>/dev/null; then
+            if [ -f "$INSTALL_DIR/.env.local" ] && grep -q "^PACKETCAPTURE_MQTT[1-4]_ENABLED=true" "$INSTALL_DIR/.env.local" 2>/dev/null; then
                 print_info "MQTT brokers already configured - skipping MQTT configuration"
             else
+                # Debug: Show what we're checking
+                if [ -f "$INSTALL_DIR/.env.local" ]; then
+                    print_info "Checking for MQTT brokers in: $INSTALL_DIR/.env.local"
+                    print_info "Found MQTT lines:"
+                    grep "^PACKETCAPTURE_MQTT[1-4]_ENABLED=" "$INSTALL_DIR/.env.local" 2>/dev/null || echo "  (none found)"
+                else
+                    print_info "Configuration file not found: $INSTALL_DIR/.env.local"
+                fi
                 # Still need to configure MQTT brokers if not already configured
                 configure_mqtt_brokers_only
             fi

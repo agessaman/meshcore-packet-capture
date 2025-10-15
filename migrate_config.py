@@ -65,6 +65,18 @@ def migrate_config_ini():
         timeout = config.get('connection', 'timeout', fallback='')
         if timeout:
             env_content.append(f"PACKETCAPTURE_TIMEOUT={timeout}")
+        
+        max_retries = config.get('connection', 'max_connection_retries', fallback='')
+        if max_retries:
+            env_content.append(f"PACKETCAPTURE_MAX_CONNECTION_RETRIES={max_retries}")
+        
+        retry_delay = config.get('connection', 'connection_retry_delay', fallback='')
+        if retry_delay:
+            env_content.append(f"PACKETCAPTURE_CONNECTION_RETRY_DELAY={retry_delay}")
+        
+        health_check = config.get('connection', 'health_check_interval', fallback='')
+        if health_check:
+            env_content.append(f"PACKETCAPTURE_HEALTH_CHECK_INTERVAL={health_check}")
     
     env_content.append("")
     
@@ -100,6 +112,15 @@ def migrate_config_ini():
             
             retain = config.get('mqtt', 'retain', fallback='true')
             env_content.append(f"PACKETCAPTURE_MQTT1_RETAIN={retain}")
+            
+            # MQTT reconnection settings
+            max_mqtt_retries = config.get('mqtt', 'max_mqtt_retries', fallback='')
+            if max_mqtt_retries:
+                env_content.append(f"PACKETCAPTURE_MAX_MQTT_RETRIES={max_mqtt_retries}")
+            
+            mqtt_retry_delay = config.get('mqtt', 'mqtt_retry_delay', fallback='')
+            if mqtt_retry_delay:
+                env_content.append(f"PACKETCAPTURE_MQTT_RETRY_DELAY={mqtt_retry_delay}")
         else:
             env_content.append("PACKETCAPTURE_MQTT1_ENABLED=false")
     else:
@@ -116,6 +137,10 @@ def migrate_config_ini():
         status_topic = config.get('topics', 'status', fallback='')
         if status_topic:
             env_content.append(f"PACKETCAPTURE_TOPIC_STATUS={status_topic}")
+        
+        raw_topic = config.get('topics', 'raw', fallback='')
+        if raw_topic:
+            env_content.append(f"PACKETCAPTURE_TOPIC_RAW={raw_topic}")
         
         decoded_topic = config.get('topics', 'decoded', fallback='')
         if decoded_topic:
@@ -144,6 +169,10 @@ def migrate_config_ini():
         advert_interval = config.get('packetcapture', 'advert_interval_hours', fallback='')
         if advert_interval:
             env_content.append(f"PACKETCAPTURE_ADVERT_INTERVAL_HOURS={advert_interval}")
+        
+        rf_data_timeout = config.get('packetcapture', 'rf_data_timeout', fallback='')
+        if rf_data_timeout:
+            env_content.append(f"PACKETCAPTURE_RF_DATA_TIMEOUT={rf_data_timeout}")
     
     # Write .env.local
     with open(env_local, 'w') as f:

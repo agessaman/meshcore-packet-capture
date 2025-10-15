@@ -526,7 +526,15 @@ select_connection_type() {
 # Sets SELECTED_SERIAL_DEVICE variable
 select_serial_device() {
     local devices=()
-    mapfile -t devices < <(detect_serial_devices)
+    # Use readarray instead of mapfile for better compatibility
+    if command -v readarray >/dev/null 2>&1; then
+        readarray -t devices < <(detect_serial_devices)
+    else
+        # Fallback for systems without readarray
+        while IFS= read -r line; do
+            devices+=("$line")
+        done < <(detect_serial_devices)
+    fi
     
     echo ""
     print_header "Serial Device Selection"

@@ -435,9 +435,9 @@ select_connection_type() {
     echo "     • Direct USB or serial cable connection"
     echo "     • More reliable for continuous operation"
     echo ""
-    echo "  3) TCP Connection - For network-connected devices (Coming Soon)"
-    echo "     • Connect over network"
-    echo "     • Not yet implemented"
+    echo "  3) TCP Connection - For network-connected devices"
+    echo "     • Connect to your node over the network"
+    echo "     • Works with ser2net or other TCP-to-serial bridges"
     echo ""
     
     while true; do
@@ -509,10 +509,11 @@ select_connection_type() {
                 break
                 ;;
             3)
-                print_warning "TCP connection is not yet implemented"
-                echo "Please select another connection type."
+                CONNECTION_TYPE="tcp"
+                print_info "Selected: TCP Connection"
                 echo ""
-                continue
+                configure_tcp_connection
+                break
                 ;;
             *)
                 print_error "Invalid choice. Please enter 1, 2, or 3"
@@ -588,6 +589,28 @@ select_serial_device() {
             print_error "Invalid selection. Please enter a number between 1 and $i"
         fi
     done
+}
+
+# Configure TCP connection
+configure_tcp_connection() {
+    echo ""
+    print_header "TCP Connection Configuration"
+    echo ""
+    print_info "TCP connections work with ser2net or other TCP-to-serial bridges"
+    print_info "This allows you to access serial devices over the network"
+    echo ""
+    
+    TCP_HOST=$(prompt_input "TCP host/address" "localhost")
+    TCP_PORT=$(prompt_input "TCP port" "5000")
+    
+    # Validate port number
+    if ! [[ "$TCP_PORT" =~ ^[0-9]+$ ]] || [ "$TCP_PORT" -lt 1 ] || [ "$TCP_PORT" -gt 65535 ]; then
+        print_error "Invalid port number. Using default port 5000"
+        TCP_PORT="5000"
+    fi
+    
+    print_success "TCP connection configured: $TCP_HOST:$TCP_PORT"
+    echo ""
 }
 
 prompt_yes_no() {
@@ -819,7 +842,8 @@ EOF
                 echo "PACKETCAPTURE_SERIAL_PORTS=$SELECTED_SERIAL_DEVICE" >> "$ENV_LOCAL"
                 ;;
             "tcp")
-                echo "# TCP configuration (not yet implemented)" >> "$ENV_LOCAL"
+                echo "PACKETCAPTURE_TCP_HOST=$TCP_HOST" >> "$ENV_LOCAL"
+                echo "PACKETCAPTURE_TCP_PORT=$TCP_PORT" >> "$ENV_LOCAL"
                 ;;
         esac
         

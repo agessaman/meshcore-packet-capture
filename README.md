@@ -1,6 +1,6 @@
 # MeshCore Packet Capture
 
-A standalone Python script for capturing and analyzing packets from MeshCore companion radios. The script connects to MeshCore devices via Bluetooth Low Energy (BLE) or serial connection, captures incoming packets, and outputs structured data to console, file, and MQTT broker.
+A standalone Python script for capturing and analyzing packets from MeshCore companion radios. The script connects to MeshCore devices via Bluetooth Low Energy (BLE), serial, or TCP connection, captures incoming packets, and outputs structured data to console, file, and MQTT broker.
 
 Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt) project by [Cisien](https://github.com/Cisien) and uses the official [meshcore](https://github.com/meshcore-dev/meshcore_py) Python package.
 
@@ -8,7 +8,7 @@ Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt)
 
 - **Packet Capture**: Captures incoming packets from MeshCore devices
 - **Multiple Output Formats**: Console output, file logging, and MQTT publishing
-- **Connection Types**: Supports both BLE and serial connections
+- **Connection Types**: Supports BLE, serial, and TCP connections
 - **Packet Analysis**: Parses packet headers, routes, payloads, and metadata
 - **RF Data**: Captures signal quality metrics (SNR, RSSI)
 - **Multi-Broker MQTT**: Supports up to 4 MQTT brokers simultaneously
@@ -57,7 +57,7 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 
 ## Configuration
 
-The script uses environment files for configuration. This modern approach is more secure, container-friendly, and follows industry best practices.
+The script uses environment files for configuration.
 
 ### Environment Files
 
@@ -80,10 +80,12 @@ This will create a `.env.local` file with your current settings.
 ### Environment Variables
 
 #### Connection Settings
-- `PACKETCAPTURE_CONNECTION_TYPE`: `ble` or `serial`
+- `PACKETCAPTURE_CONNECTION_TYPE`: `ble`, `serial`, or `tcp`
 - `PACKETCAPTURE_BLE_ADDRESS`: Specific BLE device address (optional)
 - `PACKETCAPTURE_BLE_DEVICE_NAME`: BLE device name to scan for (optional)
 - `PACKETCAPTURE_SERIAL_PORTS`: Comma-separated list of serial ports to try
+- `PACKETCAPTURE_TCP_HOST`: TCP host address (default: localhost)
+- `PACKETCAPTURE_TCP_PORT`: TCP port number (default: 5000)
 - `PACKETCAPTURE_TIMEOUT`: Connection timeout in seconds
 - `PACKETCAPTURE_MAX_CONNECTION_RETRIES`: Maximum MeshCore connection retry attempts (0 = infinite)
 - `PACKETCAPTURE_CONNECTION_RETRY_DELAY`: Delay between MeshCore reconnection attempts (seconds)
@@ -118,12 +120,7 @@ The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4). Each brok
 - `PACKETCAPTURE_PRIVATE_KEY`: Device private key for auth token authentication (hex string)
 - `PACKETCAPTURE_PRIVATE_KEY_FILE`: Path to file containing device private key
 
-**Note**: You can provide the private key in multiple ways:
-1. Environment variable: `PACKETCAPTURE_PRIVATE_KEY=your_key_here`
-2. File path: `PACKETCAPTURE_PRIVATE_KEY_FILE=/path/to/key_file`
-3. `.env.local` file: Create a `.env.local` file with `PACKETCAPTURE_PRIVATE_KEY=your_key_here`
-
-The `.env.local` file is automatically ignored by git and is perfect for local development.
+**Note**: Private keys can be provided via environment variable, file path, or `.env.local` file.
 
 #### Topic Templates
 Topics support template variables:
@@ -151,7 +148,7 @@ PACKETCAPTURE_PRIVATE_KEY=your_private_key_here
 # OR
 PACKETCAPTURE_PRIVATE_KEY_FILE=/path/to/private_key_file
 ```
-**Note**: Auth token authentication requires the device's private key. You can provide the private key manually via environment variable, file, or `.env.local` file.
+**Note**: Auth token authentication requires the device's private key.
 
 **Transport Options:**
 - `tcp`: Standard TCP connection
@@ -165,12 +162,9 @@ PACKETCAPTURE_MQTT1_TLS_VERIFY=true  # Verify certificates
 
 #### Exit Behavior
 
-The script handles MQTT disconnections intelligently:
+The script handles MQTT disconnections by continuing to run and attempting reconnection. On reconnection failure, it exits after maximum retry attempts (configurable).
 
-- **On Disconnect**: Script continues running and attempts reconnection
-- **On Reconnection Failure**: Script exits after maximum retry attempts (configurable)
-
-This approach is ideal for BLE connections where disconnections may be transient:
+For BLE connections where disconnections may be transient:
 
 ```bash
 # Exit when reconnection attempts fail (recommended for BLE)
@@ -181,26 +175,8 @@ PACKETCAPTURE_EXIT_ON_RECONNECT_FAIL=false
 PACKETCAPTURE_MAX_MQTT_RETRIES=0
 ```
 
-#### Legacy config.ini Settings
-- `connection_type`: `ble` or `serial`
-- `ble_address`: Specific BLE device address (optional)
-- `ble_device_name`: BLE device name to scan for (optional)
-- `serial_port`: Serial port path (for serial connections)
-- `timeout`: Connection timeout in seconds
-- `max_connection_retries`: Maximum MeshCore connection retry attempts (0 = infinite)
-- `connection_retry_delay`: Delay between MeshCore reconnection attempts (seconds)
-- `health_check_interval`: How often to check connection health (seconds)
-
-### MQTT Settings
-- `server`: MQTT broker address
-- `port`: MQTT broker port
-- `username`/`password`: Authentication credentials
-- `topics`: MQTT topic structure for different data types
-- `max_mqtt_retries`: Maximum MQTT connection retry attempts (0 = infinite)
-- `mqtt_retry_delay`: Delay between MQTT reconnection attempts (seconds)
-
-### Advert Settings
-- `advert_interval_hours`: Send flood adverts at this interval (0 = disabled, default = 11 hours)
+#### Advert Settings
+- `PACKETCAPTURE_ADVERT_INTERVAL_HOURS`: Send flood adverts at this interval (0 = disabled, default = 11 hours)
 
 ## Usage
 
@@ -225,13 +201,12 @@ python packet_capture.py --debug
 
 ## Docker Deployment
 
-The project includes Docker support for easy deployment and scaling. Docker deployment is recommended for production environments and provides better isolation and management.
+The project includes Docker support for deployment.
 
 ### Prerequisites
 
 - Docker and Docker Compose installed
-- Linux host system (recommended for full BLE support)
-- MeshCore device accessible via BLE or serial connection
+- Linux host system (recommended for BLE support)
 
 ### Quick Start with Docker Compose
 
@@ -260,13 +235,7 @@ The project includes Docker support for easy deployment and scaling. Docker depl
 
 ### Docker Compose Configuration
 
-The `docker-compose.yml` file includes:
-
-- **Privileged mode**: Required for BLE and device access
-- **Device mounting**: Serial port access (`/dev/ttyUSB0`, etc.)
-- **Volume mounts**: Persistent data storage and configuration
-- **Environment variables**: All configuration options
-- **Network configuration**: Bridge network for MQTT connectivity
+The `docker-compose.yml` file includes privileged mode for device access, volume mounts for data storage, and environment variable configuration.
 
 ### Manual Docker Commands
 
@@ -288,34 +257,24 @@ docker run --privileged \
   -e PACKETCAPTURE_CONNECTION_TYPE=serial \
   -e PACKETCAPTURE_SERIAL_PORTS=/dev/ttyUSB0 \
   meshcore-capture
+
+# Run with TCP connection
+docker run \
+  -v $(pwd)/data:/app/data \
+  -e PACKETCAPTURE_CONNECTION_TYPE=tcp \
+  -e PACKETCAPTURE_TCP_HOST=your-tcp-server \
+  -e PACKETCAPTURE_TCP_PORT=5000 \
+  meshcore-capture
 ```
 
 ### Configuration in Docker
 
-Configuration can be provided via:
-
-1. **Environment variables** (recommended):
-   ```bash
-   -e PACKETCAPTURE_MQTT1_SERVER=mqtt.example.com
-   -e PACKETCAPTURE_MQTT1_USERNAME=user
-   -e PACKETCAPTURE_MQTT1_PASSWORD=pass
-   ```
-
-2. **Volume-mounted .env.local file**:
-   ```bash
-   -v $(pwd)/.env.local:/app/.env.local:ro
-   ```
-
-3. **Docker Compose environment section**:
-   ```yaml
-   environment:
-     - PACKETCAPTURE_MQTT1_SERVER=mqtt.example.com
-   ```
+Configuration can be provided via environment variables or volume-mounted `.env.local` files.
 
 ### Platform Considerations
 
-- **Linux**: Full support for BLE and serial connections
-- **macOS**: Limited BLE support in containers, may require host networking
+- **Linux**: Full BLE and serial support
+- **macOS**: Limited BLE support in containers
 - **Windows**: Limited BLE support, serial connections work with proper device mounting
 
 ### Troubleshooting Docker Deployment
@@ -424,12 +383,7 @@ This will show:
 
 ## Contributing
 
-Contributions are welcome! I welcome pull requests and feature requests. Here are some ways you can contribute:
-
-- **Bug Reports**: Found an issue? Please open a GitHub issue with details about the problem
-- **Feature Requests**: Have an idea for a new feature? Open an issue to discuss it
-- **Pull Requests**: Submit PRs for bug fixes, new features, or improvements
-- **Documentation**: Help improve the README, add examples, or clarify usage instructions
+Contributions are welcome! Please open GitHub issues for bug reports and feature requests, or submit pull requests for improvements.
 
 ## Credits
 

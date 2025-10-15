@@ -388,6 +388,12 @@ class PacketCapture:
                     serial_port = serial_port.split(',')[0].strip()
                 self.logger.info(f"Connecting via serial port: {serial_port}")
                 self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=False)
+            elif connection_type == 'tcp':
+                # Create TCP connection
+                tcp_host = self.get_env('TCP_HOST', 'localhost')
+                tcp_port = self.get_env_int('TCP_PORT', 5000)
+                self.logger.info(f"Connecting via TCP to {tcp_host}:{tcp_port}")
+                self.meshcore = await meshcore.MeshCore.create_tcp(tcp_host, tcp_port, debug=False)
             else:
                 # Create BLE connection (default)
                 # Support both BLE_ADDRESS and BLE_DEVICE for MAC address

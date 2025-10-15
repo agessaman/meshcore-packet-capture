@@ -429,10 +429,20 @@ class PacketCapture:
             for broker_num in list(self.jwt_tokens.keys()):
                 if self.is_jwt_token_expired(broker_num):
                     self.logger.info(f"JWT token for broker {broker_num} needs renewal")
-                    await self.renew_jwt_token(broker_num)
                     
-                    # Reconnect MQTT broker with new token
-                    await self.reconnect_mqtt_broker_with_new_token(broker_num)
+                    # Renew the token first
+                    renewal_success = await self.renew_jwt_token(broker_num)
+                    if not renewal_success:
+                        self.logger.error(f"Failed to renew JWT token for broker {broker_num}, skipping reconnection")
+                        continue
+                    
+                    # Only reconnect if token renewal was successful
+                    self.logger.info(f"Reconnecting MQTT broker {broker_num} with new token...")
+                    reconnection_success = await self.reconnect_mqtt_broker_with_new_token(broker_num)
+                    if reconnection_success:
+                        self.logger.info(f"✓ MQTT broker {broker_num} successfully reconnected with new JWT token")
+                    else:
+                        self.logger.error(f"Failed to reconnect MQTT broker {broker_num} with new token")
                     
         except Exception as e:
             self.logger.error(f"Error checking JWT token renewals: {e}")
@@ -480,11 +490,26 @@ class PacketCapture:
             port = self.get_env_int(f'MQTT{broker_num}_PORT', 1883)
             keepalive = self.get_env_int(f'MQTT{broker_num}_KEEPALIVE', 60)
             
-            mqtt_client.connect(server, port, keepalive=keepalive)
+            # Connect and wait for connection to establish
+            result = mqtt_client.connect(server, port, keepalive=keepalive)
+            if result != mqtt.MQTT_ERR_SUCCESS:
+                self.logger.error(f"Failed to initiate connection to MQTT{broker_num}: {mqtt.error_string(result)}")
+                return False
+            
             mqtt_client.loop_start()
             
-            self.logger.info(f"✓ MQTT broker {broker_num} reconnected with new JWT token")
-            return True
+            # Wait for connection to establish (with timeout)
+            connection_timeout = 10  # seconds
+            start_time = time.time()
+            while not mqtt_client.is_connected() and (time.time() - start_time) < connection_timeout:
+                await asyncio.sleep(0.1)
+            
+            if mqtt_client.is_connected():
+                self.logger.info(f"✓ MQTT broker {broker_num} reconnected with new JWT token")
+                return True
+            else:
+                self.logger.error(f"MQTT broker {broker_num} connection timeout after {connection_timeout}s")
+                return False
             
         except Exception as e:
             self.logger.error(f"Error reconnecting MQTT broker {broker_num} with new token: {e}")
@@ -704,8 +729,8 @@ class PacketCapture:
                 if self.enable_mqtt:
                     await self.check_mqtt_reconnection()
                 
-                # Check and renew JWT tokens if needed
-                await self.check_and_renew_jwt_tokens()
+                # JWT token renewal is now handled proactively in safe_publish()
+                # and by the dedicated jwt_renewal_scheduler task
                 
             except asyncio.CancelledError:
                 if self.debug:
@@ -1018,6 +1043,22 @@ class PacketCapture:
         if not self.mqtt_connected:
             self.logger.warning(f"Not connected - skipping publish to {topic or topic_type}")
             return metrics
+        
+        # Proactively check for expired tokens before publishing
+        if self.enable_mqtt:
+            try:
+                # Check if any tokens are expired and need renewal
+                expired_brokers = []
+                for broker_num in list(self.jwt_tokens.keys()):
+                    if self.is_jwt_token_expired(broker_num):
+                        expired_brokers.append(broker_num)
+                
+                if expired_brokers:
+                    self.logger.warning(f"Detected expired JWT tokens for brokers: {expired_brokers}")
+                    # Schedule renewal (don't await here to avoid blocking publish)
+                    asyncio.create_task(self.check_and_renew_jwt_tokens())
+            except Exception as e:
+                self.logger.debug(f"Error checking token expiry before publish: {e}")
 
         if client:
             clients_to_publish = [info for info in self.mqtt_clients if info['client'] == client]

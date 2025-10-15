@@ -1261,6 +1261,14 @@ main() {
         if curl -fsSL "$CONFIG_URL" -o "$INSTALL_DIR/.env.local"; then
             print_success "Configuration downloaded successfully"
             
+            # Convert MCTOMQTT_ prefixes to PACKETCAPTURE_ for compatibility
+            if grep -q "MCTOMQTT_" "$INSTALL_DIR/.env.local"; then
+                print_info "Converting MCTOMQTT_ prefixes to PACKETCAPTURE_ for compatibility..."
+                sed -i.bak 's/^MCTOMQTT_/PACKETCAPTURE_/g' "$INSTALL_DIR/.env.local"
+                rm -f "$INSTALL_DIR/.env.local.bak"
+                print_success "Configuration converted successfully"
+            fi
+            
             # Show what was downloaded
             echo ""
             print_info "Downloaded configuration:"

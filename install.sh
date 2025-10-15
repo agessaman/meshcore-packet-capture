@@ -1381,8 +1381,13 @@ main() {
             configure_mqtt_brokers
         else
             print_info "Keeping existing configuration"
-            # Still need to configure MQTT brokers if not already configured
-            configure_mqtt_brokers_only
+            # Check if MQTT brokers are already configured
+            if grep -q "^PACKETCAPTURE_MQTT[1-4]_ENABLED=true" "$INSTALL_DIR/.env.local" 2>/dev/null; then
+                print_info "MQTT brokers already configured - skipping MQTT configuration"
+            else
+                # Still need to configure MQTT brokers if not already configured
+                configure_mqtt_brokers_only
+            fi
         fi
     elif [ ! -f "$INSTALL_DIR/.env.local" ]; then
         configure_mqtt_brokers
@@ -1522,6 +1527,7 @@ User=$current_user
 WorkingDirectory=$INSTALL_DIR
 Environment="PATH=$service_path"
 ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/packet_capture.py
+ExecStop=/bin/bash -c 'if [ -f $INSTALL_DIR/.env.local ] && grep -q "PACKETCAPTURE_CONNECTION_TYPE=ble" $INSTALL_DIR/.env.local; then BLE_DEVICE=\$(grep "PACKETCAPTURE_BLE_DEVICE=" $INSTALL_DIR/.env.local | cut -d= -f2); if [ -n "\$BLE_DEVICE" ] && command -v bluetoothctl >/dev/null 2>&1; then echo "Disconnecting BLE device \$BLE_DEVICE..."; bluetoothctl disconnect "\$BLE_DEVICE" 2>/dev/null || true; sleep 2; fi; fi'
 KillMode=process
 Restart=on-failure
 RestartSec=10
@@ -1759,6 +1765,10 @@ services:
       
       # RF data settings
       - PACKETCAPTURE_RF_DATA_TIMEOUT=15.0
+      
+      # JWT token renewal settings
+      - PACKETCAPTURE_JWT_RENEWAL_INTERVAL=3600
+      - PACKETCAPTURE_JWT_RENEWAL_THRESHOLD=300
     networks:
       - meshcore-network
     restart: unless-stopped

@@ -761,8 +761,12 @@ class PacketCapture:
         broker_name = userdata.get('name', 'unknown') if userdata else 'unknown'
         self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: {reason_code})")
         
-        # Check if any brokers are still connected
-        connected_brokers = [info for info in self.mqtt_clients if info['client'].is_connected()]
+        # Check if any brokers are still connected (excluding the one that just disconnected)
+        connected_brokers = []
+        for info in self.mqtt_clients:
+            if info['client'] != client and info['client'].is_connected():
+                connected_brokers.append(info)
+        
         if not connected_brokers:
             self.mqtt_connected = False
             self.logger.warning("All MQTT brokers disconnected. Will attempt reconnection...")
@@ -1094,6 +1098,7 @@ class PacketCapture:
                 if qos == 1:
                     qos = 0
 
+                # Only count as attempted if we actually try to publish
                 metrics["attempted"] += 1
                 result = mqtt_client.publish(resolved_topic, payload, qos=qos, retain=retain)
                 if result.rc != mqtt.MQTT_ERR_SUCCESS:

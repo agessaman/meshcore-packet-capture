@@ -19,17 +19,13 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 ## Features
 
 - **Packet Capture**: Captures incoming packets from MeshCore devices
-- **Multiple Output Formats**: Console output, file logging, and MQTT publishing
 - **Connection Types**: Supports BLE, serial, and TCP connections
 - **Packet Analysis**: Parses packet headers, routes, payloads, and metadata
 - **RF Data**: Captures signal quality metrics (SNR, RSSI)
 - **Multi-Broker MQTT**: Supports up to 4 MQTT brokers simultaneously
-- **Auth Token Authentication**: JWT-based authentication using device private keys
+- **Auth Token Authentication**: JWT-based authentication using device private key
 - **TLS/WebSocket Support**: Secure connections with TLS/SSL and WebSocket transport
-- **Topic Templates**: Dynamic topic resolution with IATA and device key placeholders
-- **Automatic Reconnection**: Handles disconnections gracefully with configurable retry logic
-- **Connection Monitoring**: Continuous health checks to detect and recover from connection issues
-- **Environment Configuration**: Modern .env/.env.local configuration files
+- **Topic Templates**: Per-broker topic templates
 
 ## Requirements
 
@@ -81,13 +77,8 @@ All environment variables are prefixed with `PACKETCAPTURE_`. See the `.env` fil
 
 ### Configuration Variables
 
-To migrate from `config.ini` to environment files:
+Configuration is handled via environment variables and `.env` files. The installer will create a `.env.local` file with your settings.
 
-```bash
-python3 migrate_config.py
-```
-
-This will create a `.env.local` file with your current settings.
 
 ### Environment Variables
 
@@ -286,8 +277,8 @@ Configuration can be provided via environment variables or volume-mounted `.env.
 ### Platform Considerations
 
 - **Linux**: Full BLE and serial support
-- **macOS**: Limited BLE support in containers
-- **Windows**: Limited BLE support, serial connections work with proper device mounting
+- **macOS**: Full BLE and serial support, limited BLE support in containers
+- **Windows**: Limited BLE support (currently untested), serial connections work with proper device mounting
 
 ### Troubleshooting Docker Deployment
 
@@ -391,7 +382,11 @@ This will show:
 
 - `packet_capture.py`: Main capture script
 - `enums.py`: Packet type and flag definitions
-- `config.ini`: Configuration file (auto-generated)
+- `install.sh`: Installation script
+- `uninstall.sh`: Uninstallation script
+- `scan_meshcore_network.py`: Network scanner for MeshCore nodes
+- `.env`: Default configuration template
+- `.env.local`: Local configuration (created by installer)
 
 ## Contributing
 

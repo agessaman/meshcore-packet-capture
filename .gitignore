@@ -1,6 +1,6 @@
 # Configuration files with sensitive data
 config.ini
-.env*
+.env.*
 old/
 
 # Python
@@ -47,7 +47,7 @@ coverage.xml
 .pytest_cache/
 
 # Environments
-.env
+.env.*
 .venv
 env/
 venv/

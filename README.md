@@ -4,6 +4,18 @@ A standalone Python script for capturing and analyzing packets from MeshCore com
 
 Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt) project by [Cisien](https://github.com/Cisien) and uses the official [meshcore](https://github.com/meshcore-dev/meshcore_py) Python package.
 
+## Quick Start
+
+### Install
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh)
+```
+
+### Uninstall
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/uninstall.sh)
+```
+
 ## Features
 
 - **Packet Capture**: Captures incoming packets from MeshCore devices

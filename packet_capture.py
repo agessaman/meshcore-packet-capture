@@ -1583,7 +1583,23 @@ class PacketCapture:
         # Publish to MQTT if enabled
         publish_metrics = {"attempted": 0, "succeeded": 0}
         if self.enable_mqtt:
-            publish_metrics = self.safe_publish(None, json.dumps(packet_data), topic_type="packets")
+            # Publish full packet data
+            packet_metrics = self.safe_publish(None, json.dumps(packet_data), topic_type="packets")
+            
+            # Publish raw data if TOPIC_RAW is configured
+            raw_data = {
+                "origin": packet_data["origin"],
+                "origin_id": packet_data["origin_id"],
+                "timestamp": packet_data["timestamp"],
+                "type": "RAW",
+                "data": packet_data["raw"]
+            }
+            raw_metrics = self.safe_publish(None, json.dumps(raw_data), topic_type="raw")
+            
+            # Combine metrics: success only if BOTH packets and raw publish successfully
+            # This ensures we count a broker as successful only if all its topics succeed
+            publish_metrics["attempted"] = max(packet_metrics["attempted"], raw_metrics["attempted"])
+            publish_metrics["succeeded"] = min(packet_metrics["succeeded"], raw_metrics["succeeded"])
 
         return publish_metrics
     

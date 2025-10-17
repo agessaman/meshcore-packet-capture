@@ -340,9 +340,7 @@ Captured packets are output in JSON format with the following structure:
 
 - `meshcore/status`: Device online/offline status
 - `meshcore/packets`: Full packet data
-- `meshcore/decoded`: Decoded packet content
-- `meshcore/debug`: Debug information (only when --debug flag is used)
-
+- `meshcore/raw`: Raw packet data (required for map.w0z.is)
 ## Troubleshooting
 
 ### Connection Issues

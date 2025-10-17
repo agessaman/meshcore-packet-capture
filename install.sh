@@ -672,7 +672,7 @@ configure_mqtt_topics() {
     # Topic options
     echo "Choose topic configuration:"
     echo "  1) Default pattern (meshcore/{IATA}/{PUBLIC_KEY}/status, meshcore/{IATA}/{PUBLIC_KEY}/packets)"
-    echo "  2) Classic pattern (meshcore/status, meshcore/packets)"
+    echo "  2) Classic pattern (meshcore/status, meshcore/packets, meshcore/raw)"
     echo "  3) Custom topics (enter your own)"
     echo ""
     
@@ -688,11 +688,12 @@ configure_mqtt_topics() {
             print_success "Default pattern topics configured"
             ;;
         2)
-            # Classic pattern (simple meshcore topics)
+            # Classic pattern (simple meshcore topics, needed for map.w0z.is)
             echo "" >> "$ENV_LOCAL"
             echo "# MQTT Topics for Broker $BROKER_NUM - Classic Pattern" >> "$ENV_LOCAL"
             echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_STATUS=meshcore/status" >> "$ENV_LOCAL"
             echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_PACKETS=meshcore/packets" >> "$ENV_LOCAL"
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_RAW=meshcore/raw" >> "$ENV_LOCAL"
             print_success "Classic pattern topics configured"
             ;;
         3)

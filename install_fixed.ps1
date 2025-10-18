@@ -586,7 +586,31 @@ function Start-Installation {
                             }
                             else {
                                 $selectedDevice = $pairedMeshCoreDevices[([int]$choice - 1)]
-                                $script:SelectedBleDevice = $selectedDevice.InstanceId
+                                # Extract MAC address from InstanceId if possible
+                                $macAddress = $selectedDevice.InstanceId
+                                if ($macAddress -match 'DEV_([A-F0-9]{12})') {
+                                    $macBytes = $matches[1]
+                                    $macAddress = ($macBytes -split '(..)') | Where-Object { $_ } | Join-String -Separator ':'
+                                } else {
+                                    # Try to get MAC address from Windows Bluetooth registry
+                                    try {
+                                        $deviceName = $selectedDevice.FriendlyName
+                                        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices"
+                                        $deviceKeys = Get-ChildItem $regPath -ErrorAction SilentlyContinue
+                                        foreach ($key in $deviceKeys) {
+                                            $deviceInfo = Get-ItemProperty $key.PSPath -ErrorAction SilentlyContinue
+                                            if ($deviceInfo -and $deviceInfo.Name -eq $deviceName) {
+                                                $macAddress = $key.PSChildName -replace '(.{2})(.{2})(.{2})(.{2})(.{2})(.{2})', '$1:$2:$3:$4:$5:$6'
+                                                break
+                                            }
+                                        }
+                                    } catch {
+                                        # If registry lookup fails, prompt user for MAC address
+                                        Write-Host "WARNING: Could not extract MAC address automatically" -ForegroundColor Yellow
+                                        $macAddress = Read-Host "Enter the MAC address for $($selectedDevice.FriendlyName) (format: XX:XX:XX:XX:XX:XX)"
+                                    }
+                                }
+                                $script:SelectedBleDevice = $macAddress
                                 $script:SelectedBleName = $selectedDevice.FriendlyName
                             }
                             break
@@ -666,7 +690,13 @@ function Start-Installation {
                                 }
                                 else {
                                     $selectedDevice = $meshcoreDevices[([int]$choice - 1)]
-                                    $script:SelectedBleDevice = $selectedDevice.Address
+                                    # Extract MAC address from Address if it's a Windows device ID
+                                    $macAddress = $selectedDevice.Address
+                                    if ($macAddress -match 'DEV_([A-F0-9]{12})') {
+                                        $macBytes = $matches[1]
+                                        $macAddress = ($macBytes -split '(..)') | Where-Object { $_ } | Join-String -Separator ':'
+                                    }
+                                    $script:SelectedBleDevice = $macAddress
                                     $script:SelectedBleName = $selectedDevice.Name
                                 }
                                 break

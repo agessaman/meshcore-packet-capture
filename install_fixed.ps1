@@ -269,8 +269,27 @@ function Start-Installation {
                 $bleScanScript = Join-Path $InstallDir "ble_scan_helper.py"
                 Write-Host "INFO: This may take 10-15 seconds..." -ForegroundColor Blue
                 
-                # Use the virtual environment Python
+                # Use the virtual environment Python with proper environment
                 $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
+                $venvActivate = Join-Path $InstallDir "venv\Scripts\Activate.ps1"
+                
+                # Ensure we're in the right directory and environment
+                Set-Location $InstallDir
+                
+                # Test if the script can run at all
+                Write-Host "DEBUG: Testing BLE script execution..." -ForegroundColor Gray
+                $testOutput = & $venvPython -c "import bleak, meshcore; print('Dependencies OK')" 2>&1
+                $testExitCode = $LASTEXITCODE
+                Write-Host "DEBUG: Dependency test exit code: $testExitCode" -ForegroundColor Gray
+                Write-Host "DEBUG: Dependency test output: $testOutput" -ForegroundColor Gray
+                
+                if ($testExitCode -ne 0) {
+                    Write-Host "WARNING: BLE dependencies not available, falling back to manual entry" -ForegroundColor Yellow
+                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                    return
+                }
+                
                 $scanOutput = & $venvPython $bleScanScript 2>&1
                 $scanExitCode = $LASTEXITCODE
                 
@@ -327,6 +346,9 @@ function Start-Installation {
                     Write-Host "WARNING: BLE scanning failed (exit code: $scanExitCode)" -ForegroundColor Yellow
                     Write-Host "INFO: Output: $scanOutput" -ForegroundColor Blue
                     Write-Host "INFO: This may be due to missing BLE permissions or dependencies" -ForegroundColor Blue
+                    Write-Host "INFO: On Windows, BLE scanning may require administrator privileges" -ForegroundColor Blue
+                    Write-Host "INFO: You can also manually enter your device details below" -ForegroundColor Blue
+                    Write-Host ""
                     $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                     $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
                 }
@@ -348,6 +370,10 @@ function Start-Installation {
                 try {
                     $blePairingScript = Join-Path $InstallDir "ble_pairing_helper.py"
                     $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
+                    
+                    # Ensure we're in the right directory
+                    Set-Location $InstallDir
+                    
                     $pairingResult = & $venvPython $blePairingScript $script:SelectedBleDevice $script:SelectedBleName 2>&1
                     $pairingExitCode = $LASTEXITCODE
                     

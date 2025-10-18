@@ -1275,12 +1275,12 @@ function Start-Installation {
     $defaultInstallDir = Join-Path $env:USERPROFILE ".meshcore-packet-capture"
     $script:InstallDir = Read-Host "Installation directory" $defaultInstallDir
     
-    Write-Info "Installation directory: $InstallDir"
+    Write-Host "ℹ Installation directory: $InstallDir" -ForegroundColor Blue
     
     # Check if directory exists
     if (Test-Path $InstallDir) {
         if (Read-YesNo "Directory already exists. Reinstall/update?" "n") {
-            Write-Info "Updating existing installation..."
+            Write-Host "ℹ Updating existing installation..." -ForegroundColor Blue
             $script:UpdatingExisting = $true
         }
         else {

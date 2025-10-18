@@ -1103,6 +1103,8 @@ class PacketCapture:
                 # CRITICAL FIX: Resolve topic properly
                 if topic_type:
                     resolved_topic = self.get_topic(topic_type, current_broker_num)
+                    if self.debug:
+                        self.logger.debug(f"Resolved topic for MQTT{current_broker_num} {topic_type}: {resolved_topic}")
                 elif topic:
                     resolved_topic = topic
                 else:

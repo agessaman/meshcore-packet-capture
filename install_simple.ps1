@@ -27,7 +27,7 @@ $UpdatingExisting = $false
 
 # Simple test function
 function Test-Simple {
-    Write-Host "✓ Simple test function works" -ForegroundColor Green
+    Write-Host "Simple test function works" -ForegroundColor Green
 }
 
 # Test if we can call functions
@@ -43,14 +43,14 @@ Write-Host ""
 # Test function call
 Test-Simple
 
-Write-Host "ℹ Testing direct Write-Host call" -ForegroundColor Blue
+Write-Host "Testing direct Write-Host call" -ForegroundColor Blue
 
 # Determine installation directory
 $defaultInstallDir = Join-Path $env:USERPROFILE ".meshcore-packet-capture"
 $script:InstallDir = Read-Host "Installation directory" $defaultInstallDir
 
-Write-Host "ℹ Installation directory: $InstallDir" -ForegroundColor Blue
+Write-Host "Installation directory: $InstallDir" -ForegroundColor Blue
 
 Write-Host ""
-Write-Host "✓ Script execution test complete!" -ForegroundColor Green
+Write-Host "Script execution test complete!" -ForegroundColor Green
 Write-Host "If you see this message, the basic script structure is working." -ForegroundColor Green

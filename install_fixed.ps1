@@ -590,7 +590,11 @@ function Start-Installation {
                                 $macAddress = $selectedDevice.InstanceId
                                 if ($macAddress -match 'DEV_([A-F0-9]{12})') {
                                     $macBytes = $matches[1]
-                                    $macAddress = ($macBytes -split '(..)') | Where-Object { $_ } | Join-String -Separator ':'
+                                    $macParts = @()
+                                    for ($i = 0; $i -lt $macBytes.Length; $i += 2) {
+                                        $macParts += $macBytes.Substring($i, 2)
+                                    }
+                                    $macAddress = $macParts -join ':'
                                 } else {
                                     # Try to get MAC address from Windows Bluetooth registry
                                     try {
@@ -694,7 +698,11 @@ function Start-Installation {
                                     $macAddress = $selectedDevice.Address
                                     if ($macAddress -match 'DEV_([A-F0-9]{12})') {
                                         $macBytes = $matches[1]
-                                        $macAddress = ($macBytes -split '(..)') | Where-Object { $_ } | Join-String -Separator ':'
+                                        $macParts = @()
+                                        for ($i = 0; $i -lt $macBytes.Length; $i += 2) {
+                                            $macParts += $macBytes.Substring($i, 2)
+                                        }
+                                        $macAddress = $macParts -join ':'
                                     }
                                     $script:SelectedBleDevice = $macAddress
                                     $script:SelectedBleName = $selectedDevice.Name

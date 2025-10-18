@@ -147,6 +147,137 @@ function Start-Installation {
     Write-Host ""
     Write-Host "INFO: Setting up configuration..." -ForegroundColor Blue
     
+    # Connection Type Selection
+    Write-Host ""
+    Write-Host "INFO: Device Connection Configuration" -ForegroundColor Blue
+    Write-Host "INFO: How would you like to connect to your MeshCore device?" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "  1) Serial Connection - For devices with USB/serial interface" -ForegroundColor Blue
+    Write-Host "     • Direct USB or serial cable connection" -ForegroundColor Blue
+    Write-Host "     • More reliable for continuous operation" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "  2) Bluetooth Low Energy (BLE) - For BLE-capable nodes" -ForegroundColor Blue
+    Write-Host "     • Wireless connection" -ForegroundColor Blue
+    Write-Host "     • Works with BLE-enabled MeshCore devices" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "  3) TCP Connection - For network-connected devices" -ForegroundColor Blue
+    Write-Host "     • Connect to your node over the network" -ForegroundColor Blue
+    Write-Host "     • Works with ser2net or other TCP-to-serial bridges" -ForegroundColor Blue
+    Write-Host ""
+    
+    $connectionChoice = ""
+    while ($connectionChoice -notmatch '^[1-3]$') {
+        $connectionChoice = Read-Host "Select connection type [1-3]"
+        if ($connectionChoice -notmatch '^[1-3]$') {
+            Write-Host "ERROR: Invalid choice. Please enter 1, 2, or 3" -ForegroundColor Red
+        }
+    }
+    
+    $script:ConnectionType = ""
+    $script:SelectedSerialDevice = ""
+    $script:SelectedBleDevice = ""
+    $script:SelectedBleName = ""
+    $script:TcpHost = ""
+    $script:TcpPort = ""
+    
+    switch ($connectionChoice) {
+        "1" {
+            $script:ConnectionType = "serial"
+            Write-Host "SUCCESS: Selected Serial Connection" -ForegroundColor Green
+            
+            # Detect serial devices
+            Write-Host ""
+            Write-Host "INFO: Detecting serial devices..." -ForegroundColor Blue
+            
+            $devices = @()
+            try {
+                # Get COM ports from WMI
+                $comPorts = Get-WmiObject -Class Win32_SerialPort | Where-Object { $_.DeviceID -like "COM*" }
+                foreach ($port in $comPorts) {
+                    $devices += $port.DeviceID
+                }
+                
+                # Also check for USB serial adapters
+                $usbDevices = Get-WmiObject -Class Win32_PnPEntity | Where-Object { 
+                    $_.Name -like "*USB Serial*" -or 
+                    $_.Name -like "*USB-to-Serial*" -or
+                    $_.Name -like "*FTDI*" -or
+                    $_.Name -like "*Prolific*" -or
+                    $_.Name -like "*Silicon Labs*"
+                }
+                
+                foreach ($device in $usbDevices) {
+                    if ($device.PNPDeviceID -match "COM\d+") {
+                        $comMatch = [regex]::Match($device.PNPDeviceID, "COM\d+")
+                        if ($comMatch.Success) {
+                            $comPort = $comMatch.Value
+                            if ($devices -notcontains $comPort) {
+                                $devices += $comPort
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Host "WARNING: Failed to detect serial devices: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+            
+            if ($devices.Count -eq 0) {
+                Write-Host "WARNING: No serial devices detected" -ForegroundColor Yellow
+                $script:SelectedSerialDevice = Read-Host "Enter serial device path" "COM1"
+            }
+            elseif ($devices.Count -eq 1) {
+                Write-Host "INFO: Found 1 serial device: $($devices[0])" -ForegroundColor Blue
+                $script:SelectedSerialDevice = $devices[0]
+            }
+            else {
+                Write-Host "INFO: Found $($devices.Count) serial devices:" -ForegroundColor Blue
+                for ($i = 0; $i -lt $devices.Count; $i++) {
+                    Write-Host "  $($i + 1)) $($devices[$i])" -ForegroundColor Blue
+                }
+                Write-Host "  $($devices.Count + 1)) Enter path manually" -ForegroundColor Blue
+                Write-Host ""
+                
+                while ($true) {
+                    $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
+                    if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
+                        if ([int]$choice -eq ($devices.Count + 1)) {
+                            $script:SelectedSerialDevice = Read-Host "Enter serial device path" "COM1"
+                        }
+                        else {
+                            $script:SelectedSerialDevice = $devices[([int]$choice - 1)]
+                        }
+                        break
+                    }
+                    else {
+                        Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($devices.Count + 1)" -ForegroundColor Red
+                    }
+                }
+            }
+            Write-Host "SUCCESS: Serial device configured: $script:SelectedSerialDevice" -ForegroundColor Green
+        }
+        "2" {
+            $script:ConnectionType = "ble"
+            Write-Host "SUCCESS: Selected Bluetooth Low Energy (BLE)" -ForegroundColor Green
+            Write-Host "INFO: BLE scanning requires meshcore library - will be configured after installation" -ForegroundColor Blue
+            $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+            $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+        }
+        "3" {
+            $script:ConnectionType = "tcp"
+            Write-Host "SUCCESS: Selected TCP Connection" -ForegroundColor Green
+            $script:TcpHost = Read-Host "TCP host/address" "localhost"
+            $script:TcpPort = Read-Host "TCP port" "5000"
+            
+            # Validate port number
+            if (-not ($script:TcpPort -match '^\d+$') -or [int]$script:TcpPort -lt 1 -or [int]$script:TcpPort -gt 65535) {
+                Write-Host "ERROR: Invalid port number. Using default port 5000" -ForegroundColor Red
+                $script:TcpPort = "5000"
+            }
+            Write-Host "SUCCESS: TCP connection configured: $($script:TcpHost):$($script:TcpPort)" -ForegroundColor Green
+        }
+    }
+    
     # Create basic .env.local file
     $envLocal = Join-Path $InstallDir ".env.local"
     $configContent = @"
@@ -158,7 +289,29 @@ PACKETCAPTURE_UPDATE_REPO=$Repo
 PACKETCAPTURE_UPDATE_BRANCH=$Branch
 
 # Connection Configuration
-PACKETCAPTURE_CONNECTION_TYPE=serial
+PACKETCAPTURE_CONNECTION_TYPE=$script:ConnectionType
+"@
+    
+    # Add device-specific configuration
+    switch ($script:ConnectionType) {
+        "ble" {
+            if ($script:SelectedBleDevice) {
+                $configContent += "`nPACKETCAPTURE_BLE_DEVICE=$script:SelectedBleDevice"
+            }
+            if ($script:SelectedBleName) {
+                $configContent += "`nPACKETCAPTURE_BLE_NAME=$script:SelectedBleName"
+            }
+        }
+        "serial" {
+            $configContent += "`nPACKETCAPTURE_SERIAL_PORTS=$script:SelectedSerialDevice"
+        }
+        "tcp" {
+            $configContent += "`nPACKETCAPTURE_TCP_HOST=$script:TcpHost"
+            $configContent += "`nPACKETCAPTURE_TCP_PORT=$script:TcpPort"
+        }
+    }
+    
+    $configContent += @"
 
 # Location Code
 PACKETCAPTURE_IATA=XXX

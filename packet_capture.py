@@ -1627,10 +1627,10 @@ class PacketCapture:
             }
             raw_metrics = self.safe_publish(None, json.dumps(raw_data), topic_type="raw")
             
-            # Combine metrics: success only if BOTH packets and raw (if configured) publish successfully
-            # This ensures we count a broker as successful only if all its topics succeed
-            publish_metrics["attempted"] = max(packet_metrics["attempted"], raw_metrics["attempted"])
-            publish_metrics["succeeded"] = min(packet_metrics["succeeded"], raw_metrics["succeeded"])
+            # Combine metrics: sum up all successful publishes across all brokers
+            # Each broker publishes to its configured topics independently
+            publish_metrics["attempted"] = packet_metrics["attempted"] + raw_metrics["attempted"]
+            publish_metrics["succeeded"] = packet_metrics["succeeded"] + raw_metrics["succeeded"]
 
         return publish_metrics
     

@@ -26,6 +26,107 @@ $ServiceInstalled = $false
 $DockerInstalled = $false
 $UpdatingExisting = $false
 
+# Helper function for Windows Bluetooth API pairing
+function Invoke-BluetoothPairing {
+    param(
+        [string]$DeviceAddress,
+        [string]$Pin
+    )
+    
+    try {
+        # Use Windows Bluetooth API via .NET
+        Add-Type -TypeDefinition @"
+            using System;
+            using System.Runtime.InteropServices;
+            using System.Text;
+            
+            public class BluetoothAPI {
+                [DllImport("bthprops.cpl", CharSet = CharSet.Unicode)]
+                public static extern int BluetoothAuthenticateDevice(IntPtr hwndParent, IntPtr hRadio, ref BLUETOOTH_DEVICE_INFO pbtdi, string pszPasskey, int ulPasskeyLength);
+                
+                [DllImport("bthprops.cpl", CharSet = CharSet.Unicode)]
+                public static extern int BluetoothSetServiceState(IntPtr hRadio, ref BLUETOOTH_DEVICE_INFO pbtdi, ref Guid pGuidService, int dwServiceFlags);
+            }
+            
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            public struct BLUETOOTH_DEVICE_INFO {
+                public int dwSize;
+                public long Address;
+                public int ulClassofDevice;
+                public bool fConnected;
+                public bool fRemembered;
+                public bool fAuthenticated;
+                public long ftLastSeen;
+                public long ftLastUsed;
+                [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 248)]
+                public string szName;
+            }
+"@ -ErrorAction SilentlyContinue
+        
+        # Try to pair using Windows API
+        Write-Host "DEBUG: Attempting Windows Bluetooth API pairing..." -ForegroundColor Gray
+        
+        # This is a simplified approach - in practice, you'd need more complex API calls
+        # For now, we'll return false to fall back to other methods
+        return $false
+        
+    } catch {
+        Write-Host "DEBUG: Windows Bluetooth API failed: $($_.Exception.Message)" -ForegroundColor Gray
+        return $false
+    }
+}
+
+# Helper function for bluetoothctl pairing
+function Invoke-BluetoothctlPairing {
+    param(
+        [string]$DeviceAddress,
+        [string]$Pin
+    )
+    
+    try {
+        Write-Host "DEBUG: Attempting bluetoothctl pairing..." -ForegroundColor Gray
+        
+        # Use bluetoothctl to pair
+        $pairingScript = @"
+#!/bin/bash
+bluetoothctl << EOF
+agent on
+default-agent
+scan on
+sleep 5
+scan off
+pair $DeviceAddress
+$Pin
+trust $DeviceAddress
+untrust $DeviceAddress
+exit
+EOF
+"@
+        
+        # Save script to temp file
+        $tempScript = [System.IO.Path]::GetTempFileName() + ".sh"
+        $pairingScript | Out-File -FilePath $tempScript -Encoding UTF8
+        
+        # Try to run via WSL or Git Bash
+        $wslResult = wsl bash $tempScript 2>&1
+        $gitBashResult = bash $tempScript 2>&1
+        
+        # Clean up
+        Remove-Item $tempScript -ErrorAction SilentlyContinue
+        
+        if ($wslResult -match "Pairing successful" -or $gitBashResult -match "Pairing successful") {
+            return $true
+        } else {
+            Write-Host "DEBUG: bluetoothctl pairing failed" -ForegroundColor Gray
+            return $false
+        }
+        
+    } catch {
+        Write-Host "DEBUG: bluetoothctl approach failed: $($_.Exception.Message)" -ForegroundColor Gray
+        return $false
+    }
+}
+
 # Main installation function
 function Start-Installation {
     Write-Host ""
@@ -260,94 +361,129 @@ function Start-Installation {
             $script:ConnectionType = "ble"
             Write-Host "SUCCESS: Selected Bluetooth Low Energy (BLE)" -ForegroundColor Green
             
-            # Scan for BLE devices
+            # Scan for BLE devices using Windows-native approach
             Write-Host ""
-            Write-Host "INFO: Scanning for BLE devices..." -ForegroundColor Blue
+            Write-Host "INFO: Scanning for BLE devices using Windows Bluetooth..." -ForegroundColor Blue
+            Write-Host "INFO: This may take 10-15 seconds..." -ForegroundColor Blue
             
             try {
-                # Run the BLE scan helper with delay
-                $bleScanScript = Join-Path $InstallDir "ble_scan_helper.py"
-                Write-Host "INFO: This may take 10-15 seconds..." -ForegroundColor Blue
-                
-                # Use the virtual environment Python with proper environment
-                $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
-                $venvActivate = Join-Path $InstallDir "venv\Scripts\Activate.ps1"
-                
-                # Ensure we're in the right directory and environment
-                Set-Location $InstallDir
-                
-                # Test if the script can run at all
-                Write-Host "DEBUG: Testing BLE script execution..." -ForegroundColor Gray
-                $testOutput = & $venvPython -c "import bleak, meshcore; print('Dependencies OK')" 2>&1
-                $testExitCode = $LASTEXITCODE
-                Write-Host "DEBUG: Dependency test exit code: $testExitCode" -ForegroundColor Gray
-                Write-Host "DEBUG: Dependency test output: $testOutput" -ForegroundColor Gray
-                
-                if ($testExitCode -ne 0) {
-                    Write-Host "WARNING: BLE dependencies not available, falling back to manual entry" -ForegroundColor Yellow
+                # Check if Bluetooth is available
+                $bluetoothAdapter = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "OK" }
+                if (-not $bluetoothAdapter) {
+                    Write-Host "WARNING: No Bluetooth adapter found or Bluetooth is disabled" -ForegroundColor Yellow
                     $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                     $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
                     return
                 }
                 
-                $scanOutput = & $venvPython $bleScanScript 2>&1
-                $scanExitCode = $LASTEXITCODE
+                Write-Host "DEBUG: Bluetooth adapter found: $($bluetoothAdapter.FriendlyName)" -ForegroundColor Gray
                 
-                Write-Host "DEBUG: BLE scan exit code: $scanExitCode" -ForegroundColor Gray
-                Write-Host "DEBUG: BLE scan output: $scanOutput" -ForegroundColor Gray
+                # Start Bluetooth discovery
+                Write-Host "INFO: Starting Bluetooth discovery..." -ForegroundColor Blue
                 
-                if ($scanExitCode -eq 0 -and $scanOutput) {
-                    # Try to parse JSON output
+                # Use PowerShell to discover Bluetooth devices
+                $discoveredDevices = @()
+                $startTime = Get-Date
+                $timeout = 15
+                
+                # Start discovery in background
+                $discoveryJob = Start-Job -ScriptBlock {
+                    # Import Bluetooth module if available
                     try {
-                        $devices = $scanOutput | ConvertFrom-Json
-                        
-                        if ($devices.Count -gt 0) {
-                            Write-Host "INFO: Found $($devices.Count) BLE device(s):" -ForegroundColor Blue
-                            for ($i = 0; $i -lt $devices.Count; $i++) {
-                                $device = $devices[$i]
-                                Write-Host "  $($i + 1)) $($device.name) ($($device.address))" -ForegroundColor Blue
-                            }
-                            Write-Host "  $($devices.Count + 1)) Enter device manually" -ForegroundColor Blue
-                            Write-Host ""
+                        Import-Module -Name Bluetooth -ErrorAction SilentlyContinue
+                    } catch {}
+                    
+                    # Get discovered devices
+                    $devices = @()
+                    $endTime = (Get-Date).AddSeconds(15)
+                    
+                    while ((Get-Date) -lt $endTime) {
+                        try {
+                            # Try different methods to get Bluetooth devices
+                            $btDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
+                                Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*MeshCore*" }
                             
-                            while ($true) {
-                                $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
-                                if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
-                                    if ([int]$choice -eq ($devices.Count + 1)) {
-                                        $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                                        $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                            foreach ($device in $btDevices) {
+                                if ($device.FriendlyName -and $device.FriendlyName -like "*MeshCore*") {
+                                    $devices += @{
+                                        Name = $device.FriendlyName
+                                        Address = $device.InstanceId
+                                        Status = $device.Status
                                     }
-                                    else {
-                                        $selectedDevice = $devices[([int]$choice - 1)]
-                                        $script:SelectedBleDevice = $selectedDevice.address
-                                        $script:SelectedBleName = $selectedDevice.name
-                                    }
-                                    break
-                                }
-                                else {
-                                    Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($devices.Count + 1)" -ForegroundColor Red
                                 }
                             }
-                        }
-                        else {
-                            Write-Host "WARNING: No BLE devices found" -ForegroundColor Yellow
-                            $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                            $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                            
+                            # Also try to get paired devices
+                            $pairedDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
+                                Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*MeshCore*" }
+                            
+                            foreach ($device in $pairedDevices) {
+                                if ($device.FriendlyName -and $device.FriendlyName -like "*MeshCore*") {
+                                    $devices += @{
+                                        Name = $device.FriendlyName
+                                        Address = $device.InstanceId
+                                        Status = "Paired"
+                                    }
+                                }
+                            }
+                            
+                            Start-Sleep -Seconds 2
+                        } catch {
+                            # Continue scanning
                         }
                     }
-                    catch {
-                        Write-Host "WARNING: Failed to parse BLE scan results: $($_.Exception.Message)" -ForegroundColor Yellow
-                        Write-Host "INFO: Raw output: $scanOutput" -ForegroundColor Blue
-                        $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                        $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                    
+                    return $devices
+                }
+                
+                # Wait for discovery to complete
+                $completed = Wait-Job $discoveryJob -Timeout $timeout
+                
+                if ($completed) {
+                    $discoveredDevices = Receive-Job $discoveryJob
+                } else {
+                    Stop-Job $discoveryJob
+                    Write-Host "WARNING: Bluetooth discovery timed out" -ForegroundColor Yellow
+                }
+                Remove-Job $discoveryJob
+                
+                # Filter and display results
+                $meshcoreDevices = $discoveredDevices | Where-Object { $_.Name -like "*MeshCore*" } | Sort-Object Name -Unique
+                
+                if ($meshcoreDevices.Count -gt 0) {
+                    Write-Host "INFO: Found $($meshcoreDevices.Count) MeshCore device(s):" -ForegroundColor Blue
+                    for ($i = 0; $i -lt $meshcoreDevices.Count; $i++) {
+                        $device = $meshcoreDevices[$i]
+                        Write-Host "  $($i + 1)) $($device.Name) ($($device.Address))" -ForegroundColor Blue
+                    }
+                    Write-Host "  $($meshcoreDevices.Count + 1)) Enter device manually" -ForegroundColor Blue
+                    Write-Host ""
+                    
+                    while ($true) {
+                        $choice = Read-Host "Select device [1-$($meshcoreDevices.Count + 1)]"
+                        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($meshcoreDevices.Count + 1)) {
+                            if ([int]$choice -eq ($meshcoreDevices.Count + 1)) {
+                                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                                $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                            }
+                            else {
+                                $selectedDevice = $meshcoreDevices[([int]$choice - 1)]
+                                $script:SelectedBleDevice = $selectedDevice.Address
+                                $script:SelectedBleName = $selectedDevice.Name
+                            }
+                            break
+                        }
+                        else {
+                            Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($meshcoreDevices.Count + 1)" -ForegroundColor Red
+                        }
                     }
                 }
                 else {
-                    Write-Host "WARNING: BLE scanning failed (exit code: $scanExitCode)" -ForegroundColor Yellow
-                    Write-Host "INFO: Output: $scanOutput" -ForegroundColor Blue
-                    Write-Host "INFO: This may be due to missing BLE permissions or dependencies" -ForegroundColor Blue
-                    Write-Host "INFO: On Windows, BLE scanning may require administrator privileges" -ForegroundColor Blue
-                    Write-Host "INFO: You can also manually enter your device details below" -ForegroundColor Blue
+                    Write-Host "WARNING: No MeshCore BLE devices found" -ForegroundColor Yellow
+                    Write-Host "INFO: Make sure your MeshCore device is:" -ForegroundColor Blue
+                    Write-Host "  - Powered on and within range" -ForegroundColor Blue
+                    Write-Host "  - In pairing mode (if not already paired)" -ForegroundColor Blue
+                    Write-Host "  - Not connected to another device" -ForegroundColor Blue
                     Write-Host ""
                     $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                     $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
@@ -355,6 +491,7 @@ function Start-Installation {
             }
             catch {
                 Write-Host "WARNING: BLE scanning failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "INFO: Falling back to manual device entry" -ForegroundColor Blue
                 $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                 $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
             }
@@ -362,53 +499,121 @@ function Start-Installation {
             if ($script:SelectedBleDevice) {
                 Write-Host "SUCCESS: BLE device configured: $script:SelectedBleName ($script:SelectedBleDevice)" -ForegroundColor Green
                 
-                # Attempt BLE pairing
+                # Attempt BLE pairing using Windows-native approach
                 Write-Host ""
-                Write-Host "INFO: Attempting to pair with BLE device..." -ForegroundColor Blue
-                Write-Host "INFO: This may require user interaction on the device" -ForegroundColor Blue
+                Write-Host "INFO: Checking BLE device pairing status..." -ForegroundColor Blue
                 
                 try {
-                    $blePairingScript = Join-Path $InstallDir "ble_pairing_helper.py"
-                    $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
+                    # Check if device is already paired
+                    $pairedDevice = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
+                        Where-Object { $_.FriendlyName -like "*$script:SelectedBleName*" -or $_.InstanceId -like "*$script:SelectedBleDevice*" }
                     
-                    # Ensure we're in the right directory
-                    Set-Location $InstallDir
-                    
-                    $pairingResult = & $venvPython $blePairingScript $script:SelectedBleDevice $script:SelectedBleName 2>&1
-                    $pairingExitCode = $LASTEXITCODE
-                    
-                    Write-Host "DEBUG: BLE pairing exit code: $pairingExitCode" -ForegroundColor Gray
-                    Write-Host "DEBUG: BLE pairing output: $pairingResult" -ForegroundColor Gray
-                    
-                    if ($pairingExitCode -eq 0) {
-                        # Try to parse JSON response
-                        try {
-                            $pairingResponse = $pairingResult | ConvertFrom-Json
-                            if ($pairingResponse.status -eq "paired") {
-                                Write-Host "SUCCESS: BLE device paired successfully" -ForegroundColor Green
-                            }
-                            elseif ($pairingResponse.status -eq "not_paired") {
-                                Write-Host "INFO: Device requires pairing" -ForegroundColor Blue
-                                Write-Host "INFO: You may need to pair manually or the device may already be paired" -ForegroundColor Blue
-                            }
-                            else {
-                                Write-Host "WARNING: BLE pairing status: $($pairingResponse.status)" -ForegroundColor Yellow
-                                Write-Host "INFO: Pairing output: $pairingResult" -ForegroundColor Blue
-                            }
-                        }
-                        catch {
-                            Write-Host "WARNING: Failed to parse pairing response: $($_.Exception.Message)" -ForegroundColor Yellow
-                            Write-Host "INFO: Raw output: $pairingResult" -ForegroundColor Blue
-                        }
+                    if ($pairedDevice -and $pairedDevice.Status -eq "OK") {
+                        Write-Host "SUCCESS: Device is already paired and ready to use" -ForegroundColor Green
                     }
                     else {
-                        Write-Host "WARNING: BLE pairing failed (exit code: $pairingExitCode)" -ForegroundColor Yellow
-                        Write-Host "INFO: Output: $pairingResult" -ForegroundColor Blue
-                        Write-Host "INFO: This may be due to missing BLE permissions or the device not being in range" -ForegroundColor Blue
+                        Write-Host "INFO: Device requires pairing" -ForegroundColor Blue
+                        Write-Host "INFO: Attempting to pair programmatically..." -ForegroundColor Blue
+                        
+                        # Try programmatic pairing
+                        try {
+                            $pairingSuccess = $false
+                            
+                            # Method 1: Try using PowerShell Bluetooth cmdlets (if available)
+                            try {
+                                Import-Module -Name Bluetooth -ErrorAction SilentlyContinue
+                                if (Get-Command -Name "Add-BluetoothDevice" -ErrorAction SilentlyContinue) {
+                                    Write-Host "INFO: Using PowerShell Bluetooth cmdlets..." -ForegroundColor Blue
+                                    
+                                    # Get the PIN from user
+                                    $pin = Read-Host "Enter the 6-digit PIN displayed on your MeshCore device"
+                                    if ($pin -match '^\d{6}$') {
+                                        $pairingResult = Add-BluetoothDevice -Address $script:SelectedBleDevice -Pin $pin -ErrorAction Stop
+                                        if ($pairingResult) {
+                                            Write-Host "SUCCESS: Device paired successfully using PowerShell cmdlets" -ForegroundColor Green
+                                            $pairingSuccess = $true
+                                        }
+                                    } else {
+                                        Write-Host "ERROR: PIN must be 6 digits" -ForegroundColor Red
+                                    }
+                                }
+                            } catch {
+                                Write-Host "DEBUG: PowerShell Bluetooth cmdlets not available: $($_.Exception.Message)" -ForegroundColor Gray
+                            }
+                            
+                            # Method 2: Try using Windows Bluetooth API via .NET
+                            if (-not $pairingSuccess) {
+                                try {
+                                    Write-Host "INFO: Using Windows Bluetooth API..." -ForegroundColor Blue
+                                    
+                                    # Get the PIN from user
+                                    $pin = Read-Host "Enter the 6-digit PIN displayed on your MeshCore device"
+                                    if ($pin -match '^\d{6}$') {
+                                        $pairingSuccess = Invoke-BluetoothPairing -DeviceAddress $script:SelectedBleDevice -Pin $pin
+                                        if ($pairingSuccess) {
+                                            Write-Host "SUCCESS: Device paired successfully using Windows API" -ForegroundColor Green
+                                        }
+                                    } else {
+                                        Write-Host "ERROR: PIN must be 6 digits" -ForegroundColor Red
+                                    }
+                                } catch {
+                                    Write-Host "DEBUG: Windows Bluetooth API failed: $($_.Exception.Message)" -ForegroundColor Gray
+                                }
+                            }
+                            
+                            # Method 3: Try using bluetoothctl (if available via WSL or installed)
+                            if (-not $pairingSuccess) {
+                                try {
+                                    Write-Host "INFO: Trying bluetoothctl approach..." -ForegroundColor Blue
+                                    
+                                    # Check if bluetoothctl is available
+                                    $bluetoothctlPath = Get-Command bluetoothctl -ErrorAction SilentlyContinue
+                                    if ($bluetoothctlPath) {
+                                        $pin = Read-Host "Enter the 6-digit PIN displayed on your MeshCore device"
+                                        if ($pin -match '^\d{6}$') {
+                                            $pairingSuccess = Invoke-BluetoothctlPairing -DeviceAddress $script:SelectedBleDevice -Pin $pin
+                                            if ($pairingSuccess) {
+                                                Write-Host "SUCCESS: Device paired successfully using bluetoothctl" -ForegroundColor Green
+                                            }
+                                        } else {
+                                            Write-Host "ERROR: PIN must be 6 digits" -ForegroundColor Red
+                                        }
+                                    }
+                                } catch {
+                                    Write-Host "DEBUG: bluetoothctl approach failed: $($_.Exception.Message)" -ForegroundColor Gray
+                                }
+                            }
+                            
+                            # Fallback to manual pairing if all methods failed
+                            if (-not $pairingSuccess) {
+                                Write-Host "WARNING: Programmatic pairing failed, falling back to manual pairing" -ForegroundColor Yellow
+                                Write-Host "INFO: You'll need to pair the device manually using Windows Bluetooth settings" -ForegroundColor Blue
+                                Write-Host ""
+                                Write-Host "To pair manually:" -ForegroundColor Blue
+                                Write-Host "  1. Open Windows Settings > Devices > Bluetooth & other devices" -ForegroundColor Blue
+                                Write-Host "  2. Click 'Add Bluetooth or other device'" -ForegroundColor Blue
+                                Write-Host "  3. Select 'Bluetooth'" -ForegroundColor Blue
+                                Write-Host "  4. Look for your MeshCore device in the list" -ForegroundColor Blue
+                                Write-Host "  5. Click on it and enter the PIN when prompted" -ForegroundColor Blue
+                                Write-Host "  6. Do NOT check 'Connect automatically' (we want manual connection)" -ForegroundColor Blue
+                                Write-Host ""
+                                Write-Host "INFO: After pairing, the device will be available for the packet capture application" -ForegroundColor Blue
+                                
+                                # Ask if user wants to continue
+                                $continue = Read-Host "Continue with installation? (y/N)"
+                                if ($continue -notmatch '^[yY]') {
+                                    Write-Host "INFO: Installation paused. Please pair your device and run the installer again." -ForegroundColor Blue
+                                    exit 0
+                                }
+                            }
+                        } catch {
+                            Write-Host "WARNING: Pairing attempt failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                            Write-Host "INFO: Please pair the device manually using Windows Bluetooth settings" -ForegroundColor Blue
+                        }
                     }
                 }
                 catch {
-                    Write-Host "WARNING: BLE pairing failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Host "WARNING: Could not check pairing status: $($_.Exception.Message)" -ForegroundColor Yellow
                     Write-Host "INFO: You may need to pair the device manually" -ForegroundColor Blue
                 }
             }

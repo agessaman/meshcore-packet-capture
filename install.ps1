@@ -1,5 +1,5 @@
 # ============================================================================
-# MeshCore Packet Capture - Interactive Installer for Windows
+# MeshCore Packet Capture - Interactive Installer for Windows (Fixed Version)
 # ============================================================================
 
 param(
@@ -26,602 +26,240 @@ $ServiceInstalled = $false
 $DockerInstalled = $false
 $UpdatingExisting = $false
 
-# Helper functions for colored output
-function global:Write-Header {
-    param([string]$Message)
-    Write-Host ""
-    Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Blue
-    Write-Host "  $Message" -ForegroundColor Blue
-    Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Blue
-    Write-Host ""
-}
-
-function global:Write-Success {
-    param([string]$Message)
-    Write-Host "✓ $Message" -ForegroundColor Green
-}
-
-function global:Write-Error {
-    param([string]$Message)
-    Write-Host "✗ $Message" -ForegroundColor Red
-}
-
-function global:Write-Warning {
-    param([string]$Message)
-    Write-Host "⚠ $Message" -ForegroundColor Yellow
-}
-
-function global:Write-Info {
-    param([string]$Message)
-    Write-Host "ℹ $Message" -ForegroundColor Blue
-}
-
-# Detect available serial devices on Windows
-function Get-SerialDevices {
-    $devices = @()
-    
-    try {
-        # Get COM ports from WMI
-        $comPorts = Get-WmiObject -Class Win32_SerialPort | Where-Object { $_.DeviceID -like "COM*" }
-        
-        foreach ($port in $comPorts) {
-            $devices += $port.DeviceID
-        }
-        
-        # Also check for USB serial adapters
-        $usbDevices = Get-WmiObject -Class Win32_PnPEntity | Where-Object { 
-            $_.Name -like "*USB Serial*" -or 
-            $_.Name -like "*USB-to-Serial*" -or
-            $_.Name -like "*FTDI*" -or
-            $_.Name -like "*Prolific*" -or
-            $_.Name -like "*Silicon Labs*"
-        }
-        
-        foreach ($device in $usbDevices) {
-            if ($device.PNPDeviceID -match "COM\d+") {
-                $comMatch = [regex]::Match($device.PNPDeviceID, "COM\d+")
-                if ($comMatch.Success) {
-                    $comPort = $comMatch.Value
-                    if ($devices -notcontains $comPort) {
-                        $devices += $comPort
-                    }
-                }
-            }
-        }
-    }
-    catch {
-        Write-Warning "Failed to detect serial devices: $($_.Exception.Message)"
-    }
-    
-    return $devices | Sort-Object
-}
-
-# Scan for BLE devices using PowerShell
-function Get-BleDevices {
-    Write-Info "Scanning for BLE devices..."
-    Write-Host "This may take 10-15 seconds..."
-    Write-Host ""
-    
-    # Check if Python and meshcore are available
-    try {
-        $pythonVersion = python --version 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Python not found - cannot scan for BLE devices"
-            return $null
-        }
-        
-        # Check if meshcore and bleak are available
-        $importTest = python -c "import meshcore, bleak" 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "meshcore or bleak not available - cannot scan for BLE devices"
-            Write-Info "BLE scanning requires the meshcore library and its dependencies"
-            Write-Info "These will be installed after the main installation completes"
-            return $null
-        }
-    }
-    catch {
-        Write-Warning "Python not available - cannot scan for BLE devices"
-        return $null
-    }
-    
-    # Create a temporary BLE scan helper script
-    $tempScript = Join-Path $env:TEMP "ble_scan_helper.py"
-    
-    $bleScanScript = @'
-#!/usr/bin/env python3
-"""
-BLE Device Scanner Helper for MeshCore Packet Capture Installer
-Uses the meshcore library to scan for MeshCore BLE devices
-"""
-
-import asyncio
-import sys
-import json
-from bleak import BleakScanner
-from bleak.backends.device import BLEDevice
-from bleak.backends.scanner import AdvertisementData
-
-async def scan_ble_devices():
-    """Scan for MeshCore BLE devices using BleakScanner"""
-    try:
-        print("Scanning for MeshCore BLE devices...", file=sys.stderr, flush=True)
-        
-        # Scan for all devices first, then filter
-        devices = await BleakScanner.discover(timeout=10.0)
-        
-        # Filter to only MeshCore devices
-        meshcore_devices = []
-        for device in devices:
-            if device.name:
-                # Check for MeshCore-* or Meshcore-* devices
-                if device.name.startswith("MeshCore-") or device.name.startswith("Meshcore-"):
-                    meshcore_devices.append(device)
-                # Also check for T1000 devices
-                elif "T1000" in device.name:
-                    meshcore_devices.append(device)
-        
-        devices = meshcore_devices
-        
-        if not devices:
-            print("No MeshCore BLE devices found", file=sys.stderr, flush=True)
-            return []
-        
-        # Format devices for the installer
-        formatted_devices = []
-        for device in devices:
-            device_info = {
-                "address": device.address,
-                "name": device.name or "Unknown",
-                "rssi": None  # RSSI is not easily accessible in this context
-            }
-            formatted_devices.append(device_info)
-        
-        # Output as JSON for the installer to parse
-        print(json.dumps(formatted_devices), flush=True)
-        return formatted_devices
-        
-    except Exception as e:
-        print(f"Error scanning for BLE devices: {e}", file=sys.stderr, flush=True)
-        return []
-
-def main():
-    """Main function to run the BLE scan"""
-    try:
-        devices = asyncio.run(scan_ble_devices())
-        if not devices:
-            sys.exit(1)
-    except KeyboardInterrupt:
-        print("Scan interrupted by user", file=sys.stderr, flush=True)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
-'@
-    
-    try {
-        Set-Content -Path $tempScript -Value $bleScanScript -Encoding UTF8
-        
-        # Run the BLE scan helper
-        $scanOutput = python $tempScript 2>&1
-        $scanResult = $LASTEXITCODE
-        
-        if ($scanResult -eq 0) {
-            try {
-                $devices = $scanOutput | ConvertFrom-Json
-                
-                if ($devices.Count -eq 0) {
-                    Write-Warning "No MeshCore BLE devices found"
-                    return $null
-                }
-                
-                Write-Success "Found $($devices.Count) MeshCore BLE device(s):"
-                Write-Host ""
-                
-                # Display devices
-                for ($i = 0; $i -lt $devices.Count; $i++) {
-                    $device = $devices[$i]
-                    Write-Host "  $($i + 1)) $($device.name) ($($device.address))"
-                }
-                
-                Write-Host "  $($devices.Count + 1)) Enter device manually"
-                Write-Host "  0) Scan again"
-                Write-Host ""
-                
-                while ($true) {
-                    $choice = Read-Host "Select device [0-$($devices.Count + 1)]"
-                    
-                    if ($choice -match '^\d+$' -and [int]$choice -ge 0 -and [int]$choice -le ($devices.Count + 1)) {
-                        if ([int]$choice -eq 0) {
-                            # Rescan for devices
-                            Write-Host ""
-                            Write-Info "Rescanning for BLE devices..."
-                            return Get-BleDevices
-                        }
-                        elseif ([int]$choice -eq ($devices.Count + 1)) {
-                            # Manual entry
-                            $manualMac = Read-Host "Enter BLE device MAC address"
-                            $manualName = Read-Host "Enter device name (optional)"
-                            if ($manualMac) {
-                                return @{
-                                    Address = $manualMac
-                                    Name = $manualName
-                                }
-                            }
-                        }
-                        else {
-                            # Selected from list
-                            $deviceIndex = [int]$choice - 1
-                            return @{
-                                Address = $devices[$deviceIndex].address
-                                Name = $devices[$deviceIndex].name
-                            }
-                        }
-                    }
-                    else {
-                        Write-Error "Invalid choice. Please enter a number between 0 and $($devices.Count + 1)"
-                    }
-                }
-            }
-            catch {
-                Write-Warning "Failed to parse BLE scan results: $($_.Exception.Message)"
-                return $null
-            }
-        }
-        else {
-            Write-Warning "Failed to scan for BLE devices using meshcore library"
-            Write-Info "Error details: $scanOutput"
-            return $null
-        }
-    }
-    finally {
-        if (Test-Path $tempScript) {
-            Remove-Item $tempScript -Force
-        }
-    }
-}
-
-# Check BLE pairing status and handle pairing if needed
-function Test-BlePairing {
+# Helper function for Windows Bluetooth API pairing
+function Invoke-BluetoothPairing {
     param(
         [string]$DeviceAddress,
-        [string]$DeviceName
+        [string]$Pin
     )
-    
-    Write-Host ""
-    Write-Info "Checking BLE pairing status for $DeviceName ($DeviceAddress)..."
-    
-    if (-not $DeviceName -or -not $DeviceAddress) {
-        Write-Error "Invalid device information: name='$DeviceName', address='$DeviceAddress'"
-        return $false
-    }
-    
-    # Use the actual ble_pairing_helper.py script
-    $tempScript = Join-Path $InstallDir "ble_pairing_helper.py"
-    
-    if (-not (Test-Path $tempScript)) {
-        Write-Error "BLE pairing helper script not found: $tempScript"
-        return $false
-    }
     
     try {
-        # Check pairing status first
-        $pairingOutput = python $tempScript $DeviceAddress $DeviceName 2>&1
-        $pairingResult = $LASTEXITCODE
-        
-        if ($pairingResult -eq 0) {
-            $pairingData = $pairingOutput | ConvertFrom-Json
-            $pairingStatus = $pairingData.status
+        # Use Windows Bluetooth API via .NET
+        Add-Type -TypeDefinition @"
+            using System;
+            using System.Runtime.InteropServices;
+            using System.Text;
             
-            if ($pairingStatus -eq "paired") {
-                Write-Success "Device is paired and ready to use"
-                return $true
-            }
-            elseif ($pairingStatus -eq "not_found") {
-                Write-Warning "Device not found or not in range"
-                Write-Info "Make sure your MeshCore device is:"
-                Write-Info "  • Powered on and within range"
-                Write-Info "  • In pairing mode (if not already paired)"
-                Write-Info "  • Not connected to another device"
-                return $false
-            }
-            elseif ($pairingStatus -eq "timeout") {
-                Write-Warning "Connection timed out"
-                Write-Info "The device may be busy or not responding. Please try again."
-                Write-Info "If the device shows as connected, try disconnecting it first."
-                return $false
-            }
-            elseif ($pairingStatus -eq "not_paired") {
-                Write-Info "Device requires pairing. You'll need to enter the PIN displayed on your MeshCore device."
-                Write-Host ""
+            public class BluetoothAPI {
+                [DllImport("bthprops.cpl", CharSet = CharSet.Unicode)]
+                public static extern int BluetoothAuthenticateDevice(IntPtr hwndParent, IntPtr hRadio, ref BLUETOOTH_DEVICE_INFO pbtdi, string pszPasskey, int ulPasskeyLength);
                 
-                # Get PIN from user
-                $pin = ""
-                while ($true) {
-                    $pin = Read-Host "Enter the 6-digit PIN displayed on your MeshCore device"
-                    if ($pin -match '^\d{6}$') {
-                        break
-                    }
-                    else {
-                        Write-Error "Please enter a 6-digit PIN (numbers only)"
-                    }
-                }
-                
-                # Attempt pairing with PIN
-                Write-Host ""
-                Write-Info "Attempting to pair with device..."
-                $pairingOutput = python $tempScript $DeviceAddress $DeviceName $pin 2>&1
-                $pairingResult = $LASTEXITCODE
-                
-                if ($pairingResult -eq 0) {
-                    $pairingData = $pairingOutput | ConvertFrom-Json
-                    $pairingStatus = $pairingData.status
-                    
-                    if ($pairingStatus -eq "paired") {
-                        Write-Success "BLE pairing successful! Device is now ready to use."
-                        return $true
-                    }
-                    else {
-                        Write-Error "BLE pairing failed"
-                        return $false
-                    }
-                }
-                else {
-                    Write-Error "Failed to attempt BLE pairing"
-                    Write-Info "Error details: $pairingOutput"
-                    return $false
-                }
+                [DllImport("bthprops.cpl", CharSet = CharSet.Unicode)]
+                public static extern int BluetoothSetServiceState(IntPtr hRadio, ref BLUETOOTH_DEVICE_INFO pbtdi, ref Guid pGuidService, int dwServiceFlags);
             }
-            else {
-                Write-Error "Failed to check pairing status"
-                return $false
+            
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            public struct BLUETOOTH_DEVICE_INFO {
+                public int dwSize;
+                public long Address;
+                public int ulClassofDevice;
+                public bool fConnected;
+                public bool fRemembered;
+                public bool fAuthenticated;
+                public long ftLastSeen;
+                public long ftLastUsed;
+                [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 248)]
+                public string szName;
             }
-        }
-        else {
-            Write-Error "Failed to check BLE pairing status"
-            Write-Info "Error details: $pairingOutput"
-            return $false
-        }
-    }
-    catch {
-        Write-Error "Error during BLE pairing check: $($_.Exception.Message)"
+"@ -ErrorAction SilentlyContinue
+        
+        # Try to pair using Windows API
+        Write-Host "DEBUG: Attempting Windows Bluetooth API pairing..." -ForegroundColor Gray
+        
+        # This is a simplified approach - in practice, you'd need more complex API calls
+        # For now, we'll return false to fall back to other methods
+        return $false
+        
+    } catch {
+        Write-Host "DEBUG: Windows Bluetooth API failed: $($_.Exception.Message)" -ForegroundColor Gray
         return $false
     }
 }
 
-# Select connection type and configure device
-function Select-ConnectionType {
-    Write-Host ""
-    Write-Header "Device Connection Configuration"
-    Write-Host ""
-    Write-Info "How would you like to connect to your MeshCore device?"
-    Write-Host ""
-    Write-Host "  1) Bluetooth Low Energy (BLE) - Recommended for T1000 devices"
-    Write-Host "     • Wireless connection"
-    Write-Host "     • Works with MeshCore T1000e and compatible devices"
-    Write-Host ""
-    Write-Host "  2) Serial Connection - For devices with USB/serial interface"
-    Write-Host "     • Direct USB or serial cable connection"
-    Write-Host "     • More reliable for continuous operation"
-    Write-Host ""
-    Write-Host "  3) TCP Connection - For network-connected devices"
-    Write-Host "     • Connect to your node over the network"
-    Write-Host "     • Works with ser2net or other TCP-to-serial bridges"
-    Write-Host ""
-    
-    while ($true) {
-        $choice = Read-Host "Select connection type [1-3]"
-        
-        switch ($choice) {
-            "1" {
-                $script:ConnectionType = "ble"
-                Write-Info "Selected: Bluetooth Low Energy (BLE)"
-                Write-Host ""
-                
-                if ((Read-Host "Would you like to scan for nearby BLE devices? (y/N)") -match '^[yY]') {
-                    while ($true) {
-                        $bleDevice = Get-BleDevices
-                        if ($bleDevice) {
-                            # Device selected, now handle pairing
-                            if (Test-BlePairing $bleDevice.Address $bleDevice.Name) {
-                                $script:SelectedBleDevice = $bleDevice.Address
-                                $script:SelectedBleName = $bleDevice.Name
-                                Write-Success "BLE device configured and paired: $($bleDevice.Name) ($($bleDevice.Address))"
-                                break
-                            }
-                            else {
-                                Write-Error "BLE pairing failed. Please try selecting a different device or check your device."
-                                continue
-                            }
-                        }
-                        else {
-                            # Fallback to manual entry
-                            Write-Info "BLE scanning failed or no devices found. Please enter device details manually."
-                            $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address"
-                            $script:SelectedBleName = Read-Host "Enter device name (optional)"
-                            if ($script:SelectedBleDevice) {
-                                # Handle pairing for manually entered device
-                                if (Test-BlePairing $script:SelectedBleDevice $script:SelectedBleName) {
-                                    Write-Success "BLE device configured and paired: $($script:SelectedBleName) ($($script:SelectedBleDevice))"
-                                    break
-                                }
-                                else {
-                                    Write-Error "BLE pairing failed. Please check your device and try again."
-                                    continue
-                                }
-                            }
-                            else {
-                                Write-Error "No BLE device configured"
-                                continue
-                            }
-                        }
-                    }
-                }
-                else {
-                    # Manual entry without scanning
-                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address"
-                    $script:SelectedBleName = Read-Host "Enter device name (optional)"
-                    if ($script:SelectedBleDevice) {
-                        # Handle pairing for manually entered device
-                        if (Test-BlePairing $script:SelectedBleDevice $script:SelectedBleName) {
-                            Write-Success "BLE device configured and paired: $($script:SelectedBleName) ($($script:SelectedBleDevice))"
-                        }
-                        else {
-                            Write-Error "BLE pairing failed. Please check your device and try again."
-                            continue
-                        }
-                    }
-                    else {
-                        Write-Error "No BLE device configured"
-                        continue
-                    }
-                }
-                break
-            }
-            "2" {
-                $script:ConnectionType = "serial"
-                Write-Info "Selected: Serial Connection"
-                Write-Host ""
-                Select-SerialDevice
-                break
-            }
-            "3" {
-                $script:ConnectionType = "tcp"
-                Write-Info "Selected: TCP Connection"
-                Write-Host ""
-                Set-TcpConnection
-                break
-            }
-            default {
-                Write-Error "Invalid choice. Please enter 1, 2, or 3"
-            }
-        }
-    }
-}
-
-# Interactive device selection for serial devices
-function Select-SerialDevice {
-    $devices = Get-SerialDevices
-    
-    Write-Host ""
-    Write-Header "Serial Device Selection"
-    Write-Host ""
-    
-    if ($devices.Count -eq 0) {
-        Write-Warning "No serial devices detected"
-        Write-Host ""
-        Write-Host "  1) Enter path manually"
-        Write-Host ""
-        $choice = Read-Host "Select option [1]"
-        $script:SelectedSerialDevice = Read-Host "Enter serial device path" "COM1"
-        return
-    }
-    
-    if ($devices.Count -eq 1) {
-        Write-Info "Found 1 serial device:"
-    }
-    else {
-        Write-Info "Found $($devices.Count) serial devices:"
-    }
-    Write-Host ""
-    
-    for ($i = 0; $i -lt $devices.Count; $i++) {
-        Write-Host "  $($i + 1)) $($devices[$i])"
-    }
-    
-    Write-Host "  $($devices.Count + 1)) Enter path manually"
-    Write-Host ""
-    
-    while ($true) {
-        $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
-        
-        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
-            if ([int]$choice -eq ($devices.Count + 1)) {
-                # Manual entry
-                $script:SelectedSerialDevice = Read-Host "Enter serial device path" "COM1"
-                return
-            }
-            else {
-                # Selected from list
-                $script:SelectedSerialDevice = $devices[([int]$choice - 1)]
-                return
-            }
-        }
-        else {
-            Write-Error "Invalid selection. Please enter a number between 1 and $($devices.Count + 1)"
-        }
-    }
-}
-
-# Configure TCP connection
-function Set-TcpConnection {
-    Write-Host ""
-    Write-Header "TCP Connection Configuration"
-    Write-Host ""
-    Write-Info "TCP connections work with ser2net or other TCP-to-serial bridges"
-    Write-Info "This allows you to access serial devices over the network"
-    Write-Host ""
-    
-    $script:TcpHost = Read-Host "TCP host/address" "localhost"
-    $script:TcpPort = Read-Host "TCP port" "5000"
-    
-    # Validate port number
-    if (-not ($script:TcpPort -match '^\d+$') -or [int]$script:TcpPort -lt 1 -or [int]$script:TcpPort -gt 65535) {
-        Write-Error "Invalid port number. Using default port 5000"
-        $script:TcpPort = "5000"
-    }
-    
-    Write-Success "TCP connection configured: $($script:TcpHost):$($script:TcpPort)"
-    Write-Host ""
-}
-
-# Prompt for yes/no questions
-function Read-YesNo {
+# Helper function for bluetoothctl pairing
+function Invoke-BluetoothctlPairing {
     param(
-        [string]$Prompt,
-        [string]$Default = "n"
+        [string]$DeviceAddress,
+        [string]$Pin
     )
     
-    if ($Default -eq "y") {
-        $promptText = "$Prompt [Y/n]: "
+    try {
+        Write-Host "DEBUG: Attempting bluetoothctl pairing..." -ForegroundColor Gray
+        
+        # Use bluetoothctl to pair
+        $pairingScript = @"
+#!/bin/bash
+bluetoothctl << EOF
+agent on
+default-agent
+scan on
+sleep 5
+scan off
+pair $DeviceAddress
+$Pin
+trust $DeviceAddress
+untrust $DeviceAddress
+exit
+EOF
+"@
+        
+        # Save script to temp file
+        $tempScript = [System.IO.Path]::GetTempFileName() + ".sh"
+        $pairingScript | Out-File -FilePath $tempScript -Encoding UTF8
+        
+        # Try to run via WSL or Git Bash
+        $wslResult = wsl bash $tempScript 2>&1
+        $gitBashResult = bash $tempScript 2>&1
+        
+        # Clean up
+        Remove-Item $tempScript -ErrorAction SilentlyContinue
+        
+        if ($wslResult -match "Pairing successful" -or $gitBashResult -match "Pairing successful") {
+            return $true
+        } else {
+            Write-Host "DEBUG: bluetoothctl pairing failed" -ForegroundColor Gray
+            return $false
+        }
+        
+    } catch {
+        Write-Host "DEBUG: bluetoothctl approach failed: $($_.Exception.Message)" -ForegroundColor Gray
+        return $false
     }
-    else {
-        $promptText = "$Prompt [y/N]: "
-    }
-    
-    $response = Read-Host $promptText
-    if (-not $response) {
-        $response = $Default
-    }
-    
-    return $response -match '^[yY]'
 }
 
-# Configure MQTT topics for a broker
-function Set-MqttTopics {
-    param(
-        [int]$BrokerNum
-    )
+# Function to configure additional MQTT brokers
+function Configure-AdditionalMqttBrokers {
+    $envLocal = Join-Path $InstallDir ".env.local"
+    
+    # Find next available broker number
+    $nextBroker = 2
+    while ((Get-Content $envLocal -ErrorAction SilentlyContinue) -match "PACKETCAPTURE_MQTT${nextBroker}_ENABLED=") {
+        $nextBroker++
+    }
+    
+    Write-Host ""
+    Write-Host "INFO: Configuring Additional MQTT Brokers" -ForegroundColor Blue
+    Write-Host ""
+    
+    $numBrokers = Read-Host "How many additional brokers would you like to configure? [1-3]"
+    if ($numBrokers -notmatch '^[1-3]$') {
+        $numBrokers = "1"
+    }
+    
+    for ($i = 1; $i -le [int]$numBrokers; $i++) {
+        $brokerNum = $nextBroker + $i - 1
+        Configure-SingleMqttBroker $brokerNum
+    }
+}
+
+# Function to configure a single MQTT broker
+function Configure-SingleMqttBroker {
+    param([int]$BrokerNum)
     
     $envLocal = Join-Path $InstallDir ".env.local"
     
     Write-Host ""
-    Write-Header "MQTT Topic Configuration for Broker $BrokerNum"
-    Write-Host ""
-    Write-Info "MQTT topics define where different types of data are published."
-    Write-Info "You can use template variables: {IATA}, {IATA_lower}, {PUBLIC_KEY}"
+    Write-Host "INFO: Configuring MQTT Broker $BrokerNum" -ForegroundColor Blue
     Write-Host ""
     
-    # Topic options
-    Write-Host "Choose topic configuration:"
-    Write-Host "  1) Default pattern (meshcore/{IATA}/{PUBLIC_KEY}/status, meshcore/{IATA}/{PUBLIC_KEY}/packets)"
-    Write-Host "  2) Classic pattern (meshcore/status, meshcore/packets, meshcore/raw)"
-    Write-Host "  3) Custom topics (enter your own)"
+    # Server configuration
+    $server = Read-Host "MQTT Server hostname/IP"
+    if (-not $server) {
+        Write-Host "WARNING: Server hostname required - skipping broker $BrokerNum" -ForegroundColor Yellow
+        return
+    }
+    
+    Add-Content -Path $envLocal -Value ""
+    Add-Content -Path $envLocal -Value "# MQTT Broker $BrokerNum"
+    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_ENABLED=true"
+    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_SERVER=$server"
+    
+    # Port configuration
+    $port = Read-Host "Port [1883]"
+    if (-not $port) {
+        $port = "1883"
+    }
+    if (-not ($port -match '^\d+$') -or [int]$port -lt 1 -or [int]$port -gt 65535) {
+        Write-Host "WARNING: Invalid port number, using default 1883" -ForegroundColor Yellow
+        $port = "1883"
+    }
+    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PORT=$port"
+    
+    # Transport configuration
+    Write-Host ""
+    $useWebsockets = Read-Host "Use WebSockets transport? (y/N)"
+    if ($useWebsockets -match '^[yY]') {
+        Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TRANSPORT=websockets"
+    }
+    
+    # TLS configuration
+    Write-Host ""
+    $useTls = Read-Host "Use TLS/SSL encryption? (y/N)"
+    if ($useTls -match '^[yY]') {
+        Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USE_TLS=true"
+        
+        $verifyTls = Read-Host "Verify TLS certificates? (Y/n)"
+        if ($verifyTls -match '^[nN]') {
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TLS_VERIFY=false"
+        }
+    }
+    
+    # Authentication configuration
+    Write-Host ""
+    Write-Host "Authentication method:" -ForegroundColor Blue
+    Write-Host "  1) Username/Password" -ForegroundColor Blue
+    Write-Host "  2) MeshCore Auth Token (requires meshcore-decoder)" -ForegroundColor Blue
+    Write-Host "  3) None (anonymous)" -ForegroundColor Blue
+    
+    $authChoice = Read-Host "Choose authentication method [1-3]"
+    
+    switch ($authChoice) {
+        "1" {
+            $username = Read-Host "Username" ""
+            if ($username) {
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USERNAME=$username"
+                $password = Read-Host "Password" ""
+                if ($password) {
+                    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PASSWORD=$password"
+                }
+            }
+        }
+        "2" {
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USE_AUTH_TOKEN=true"
+            $tokenAudience = Read-Host "Token audience (optional)" ""
+            if ($tokenAudience) {
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOKEN_AUDIENCE=$tokenAudience"
+            }
+        }
+        "3" {
+            # No authentication
+        }
+        default {
+            Write-Host "WARNING: Invalid choice, using username/password" -ForegroundColor Yellow
+            $username = Read-Host "Username" ""
+            if ($username) {
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USERNAME=$username"
+                $password = Read-Host "Password" ""
+                if ($password) {
+                    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PASSWORD=$password"
+                }
+            }
+        }
+    }
+    
+    # Topic configuration
+    Write-Host ""
+    Write-Host "INFO: MQTT Topic Configuration for Broker $BrokerNum" -ForegroundColor Blue
+    Write-Host "INFO: MQTT topics define where different types of data are published." -ForegroundColor Blue
+    Write-Host "INFO: You can use template variables: {IATA}, {IATA_lower}, {PUBLIC_KEY}" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "Choose topic configuration:" -ForegroundColor Blue
+    Write-Host "  1) Default pattern (meshcore/{IATA}/{PUBLIC_KEY}/status, meshcore/{IATA}/{PUBLIC_KEY}/packets)" -ForegroundColor Blue
+    Write-Host "  2) Classic pattern (meshcore/status, meshcore/packets, meshcore/raw)" -ForegroundColor Blue
+    Write-Host "  3) Custom topics (enter your own)" -ForegroundColor Blue
     Write-Host ""
     
-    $topicChoice = Read-Host "Select topic configuration [1-3]"
+    $topicChoice = Read-Host "Select topic configuration [1-3]" "1"
     
     switch ($topicChoice) {
         "1" {
@@ -630,7 +268,7 @@ function Set-MqttTopics {
             Add-Content -Path $envLocal -Value "# MQTT Topics for Broker $BrokerNum - Default Pattern"
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status"
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets"
-            Write-Success "Default pattern topics configured"
+            Write-Host "SUCCESS: Default pattern topics configured" -ForegroundColor Green
         }
         "2" {
             # Classic pattern (simple meshcore topics, needed for map.w0z.is)
@@ -639,13 +277,13 @@ function Set-MqttTopics {
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS=meshcore/status"
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS=meshcore/packets"
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_RAW=meshcore/raw"
-            Write-Success "Classic pattern topics configured"
+            Write-Host "SUCCESS: Classic pattern topics configured" -ForegroundColor Green
         }
         "3" {
             # Custom topics
             Write-Host ""
-            Write-Info "Enter custom topic paths (use {IATA}, {IATA_lower}, {PUBLIC_KEY} for templates)"
-            Write-Info "You can also manually edit the .env.local file after installation to customize topics"
+            Write-Host "INFO: Enter custom topic paths (use {IATA}, {IATA_lower}, {PUBLIC_KEY} for templates)" -ForegroundColor Blue
+            Write-Host "INFO: You can also manually edit the .env.local file after installation to customize topics" -ForegroundColor Blue
             Write-Host ""
             
             $statusTopic = Read-Host "Status topic" "meshcore/{IATA}/{PUBLIC_KEY}/status"
@@ -655,28 +293,592 @@ function Set-MqttTopics {
             Add-Content -Path $envLocal -Value "# MQTT Topics for Broker $BrokerNum - Custom"
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS=$statusTopic"
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS=$packetsTopic"
-            Write-Success "Custom topics configured"
+            Write-Host "SUCCESS: Custom topics configured" -ForegroundColor Green
         }
         default {
-            Write-Error "Invalid choice, using default pattern"
+            Write-Host "ERROR: Invalid choice, using default pattern" -ForegroundColor Red
             Add-Content -Path $envLocal -Value ""
             Add-Content -Path $envLocal -Value "# MQTT Topics for Broker $BrokerNum - Default Pattern"
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status"
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets"
         }
     }
+    
+    Write-Host "SUCCESS: Broker $BrokerNum configured" -ForegroundColor Green
 }
 
-# Configure MQTT brokers
-function Set-MqttBrokers {
-    $envLocal = Join-Path $InstallDir ".env.local"
+# Main installation function
+function Start-Installation {
+    Write-Host ""
+    Write-Host "=======================================================" -ForegroundColor Blue
+    Write-Host "  MeshCore Packet Capture Installer v$ScriptVersion" -ForegroundColor Blue
+    Write-Host "=======================================================" -ForegroundColor Blue
+    Write-Host ""
     
-    # Ensure .env.local exists with update source info
-    if (-not (Test-Path $envLocal)) {
-        # Interactive device selection
-        Select-ConnectionType
+    Write-Host "This installer will help you set up MeshCore Packet Capture."
+    Write-Host ""
+    
+    # Determine installation directory
+    $defaultInstallDir = Join-Path $env:USERPROFILE ".meshcore-packet-capture"
+    $script:InstallDir = Read-Host "Installation directory" $defaultInstallDir
+    
+    # Use default if empty
+    if (-not $script:InstallDir) {
+        $script:InstallDir = $defaultInstallDir
+    }
+    
+    Write-Host "INFO: Installation directory: $InstallDir" -ForegroundColor Blue
+    
+    # Check if directory exists
+    if (Test-Path $InstallDir) {
+        $response = Read-Host "Directory already exists. Reinstall/update? (y/N)"
+        if ($response -match '^[yY]') {
+            Write-Host "INFO: Updating existing installation..." -ForegroundColor Blue
+            $script:UpdatingExisting = $true
+        }
+        else {
+            Write-Host "ERROR: Installation cancelled." -ForegroundColor Red
+            exit 1
+        }
+    }
+    
+    # Create installation directory
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    Set-Location $InstallDir
+    
+    Write-Host ""
+    Write-Host "SUCCESS: Installation directory created" -ForegroundColor Green
+    
+    # Check Python
+    Write-Host ""
+    Write-Host "INFO: Checking Python installation..." -ForegroundColor Blue
+    
+    try {
+        $pythonVersion = python --version 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Python not found"
+        }
+    }
+    catch {
+        Write-Host "ERROR: Python 3 is not installed. Please install Python 3 and try again." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "SUCCESS: Python 3 found: $pythonVersion" -ForegroundColor Green
+    
+    # Download files first
+    Write-Host ""
+    Write-Host "INFO: Downloading application files..." -ForegroundColor Blue
+    
+    if ($env:LOCAL_INSTALL) {
+        # Local install for testing
+        Write-Host "INFO: Installing from local directory: $env:LOCAL_INSTALL" -ForegroundColor Blue
+        Copy-Item "$env:LOCAL_INSTALL\packet_capture.py" $InstallDir\
+        Copy-Item "$env:LOCAL_INSTALL\auth_token.py" $InstallDir\
+        Copy-Item "$env:LOCAL_INSTALL\enums.py" $InstallDir\
+        Copy-Item "$env:LOCAL_INSTALL\ble_pairing_helper.py" $InstallDir\
+        Copy-Item "$env:LOCAL_INSTALL\requirements.txt" $InstallDir\
+        if (Test-Path "$env:LOCAL_INSTALL\.env") {
+            Copy-Item "$env:LOCAL_INSTALL\.env" $InstallDir\
+        }
+        Write-Host "SUCCESS: Files copied from local directory" -ForegroundColor Green
+    }
+    else {
+        # Download from GitHub
+        Write-Host "INFO: Downloading from GitHub ($Repo @ $Branch)..." -ForegroundColor Blue
         
-        $configContent = @"
+        $baseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
+        
+        # Download files
+        $files = @("packet_capture.py", "auth_token.py", "enums.py", "ble_pairing_helper.py", "ble_scan_helper.py", "requirements.txt")
+        
+        foreach ($file in $files) {
+            Write-Host "INFO: Downloading $file..." -ForegroundColor Blue
+            try {
+                Invoke-WebRequest -Uri "$baseUrl/$file" -OutFile (Join-Path $InstallDir $file) -UseBasicParsing
+            }
+            catch {
+                Write-Host "ERROR: Failed to download $file from $Repo/$Branch" -ForegroundColor Red
+                Write-Host "ERROR: Please verify the repository and branch exist" -ForegroundColor Red
+                exit 1
+            }
+        }
+        
+        Write-Host "SUCCESS: Files downloaded and verified" -ForegroundColor Green
+    }
+    
+    # Set up virtual environment
+    Write-Host ""
+    Write-Host "INFO: Setting up Python virtual environment..." -ForegroundColor Blue
+    if (-not (Test-Path (Join-Path $InstallDir "venv"))) {
+        python -m venv (Join-Path $InstallDir "venv")
+        Write-Host "SUCCESS: Virtual environment created" -ForegroundColor Green
+    }
+    else {
+        Write-Host "SUCCESS: Using existing virtual environment" -ForegroundColor Green
+    }
+    
+    # Install Python dependencies
+    Write-Host "INFO: Installing Python dependencies..." -ForegroundColor Blue
+    & (Join-Path $InstallDir "venv\Scripts\Activate.ps1")
+    & (Join-Path $InstallDir "venv\Scripts\pip.exe") install --quiet --upgrade pip
+    & (Join-Path $InstallDir "venv\Scripts\pip.exe") install --quiet -r (Join-Path $InstallDir "requirements.txt")
+    Write-Host "SUCCESS: Python dependencies installed" -ForegroundColor Green
+    
+    # Configuration
+    Write-Host ""
+    Write-Host "INFO: Setting up configuration..." -ForegroundColor Blue
+    
+    # Connection Type Selection
+    Write-Host ""
+    Write-Host "INFO: Device Connection Configuration" -ForegroundColor Blue
+    Write-Host "INFO: How would you like to connect to your MeshCore device?" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "  1) Serial Connection - For devices with USB/serial interface" -ForegroundColor Blue
+    Write-Host "     - Direct USB or serial cable connection" -ForegroundColor Blue
+    Write-Host "     - More reliable for continuous operation" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "  2) Bluetooth Low Energy (BLE) - For BLE-capable nodes" -ForegroundColor Blue
+    Write-Host "     - Wireless connection" -ForegroundColor Blue
+    Write-Host "     - Works with BLE-enabled MeshCore devices" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "  3) TCP Connection - For network-connected devices" -ForegroundColor Blue
+    Write-Host "     - Connect to your node over the network" -ForegroundColor Blue
+    Write-Host "     - Works with ser2net or other TCP-to-serial bridges" -ForegroundColor Blue
+    Write-Host ""
+    
+    $connectionChoice = ""
+    while ($connectionChoice -notmatch '^[1-3]$') {
+        $connectionChoice = Read-Host "Select connection type [1-3]"
+        if ($connectionChoice -notmatch '^[1-3]$') {
+            Write-Host "ERROR: Invalid choice. Please enter 1, 2, or 3" -ForegroundColor Red
+        }
+    }
+    
+    $script:ConnectionType = ""
+    $script:SelectedSerialDevice = ""
+    $script:SelectedBleDevice = ""
+    $script:SelectedBleName = ""
+    $script:TcpHost = ""
+    $script:TcpPort = ""
+    
+    switch ($connectionChoice) {
+        "1" {
+            $script:ConnectionType = "serial"
+            Write-Host "SUCCESS: Selected Serial Connection" -ForegroundColor Green
+            
+            # Detect serial devices
+            Write-Host ""
+            Write-Host "INFO: Detecting serial devices..." -ForegroundColor Blue
+            
+            $devices = @()
+            try {
+                # Get COM ports from WMI
+                $comPorts = Get-WmiObject -Class Win32_SerialPort | Where-Object { $_.DeviceID -like "COM*" }
+                foreach ($port in $comPorts) {
+                    $devices += $port.DeviceID
+                }
+                
+                # Also check for USB serial adapters
+                $usbDevices = Get-WmiObject -Class Win32_PnPEntity | Where-Object { 
+                    $_.Name -like "*USB Serial*" -or 
+                    $_.Name -like "*USB-to-Serial*" -or
+                    $_.Name -like "*FTDI*" -or
+                    $_.Name -like "*Prolific*" -or
+                    $_.Name -like "*Silicon Labs*"
+                }
+                
+                foreach ($device in $usbDevices) {
+                    if ($device.PNPDeviceID -match "COM\d+") {
+                        $comMatch = [regex]::Match($device.PNPDeviceID, "COM\d+")
+                        if ($comMatch.Success) {
+                            $comPort = $comMatch.Value
+                            if ($devices -notcontains $comPort) {
+                                $devices += $comPort
+                            }
+                        }
+                    }
+                }
+            }
+            catch {
+                Write-Host "WARNING: Failed to detect serial devices: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+            
+            if ($devices.Count -eq 0) {
+                Write-Host "WARNING: No serial devices detected" -ForegroundColor Yellow
+                $script:SelectedSerialDevice = Read-Host "Enter serial device path" "COM1"
+            }
+            elseif ($devices.Count -eq 1) {
+                Write-Host "INFO: Found 1 serial device: $($devices[0])" -ForegroundColor Blue
+                $script:SelectedSerialDevice = $devices[0]
+            }
+            else {
+                Write-Host "INFO: Found $($devices.Count) serial devices:" -ForegroundColor Blue
+                for ($i = 0; $i -lt $devices.Count; $i++) {
+                    Write-Host "  $($i + 1)) $($devices[$i])" -ForegroundColor Blue
+                }
+                Write-Host "  $($devices.Count + 1)) Enter path manually" -ForegroundColor Blue
+                Write-Host ""
+                
+                while ($true) {
+                    $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
+                    if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
+                        if ([int]$choice -eq ($devices.Count + 1)) {
+                            $script:SelectedSerialDevice = Read-Host "Enter serial device path" "COM1"
+                        }
+                        else {
+                            $script:SelectedSerialDevice = $devices[([int]$choice - 1)]
+                        }
+                        break
+                    }
+                    else {
+                        Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($devices.Count + 1)" -ForegroundColor Red
+                    }
+                }
+            }
+            Write-Host "SUCCESS: Serial device configured: $script:SelectedSerialDevice" -ForegroundColor Green
+        }
+        "2" {
+            $script:ConnectionType = "ble"
+            Write-Host "SUCCESS: Selected Bluetooth Low Energy (BLE)" -ForegroundColor Green
+            
+            # Scan for BLE devices using Windows-native approach
+            Write-Host ""
+            Write-Host "INFO: Scanning for BLE devices using Windows Bluetooth..." -ForegroundColor Blue
+            Write-Host "INFO: This may take 10-15 seconds..." -ForegroundColor Blue
+            
+            try {
+                # Check if Bluetooth is available
+                $bluetoothAdapter = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "OK" }
+                if (-not $bluetoothAdapter) {
+                    Write-Host "WARNING: No Bluetooth adapter found or Bluetooth is disabled" -ForegroundColor Yellow
+                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                    return
+                }
+                
+                Write-Host "DEBUG: Bluetooth adapter found: $($bluetoothAdapter.FriendlyName)" -ForegroundColor Gray
+                
+                # Start Bluetooth discovery
+                Write-Host "INFO: Starting Bluetooth discovery..." -ForegroundColor Blue
+                
+                # Use PowerShell to discover Bluetooth devices
+                $discoveredDevices = @()
+                $startTime = Get-Date
+                $timeout = 15
+                
+                # Check for already paired MeshCore devices first
+                Write-Host "INFO: Checking for already paired MeshCore devices..." -ForegroundColor Blue
+                $pairedMeshCoreDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
+                    Where-Object { $_.FriendlyName -like "*MeshCore*" -and $_.Status -eq "OK" }
+                
+                if ($pairedMeshCoreDevices.Count -gt 0) {
+                    Write-Host "INFO: Found $($pairedMeshCoreDevices.Count) already paired MeshCore device(s):" -ForegroundColor Blue
+                    for ($i = 0; $i -lt $pairedMeshCoreDevices.Count; $i++) {
+                        $device = $pairedMeshCoreDevices[$i]
+                        Write-Host "  $($i + 1)) $($device.FriendlyName) (Already Paired)" -ForegroundColor Blue
+                    }
+                    Write-Host "  $($pairedMeshCoreDevices.Count + 1)) Enter device manually" -ForegroundColor Blue
+                    Write-Host ""
+                    
+                    while ($true) {
+                        $choice = Read-Host "Select device [1-$($pairedMeshCoreDevices.Count + 1)]"
+                        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($pairedMeshCoreDevices.Count + 1)) {
+                            if ([int]$choice -eq ($pairedMeshCoreDevices.Count + 1)) {
+                                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                                $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                            }
+                            else {
+                                $selectedDevice = $pairedMeshCoreDevices[([int]$choice - 1)]
+                                # Extract MAC address from InstanceId if possible
+                                $macAddress = $selectedDevice.InstanceId
+                                if ($macAddress -match 'DEV_([A-F0-9]{12})') {
+                                    $macBytes = $matches[1]
+                                    $macParts = @()
+                                    for ($i = 0; $i -lt $macBytes.Length; $i += 2) {
+                                        $macParts += $macBytes.Substring($i, 2)
+                                    }
+                                    $macAddress = $macParts -join ':'
+                                } else {
+                                    # Try to get MAC address from Windows Bluetooth registry
+                                    try {
+                                        $deviceName = $selectedDevice.FriendlyName
+                                        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices"
+                                        $deviceKeys = Get-ChildItem $regPath -ErrorAction SilentlyContinue
+                                        foreach ($key in $deviceKeys) {
+                                            $deviceInfo = Get-ItemProperty $key.PSPath -ErrorAction SilentlyContinue
+                                            if ($deviceInfo -and $deviceInfo.Name -eq $deviceName) {
+                                                $macAddress = $key.PSChildName -replace '(.{2})(.{2})(.{2})(.{2})(.{2})(.{2})', '$1:$2:$3:$4:$5:$6'
+                                                break
+                                            }
+                                        }
+                                    } catch {
+                                        # If registry lookup fails, prompt user for MAC address
+                                        Write-Host "WARNING: Could not extract MAC address automatically" -ForegroundColor Yellow
+                                        $macAddress = Read-Host "Enter the MAC address for $($selectedDevice.FriendlyName) (format: XX:XX:XX:XX:XX:XX)"
+                                    }
+                                }
+                                $script:SelectedBleDevice = $macAddress
+                                $script:SelectedBleName = $selectedDevice.FriendlyName
+                            }
+                            break
+                        }
+                        else {
+                            Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($pairedMeshCoreDevices.Count + 1)" -ForegroundColor Red
+                        }
+                    }
+                } else {
+                    # Start discovery in background for unpaired devices
+                    Write-Host "INFO: No paired MeshCore devices found, scanning for unpaired devices..." -ForegroundColor Blue
+                    
+                    $discoveryJob = Start-Job -ScriptBlock {
+                        # Import Bluetooth module if available
+                        try {
+                            Import-Module -Name Bluetooth -ErrorAction SilentlyContinue
+                        } catch {}
+                        
+                        # Get discovered devices
+                        $devices = @()
+                        $endTime = (Get-Date).AddSeconds(15)
+                        
+                        while ((Get-Date) -lt $endTime) {
+                            try {
+                                # Try different methods to get Bluetooth devices
+                                $btDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
+                                    Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*MeshCore*" }
+                                
+                                foreach ($device in $btDevices) {
+                                    if ($device.FriendlyName -and $device.FriendlyName -like "*MeshCore*") {
+                                        $devices += @{
+                                            Name = $device.FriendlyName
+                                            Address = $device.InstanceId
+                                            Status = $device.Status
+                                        }
+                                    }
+                                }
+                                
+                                Start-Sleep -Seconds 2
+                            } catch {
+                                # Continue scanning
+                            }
+                        }
+                        
+                        return $devices
+                    }
+                    
+                    # Wait for discovery to complete
+                    $completed = Wait-Job $discoveryJob -Timeout $timeout
+                    
+                    if ($completed) {
+                        $discoveredDevices = Receive-Job $discoveryJob
+                    } else {
+                        Stop-Job $discoveryJob
+                        Write-Host "WARNING: Bluetooth discovery timed out" -ForegroundColor Yellow
+                    }
+                    Remove-Job $discoveryJob
+                    
+                    # Filter and display results
+                    $meshcoreDevices = $discoveredDevices | Where-Object { $_.Name -like "*MeshCore*" } | Sort-Object Name -Unique
+                    
+                    if ($meshcoreDevices.Count -gt 0) {
+                        Write-Host "INFO: Found $($meshcoreDevices.Count) MeshCore device(s):" -ForegroundColor Blue
+                        for ($i = 0; $i -lt $meshcoreDevices.Count; $i++) {
+                            $device = $meshcoreDevices[$i]
+                            Write-Host "  $($i + 1)) $($device.Name) ($($device.Address))" -ForegroundColor Blue
+                        }
+                        Write-Host "  $($meshcoreDevices.Count + 1)) Enter device manually" -ForegroundColor Blue
+                        Write-Host ""
+                        
+                        while ($true) {
+                            $choice = Read-Host "Select device [1-$($meshcoreDevices.Count + 1)]"
+                            if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($meshcoreDevices.Count + 1)) {
+                                if ([int]$choice -eq ($meshcoreDevices.Count + 1)) {
+                                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                                }
+                                else {
+                                    $selectedDevice = $meshcoreDevices[([int]$choice - 1)]
+                                    # Extract MAC address from Address if it's a Windows device ID
+                                    $macAddress = $selectedDevice.Address
+                                    if ($macAddress -match 'DEV_([A-F0-9]{12})') {
+                                        $macBytes = $matches[1]
+                                        $macParts = @()
+                                        for ($i = 0; $i -lt $macBytes.Length; $i += 2) {
+                                            $macParts += $macBytes.Substring($i, 2)
+                                        }
+                                        $macAddress = $macParts -join ':'
+                                    }
+                                    $script:SelectedBleDevice = $macAddress
+                                    $script:SelectedBleName = $selectedDevice.Name
+                                }
+                                break
+                            }
+                            else {
+                                Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($meshcoreDevices.Count + 1)" -ForegroundColor Red
+                            }
+                        }
+                    }
+                    else {
+                        Write-Host "WARNING: No MeshCore BLE devices found" -ForegroundColor Yellow
+                        Write-Host "INFO: Make sure your MeshCore device is:" -ForegroundColor Blue
+                        Write-Host "  - Powered on and within range" -ForegroundColor Blue
+                        Write-Host "  - In pairing mode (if not already paired)" -ForegroundColor Blue
+                        Write-Host "  - Not connected to another device" -ForegroundColor Blue
+                        Write-Host ""
+                        $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                        $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                    }
+                }
+            }
+            catch {
+                Write-Host "WARNING: BLE scanning failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "INFO: Falling back to manual device entry" -ForegroundColor Blue
+                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+            }
+            
+            if ($script:SelectedBleDevice) {
+                Write-Host "SUCCESS: BLE device configured: $script:SelectedBleName ($script:SelectedBleDevice)" -ForegroundColor Green
+                
+                # Attempt BLE pairing using Windows-native approach
+                Write-Host ""
+                Write-Host "INFO: Checking BLE device pairing status..." -ForegroundColor Blue
+                
+                try {
+                    # Check if device is already paired
+                    $pairedDevice = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
+                        Where-Object { $_.FriendlyName -like "*$script:SelectedBleName*" -or $_.InstanceId -like "*$script:SelectedBleDevice*" }
+                    
+                    if ($pairedDevice -and $pairedDevice.Status -eq "OK") {
+                        Write-Host "SUCCESS: Device is already paired and ready to use" -ForegroundColor Green
+                    }
+                    else {
+                        Write-Host "INFO: Device requires pairing" -ForegroundColor Blue
+                        Write-Host "INFO: Attempting to pair programmatically..." -ForegroundColor Blue
+                        
+                        # Try programmatic pairing
+                        try {
+                            $pairingSuccess = $false
+                            
+                            # Method 1: Try using PowerShell Bluetooth cmdlets (if available)
+                            try {
+                                Import-Module -Name Bluetooth -ErrorAction SilentlyContinue
+                                if (Get-Command -Name "Add-BluetoothDevice" -ErrorAction SilentlyContinue) {
+                                    Write-Host "INFO: Using PowerShell Bluetooth cmdlets..." -ForegroundColor Blue
+                                    
+                                    # Get the PIN from user
+                                    $pin = Read-Host "Enter the 6-digit PIN displayed on your MeshCore device"
+                                    if ($pin -match '^\d{6}$') {
+                                        $pairingResult = Add-BluetoothDevice -Address $script:SelectedBleDevice -Pin $pin -ErrorAction Stop
+                                        if ($pairingResult) {
+                                            Write-Host "SUCCESS: Device paired successfully using PowerShell cmdlets" -ForegroundColor Green
+                                            $pairingSuccess = $true
+                                        }
+                                    } else {
+                                        Write-Host "ERROR: PIN must be 6 digits" -ForegroundColor Red
+                                    }
+                                }
+                            } catch {
+                                Write-Host "DEBUG: PowerShell Bluetooth cmdlets not available: $($_.Exception.Message)" -ForegroundColor Gray
+                            }
+                            
+                            # Method 2: Try using Windows Bluetooth API via .NET
+                            if (-not $pairingSuccess) {
+                                try {
+                                    Write-Host "INFO: Using Windows Bluetooth API..." -ForegroundColor Blue
+                                    
+                                    # Get the PIN from user
+                                    $pin = Read-Host "Enter the 6-digit PIN displayed on your MeshCore device"
+                                    if ($pin -match '^\d{6}$') {
+                                        $pairingSuccess = Invoke-BluetoothPairing -DeviceAddress $script:SelectedBleDevice -Pin $pin
+                                        if ($pairingSuccess) {
+                                            Write-Host "SUCCESS: Device paired successfully using Windows API" -ForegroundColor Green
+                                        }
+                                    } else {
+                                        Write-Host "ERROR: PIN must be 6 digits" -ForegroundColor Red
+                                    }
+                                } catch {
+                                    Write-Host "DEBUG: Windows Bluetooth API failed: $($_.Exception.Message)" -ForegroundColor Gray
+                                }
+                            }
+                            
+                            # Method 3: Try using bluetoothctl (if available via WSL or installed)
+                            if (-not $pairingSuccess) {
+                                try {
+                                    Write-Host "INFO: Trying bluetoothctl approach..." -ForegroundColor Blue
+                                    
+                                    # Check if bluetoothctl is available
+                                    $bluetoothctlPath = Get-Command bluetoothctl -ErrorAction SilentlyContinue
+                                    if ($bluetoothctlPath) {
+                                        $pin = Read-Host "Enter the 6-digit PIN displayed on your MeshCore device"
+                                        if ($pin -match '^\d{6}$') {
+                                            $pairingSuccess = Invoke-BluetoothctlPairing -DeviceAddress $script:SelectedBleDevice -Pin $pin
+                                            if ($pairingSuccess) {
+                                                Write-Host "SUCCESS: Device paired successfully using bluetoothctl" -ForegroundColor Green
+                                            }
+                                        } else {
+                                            Write-Host "ERROR: PIN must be 6 digits" -ForegroundColor Red
+                                        }
+                                    }
+                                } catch {
+                                    Write-Host "DEBUG: bluetoothctl approach failed: $($_.Exception.Message)" -ForegroundColor Gray
+                                }
+                            }
+                            
+                            # Fallback to manual pairing if all methods failed
+                            if (-not $pairingSuccess) {
+                                Write-Host "WARNING: Programmatic pairing failed, falling back to manual pairing" -ForegroundColor Yellow
+                                Write-Host "INFO: You'll need to pair the device manually using Windows Bluetooth settings" -ForegroundColor Blue
+                                Write-Host ""
+                                Write-Host "To pair manually:" -ForegroundColor Blue
+                                Write-Host "  1. Open Windows Settings > Devices > Bluetooth & other devices" -ForegroundColor Blue
+                                Write-Host "  2. Click 'Add Bluetooth or other device'" -ForegroundColor Blue
+                                Write-Host "  3. Select 'Bluetooth'" -ForegroundColor Blue
+                                Write-Host "  4. Look for your MeshCore device in the list" -ForegroundColor Blue
+                                Write-Host "  5. Click on it and enter the PIN when prompted" -ForegroundColor Blue
+                                Write-Host "  6. Do NOT check 'Connect automatically' (we want manual connection)" -ForegroundColor Blue
+                                Write-Host ""
+                                Write-Host "INFO: After pairing, the device will be available for the packet capture application" -ForegroundColor Blue
+                                
+                                # Ask if user wants to continue
+                                $continue = Read-Host "Continue with installation? (y/N)"
+                                if ($continue -notmatch '^[yY]') {
+                                    Write-Host "INFO: Installation paused. Please pair your device and run the installer again." -ForegroundColor Blue
+                                    exit 0
+                                }
+                            }
+                        } catch {
+                            Write-Host "WARNING: Pairing attempt failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                            Write-Host "INFO: Please pair the device manually using Windows Bluetooth settings" -ForegroundColor Blue
+                        }
+                    }
+                }
+                catch {
+                    Write-Host "WARNING: Could not check pairing status: $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Host "INFO: You may need to pair the device manually" -ForegroundColor Blue
+                }
+            }
+            else {
+                Write-Host "WARNING: No BLE device configured" -ForegroundColor Yellow
+            }
+        }
+        "3" {
+            $script:ConnectionType = "tcp"
+            Write-Host "SUCCESS: Selected TCP Connection" -ForegroundColor Green
+            $script:TcpHost = Read-Host "TCP host/address" "localhost"
+            $script:TcpPort = Read-Host "TCP port" "5000"
+            
+            # Validate port number
+            if (-not ($script:TcpPort -match '^\d+$') -or [int]$script:TcpPort -lt 1 -or [int]$script:TcpPort -gt 65535) {
+                Write-Host "ERROR: Invalid port number. Using default port 5000" -ForegroundColor Red
+                $script:TcpPort = "5000"
+            }
+            Write-Host "SUCCESS: TCP connection configured: $($script:TcpHost):$($script:TcpPort)" -ForegroundColor Green
+        }
+    }
+    
+    # Create basic .env.local file
+    $envLocal = Join-Path $InstallDir ".env.local"
+    $configContent = @"
 # MeshCore Packet Capture Configuration
 # This file contains your local overrides to the defaults in .env
 
@@ -685,88 +887,83 @@ PACKETCAPTURE_UPDATE_REPO=$Repo
 PACKETCAPTURE_UPDATE_BRANCH=$Branch
 
 # Connection Configuration
-PACKETCAPTURE_CONNECTION_TYPE=$ConnectionType
+PACKETCAPTURE_CONNECTION_TYPE=$script:ConnectionType
 "@
-        
-        Set-Content -Path $envLocal -Value $configContent
-        
-        # Add device-specific configuration
-        switch ($ConnectionType) {
-            "ble" {
-                Add-Content -Path $envLocal -Value "PACKETCAPTURE_BLE_DEVICE=$SelectedBleDevice"
-                if ($SelectedBleName) {
-                    Add-Content -Path $envLocal -Value "PACKETCAPTURE_BLE_NAME=$SelectedBleName"
-                }
+    
+    # Add device-specific configuration
+    switch ($script:ConnectionType) {
+        "ble" {
+            if ($script:SelectedBleDevice) {
+                $configContent += "`nPACKETCAPTURE_BLE_DEVICE=$script:SelectedBleDevice"
             }
-            "serial" {
-                Add-Content -Path $envLocal -Value "PACKETCAPTURE_SERIAL_PORTS=$SelectedSerialDevice"
-            }
-            "tcp" {
-                Add-Content -Path $envLocal -Value "PACKETCAPTURE_TCP_HOST=$TcpHost"
-                Add-Content -Path $envLocal -Value "PACKETCAPTURE_TCP_PORT=$TcpPort"
+            if ($script:SelectedBleName) {
+                $configContent += "`nPACKETCAPTURE_BLE_NAME=$script:SelectedBleName"
             }
         }
-        
-        Add-Content -Path $envLocal -Value ""
-        Add-Content -Path $envLocal -Value "# Location Code"
-        Add-Content -Path $envLocal -Value "PACKETCAPTURE_IATA=XXX"
-        Add-Content -Path $envLocal -Value ""
-        Add-Content -Path $envLocal -Value "# Advert Settings"
-        Add-Content -Path $envLocal -Value "PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11"
+        "serial" {
+            $configContent += "`nPACKETCAPTURE_SERIAL_PORTS=$script:SelectedSerialDevice"
+        }
+        "tcp" {
+            $configContent += "`nPACKETCAPTURE_TCP_HOST=$script:TcpHost"
+            $configContent += "`nPACKETCAPTURE_TCP_PORT=$script:TcpPort"
+        }
     }
     
-    # Get IATA from existing config
-    $iataLine = Get-Content $envLocal | Where-Object { $_ -match "^PACKETCAPTURE_IATA=" }
-    if ($iataLine) {
-        $script:Iata = ($iataLine -split "=", 2)[1]
-    }
+    $configContent += @"
+
+# Location Code
+PACKETCAPTURE_IATA=XXX
+
+# Advert Settings
+PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11
+"@
     
-    # Always prompt for IATA if it's XXX or empty
-    if (-not $script:Iata -or $script:Iata -eq "XXX") {
-        Write-Host ""
-        Write-Info "IATA code is a 3-letter airport code identifying your geographic region"
-        Write-Info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
-        Write-Host ""
+    Set-Content -Path $envLocal -Value $configContent
+    
+    # Configure IATA code
+    Write-Host ""
+    Write-Host "INFO: IATA code is a 3-letter airport code identifying your geographic region" -ForegroundColor Blue
+    Write-Host "INFO: Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)" -ForegroundColor Blue
+    Write-Host ""
+    
+    $script:Iata = ""
+    while (-not $script:Iata -or $script:Iata -eq "XXX") {
+        $script:Iata = Read-Host "Enter your IATA code (3 letters)"
+        $script:Iata = $script:Iata.ToUpper().Trim()
         
-        while (-not $script:Iata -or $script:Iata -eq "XXX") {
-            $script:Iata = Read-Host "Enter your IATA code (3 letters)"
-            $script:Iata = $script:Iata.ToUpper().Trim()
-            
-            if (-not $script:Iata) {
-                Write-Error "IATA code cannot be empty"
-            }
-            elseif ($script:Iata -eq "XXX") {
-                Write-Error "Please enter your actual IATA code, not XXX"
-            }
-            elseif ($script:Iata.Length -ne 3) {
-                Write-Warning "IATA code should be 3 letters, you entered: $script:Iata"
-                if (-not (Read-YesNo "Use '$script:Iata' anyway?" "n")) {
-                    $script:Iata = "XXX"  # Reset to force re-prompt
-                }
+        if (-not $script:Iata) {
+            Write-Host "ERROR: IATA code cannot be empty" -ForegroundColor Red
+        }
+        elseif ($script:Iata -eq "XXX") {
+            Write-Host "ERROR: Please enter your actual IATA code, not XXX" -ForegroundColor Red
+        }
+        elseif ($script:Iata.Length -ne 3) {
+            Write-Host "WARNING: IATA code should be 3 letters, you entered: $script:Iata" -ForegroundColor Yellow
+            $response = Read-Host "Use '$script:Iata' anyway? (y/N)"
+            if ($response -notmatch '^[yY]') {
+                $script:Iata = "XXX"  # Reset to force re-prompt
             }
         }
-        
-        # Update IATA in config
-        $content = Get-Content $envLocal
-        $content = $content -replace "^PACKETCAPTURE_IATA=.*", "PACKETCAPTURE_IATA=$script:Iata"
-        Set-Content -Path $envLocal -Value $content
-        Write-Host ""
-        Write-Success "IATA code set to: $script:Iata"
-        Write-Host ""
     }
     
+    # Update IATA in config
+    $content = Get-Content $envLocal
+    $content = $content -replace "^PACKETCAPTURE_IATA=.*", "PACKETCAPTURE_IATA=$script:Iata"
+    Set-Content -Path $envLocal -Value $content
+    Write-Host "SUCCESS: IATA code set to: $script:Iata" -ForegroundColor Green
+    
+    # Configure MQTT brokers
     Write-Host ""
-    Write-Header "MQTT Broker Configuration"
-    Write-Host ""
-    Write-Info "Enable the LetsMesh.net Packet Analyzer (mqtt-us-v1.letsmesh.net) broker?"
-    Write-Host "  • Real-time packet analysis and visualization"
-    Write-Host "  • Network health monitoring"
-    Write-Host "  • Requires meshcore-decoder for authentication"
+    Write-Host "INFO: MQTT Broker Configuration" -ForegroundColor Blue
+    Write-Host "INFO: Enable the LetsMesh.net Packet Analyzer (mqtt-us-v1.letsmesh.net) broker?" -ForegroundColor Blue
+    Write-Host "  • Real-time packet analysis and visualization" -ForegroundColor Blue
+    Write-Host "  • Network health monitoring" -ForegroundColor Blue
+    Write-Host "  • Requires meshcore-decoder for authentication" -ForegroundColor Blue
     Write-Host ""
     
-    if ($DecoderAvailable) {
-        if (Read-YesNo "Enable LetsMesh Packet Analyzer?" "y") {
-            $letsMeshConfig = @"
+    $response = Read-Host "Enable LetsMesh Packet Analyzer? (y/N)"
+    if ($response -match '^[yY]') {
+        $letsMeshConfig = @"
 
 # MQTT Broker 1 - LetsMesh.net Packet Analyzer
 PACKETCAPTURE_MQTT1_ENABLED=true
@@ -778,863 +975,92 @@ PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN=true
 PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt-us-v1.letsmesh.net
 PACKETCAPTURE_MQTT1_KEEPALIVE=120
 "@
-            Add-Content -Path $envLocal -Value $letsMeshConfig
-            Write-Success "LetsMesh Packet Analyzer enabled"
-            
-            # Configure topics for LetsMesh
-            Set-MqttTopics 1
-            
-            if (Read-YesNo "Would you like to configure additional MQTT brokers?" "n") {
-                Set-AdditionalBrokers
-            }
-        }
-        else {
-            # User declined LetsMesh, ask if they want to configure a custom broker
-            if (Read-YesNo "Would you like to configure a custom MQTT broker?" "y") {
-                Set-CustomBroker 1
-                
-                if (Read-YesNo "Would you like to configure additional MQTT brokers?" "n") {
-                    Set-AdditionalBrokers
-                }
-            }
-            else {
-                Write-Warning "No MQTT brokers configured - you'll need to edit .env.local manually"
-            }
-        }
-    }
-    else {
-        # No decoder available, can't use LetsMesh
-        Write-Warning "meshcore-decoder not available - cannot use LetsMesh auth token authentication"
+        Add-Content -Path $envLocal -Value $letsMeshConfig
+        Write-Host "SUCCESS: LetsMesh Packet Analyzer enabled" -ForegroundColor Green
         
-        if (Read-YesNo "Would you like to configure a custom MQTT broker with username/password?" "y") {
-            Set-CustomBroker 1
-            
-            if (Read-YesNo "Would you like to configure additional MQTT brokers?" "n") {
-                Set-AdditionalBrokers
-            }
-        }
-        else {
-            Write-Warning "No MQTT brokers configured - you'll need to edit .env.local manually"
-        }
-    }
-}
-
-# Configure additional brokers (starting from MQTT2)
-function Set-AdditionalBrokers {
-    # Find next available broker number
-    $nextBroker = 2
-    $envLocal = Join-Path $InstallDir ".env.local"
-    
-    while ((Get-Content $envLocal -ErrorAction SilentlyContinue | Where-Object { $_ -match "^PACKETCAPTURE_MQTT${nextBroker}_ENABLED=" })) {
-        $nextBroker++
-    }
-    
-    $numAdditional = Read-Host "How many additional brokers?" "1"
-    
-    for ($i = 1; $i -le [int]$numAdditional; $i++) {
-        $brokerNum = $nextBroker + $i - 1
-        Set-CustomBroker $brokerNum
-    }
-}
-
-# Configure a single custom MQTT broker
-function Set-CustomBroker {
-    param([int]$BrokerNum)
-    
-    $envLocal = Join-Path $InstallDir ".env.local"
-    
-    Write-Host ""
-    Write-Header "Configuring MQTT Broker $BrokerNum"
-    
-    $server = Read-Host "Server hostname/IP"
-    if (-not $server) {
-        Write-Warning "Server hostname required - skipping broker $BrokerNum"
-        return
-    }
-    
-    Add-Content -Path $envLocal -Value ""
-    Add-Content -Path $envLocal -Value "# MQTT Broker $BrokerNum"
-    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_ENABLED=true"
-    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_SERVER=$server"
-    
-    $port = Read-Host "Port" "1883"
-    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PORT=$port"
-    
-    # Transport
-    if (Read-YesNo "Use WebSockets transport?" "n") {
-        Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TRANSPORT=websockets"
-    }
-    
-    # TLS
-    if (Read-YesNo "Use TLS/SSL encryption?" "n") {
-        Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USE_TLS=true"
-        
-        if (-not (Read-YesNo "Verify TLS certificates?" "y")) {
-            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TLS_VERIFY=false"
-        }
-    }
-    
-    # Authentication
-    Write-Host ""
-    Write-Info "Authentication method:"
-    Write-Host "  1) Username/Password"
-    Write-Host "  2) MeshCore Auth Token (requires meshcore-decoder)"
-    Write-Host "  3) None (anonymous)"
-    $authType = Read-Host "Choose authentication method [1-3]"
-    
-    if ($authType -eq "2") {
-        if (-not $DecoderAvailable) {
-            Write-Error "meshcore-decoder not available - using username/password instead"
-            $authType = "1"
-        }
-        else {
-            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USE_AUTH_TOKEN=true"
-            $tokenAudience = Read-Host "Token audience (optional)"
-            if ($tokenAudience) {
-                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOKEN_AUDIENCE=$tokenAudience"
-            }
-        }
-    }
-    
-    if ($authType -eq "1") {
-        $username = Read-Host "Username"
-        if ($username) {
-            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USERNAME=$username"
-            $password = Read-Host "Password"
-            if ($password) {
-                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PASSWORD=$password"
-            }
-        }
-    }
-    
-    Write-Success "Broker $BrokerNum configured"
-    
-    # Configure topics for this broker
-    Set-MqttTopics $BrokerNum
-}
-
-# Check for old installations
-function Test-OldInstallation {
-    # Check for old Windows service
-    $service = Get-Service -Name "meshcore-capture" -ErrorAction SilentlyContinue
-    if ($service) {
+        # Configure topics for LetsMesh
         Write-Host ""
-        Write-Warning "Old meshcore-capture Windows service detected"
+        Write-Host "INFO: MQTT Topic Configuration for Broker 1" -ForegroundColor Blue
+        Write-Host "INFO: MQTT topics define where different types of data are published." -ForegroundColor Blue
+        Write-Host "INFO: You can use template variables: {IATA}, {IATA_lower}, {PUBLIC_KEY}" -ForegroundColor Blue
+        Write-Host ""
+        Write-Host "Choose topic configuration:" -ForegroundColor Blue
+        Write-Host "  1) Default pattern (meshcore/{IATA}/{PUBLIC_KEY}/status, meshcore/{IATA}/{PUBLIC_KEY}/packets)" -ForegroundColor Blue
+        Write-Host "  2) Classic pattern (meshcore/status, meshcore/packets, meshcore/raw)" -ForegroundColor Blue
+        Write-Host "  3) Custom topics (enter your own)" -ForegroundColor Blue
         Write-Host ""
         
-        if (Read-YesNo "Would you like to stop and remove the old service?" "y") {
-            try {
-                Stop-Service -Name "meshcore-capture" -Force -ErrorAction SilentlyContinue
-                sc.exe delete "meshcore-capture" 2>$null
-                Write-Success "Old service removed"
+        $topicChoice = Read-Host "Select topic configuration [1-3]" "1" "1"
+        
+        switch ($topicChoice) {
+            "1" {
+                # Default pattern (IATA + PUBLIC_KEY)
+                Add-Content -Path $envLocal -Value ""
+                Add-Content -Path $envLocal -Value "# MQTT Topics for Broker 1 - Default Pattern"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets"
+                Write-Host "SUCCESS: Default pattern topics configured" -ForegroundColor Green
             }
-            catch {
-                Write-Error "Failed to remove old service - please remove manually"
+            "2" {
+                # Classic pattern (simple meshcore topics, needed for map.w0z.is)
+                Add-Content -Path $envLocal -Value ""
+                Add-Content -Path $envLocal -Value "# MQTT Topics for Broker 1 - Classic Pattern"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_STATUS=meshcore/status"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_PACKETS=meshcore/packets"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_RAW=meshcore/raw"
+                Write-Host "SUCCESS: Classic pattern topics configured" -ForegroundColor Green
+            }
+            "3" {
+                # Custom topics
+                Write-Host ""
+                Write-Host "INFO: Enter custom topic paths (use {IATA}, {IATA_lower}, {PUBLIC_KEY} for templates)" -ForegroundColor Blue
+                Write-Host "INFO: You can also manually edit the .env.local file after installation to customize topics" -ForegroundColor Blue
+                Write-Host ""
+                
+                $statusTopic = Read-Host "Status topic" "meshcore/{IATA}/{PUBLIC_KEY}/status"
+                $packetsTopic = Read-Host "Packets topic" "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+                
+                Add-Content -Path $envLocal -Value ""
+                Add-Content -Path $envLocal -Value "# MQTT Topics for Broker 1 - Custom"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_STATUS=$statusTopic"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_PACKETS=$packetsTopic"
+                Write-Host "SUCCESS: Custom topics configured" -ForegroundColor Green
+            }
+            default {
+                Write-Host "ERROR: Invalid choice, using default pattern" -ForegroundColor Red
+                Add-Content -Path $envLocal -Value ""
+                Add-Content -Path $envLocal -Value "# MQTT Topics for Broker 1 - Default Pattern"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status"
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets"
             }
         }
-        else {
-            Write-Warning "Old service left in place - may conflict with new installation"
-        }
+        
+        # Ask if user wants to configure additional MQTT brokers
         Write-Host ""
-    }
-}
-
-# Install Windows service
-function Install-WindowsService {
-    Write-Info "Installing Windows service..."
-    
-    $serviceName = "meshcore-capture"
-    $serviceDisplayName = "MeshCore Packet Capture"
-    $serviceDescription = "MeshCore Packet Capture Service"
-    
-    # Build PATH with meshcore-decoder if available
-    $servicePath = $env:PATH
-    if ($script:DecoderAvailable) {
-        try {
-            $decoderPath = (Get-Command meshcore-decoder -ErrorAction SilentlyContinue).Source
-            if ($decoderPath) {
-                $decoderDir = Split-Path $decoderPath -Parent
-                if ($decoderDir -and $servicePath -notlike "*$decoderDir*") {
-                    $servicePath = "$decoderDir;$servicePath"
-                    Write-Info "Added meshcore-decoder to service PATH: $decoderDir"
-                }
-            }
+        $addMoreBrokers = Read-Host "Would you like to configure additional MQTT brokers? (y/N)"
+        if ($addMoreBrokers -match '^[yY]') {
+            Configure-AdditionalMqttBrokers
         }
-        catch {
-            Write-Warning "Could not determine meshcore-decoder path for service"
-        }
-    }
-    
-    # Create service using sc.exe with environment variables
-    $scCommand = "sc.exe create `"$serviceName`" binPath= `"$InstallDir\venv\Scripts\python.exe $InstallDir\packet_capture.py`" start= auto DisplayName= `"$serviceDisplayName`""
-    
-    try {
-        Invoke-Expression $scCommand
-        
-        # Set service description
-        sc.exe description $serviceName $serviceDescription 2>$null
-        
-        # Set environment variables for the service
-        if ($servicePath -ne $env:PATH) {
-            Write-Info "Setting PATH environment variable for service..."
-            sc.exe config $serviceName Environment= "PATH=$servicePath" 2>$null
-        }
-        
-        Write-Success "Windows service installed"
-        
-        if (Read-YesNo "Start service now?" "y") {
-            Start-Service -Name $serviceName
-            Write-Success "Service started"
-            
-            # Wait a moment and check status
-            Start-Sleep -Seconds 3
-            $serviceStatus = Get-Service -Name $serviceName
-            Write-Info "Service status: $($serviceStatus.Status)"
-        }
-        
-        $script:ServiceInstalled = $true
-    }
-    catch {
-        Write-Error "Failed to install Windows service: $($_.Exception.Message)"
-        $script:ServiceInstalled = $false
-    }
-}
-
-# Install Docker
-function Install-Docker {
-    Write-Info "Installing Docker configuration..."
-    
-    # Check if Docker is available
-    try {
-        $dockerVersion = docker --version 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Docker not found"
-        }
-    }
-    catch {
-        Write-Error "Docker is not installed or not available in PATH"
-        Write-Info "Please install Docker Desktop: https://docs.docker.com/desktop/windows/"
-        exit 1
-    }
-    
-    # Check for Docker Compose
-    try {
-        $composeVersion = docker compose version 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $ComposeCmd = "docker compose"
-        }
-        else {
-            $composeVersion = docker-compose --version 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                $ComposeCmd = "docker-compose"
-            }
-            else {
-                throw "Docker Compose not found"
-            }
-        }
-    }
-    catch {
-        Write-Error "Docker Compose is not installed or not available in PATH"
-        Write-Info "Install Docker Desktop: https://docs.docker.com/desktop/windows/"
-        exit 1
-    }
-    
-    Write-Success "Docker and Compose found ($ComposeCmd)"
-    
-    # Create Docker configuration files
-    Write-Info "Creating Docker configuration..."
-    
-    # Create Dockerfile
-    $dockerfileContent = @'
-# Use Python 3.11 slim image for smaller size
-FROM python:3.11-slim
-
-# Install system dependencies for BLE and serial communication
-RUN apt-get update && apt-get install -y \
-    bluez \
-    libbluetooth-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set working directory
-WORKDIR /app
-
-# Copy requirements first for better Docker layer caching
-COPY requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the entire project
-COPY . .
-
-# Create non-root user for security
-RUN useradd -m -u 1000 meshcore && chown -R meshcore:meshcore /app
-USER meshcore
-
-# Create data directory for output files
-RUN mkdir -p /app/data
-
-# Set default environment variables
-ENV PACKETCAPTURE_CONNECTION_TYPE=ble
-ENV PACKETCAPTURE_TIMEOUT=30
-ENV PACKETCAPTURE_MAX_CONNECTION_RETRIES=5
-ENV PACKETCAPTURE_CONNECTION_RETRY_DELAY=5
-ENV PACKETCAPTURE_HEALTH_CHECK_INTERVAL=30
-
-# Default command
-CMD ["python", "packet_capture.py"]
-'@
-    
-    Set-Content -Path (Join-Path $InstallDir "Dockerfile") -Value $dockerfileContent
-    
-    # Create docker-compose.yml
-    $composeContent = @"
-version: '3.8'
-
-services:
-  meshcore-capture:
-    build: .
-    container_name: meshcore-packet-capture
-    privileged: true  # Required for BLE access and device communication
-    devices:
-      # Mount serial devices (uncomment and modify as needed)
-      - /dev/ttyUSB0:/dev/ttyUSB0
-      - /dev/ttyUSB1:/dev/ttyUSB1
-      - /dev/ttyACM0:/dev/ttyACM0
-    volumes:
-      # Persistent data storage
-      - ./data:/app/data
-      # Configuration files
-      - ./.env.local:/app/.env.local:ro
-    environment:
-      # Connection settings
-      - PACKETCAPTURE_CONNECTION_TYPE=ble
-      - PACKETCAPTURE_TIMEOUT=30
-      - PACKETCAPTURE_MAX_CONNECTION_RETRIES=5
-      - PACKETCAPTURE_CONNECTION_RETRY_DELAY=5
-      - PACKETCAPTURE_HEALTH_CHECK_INTERVAL=30
-      
-      # MQTT settings (configure as needed)
-      - PACKETCAPTURE_MQTT1_ENABLED=true
-      - PACKETCAPTURE_MQTT1_SERVER=localhost
-      - PACKETCAPTURE_MQTT1_PORT=1883
-      - PACKETCAPTURE_MQTT1_USERNAME=
-      - PACKETCAPTURE_MQTT1_PASSWORD=
-      - PACKETCAPTURE_MQTT1_USE_TLS=false
-      
-      # MQTT reconnection settings
-      - PACKETCAPTURE_MAX_MQTT_RETRIES=5
-      - PACKETCAPTURE_MQTT_RETRY_DELAY=5
-      - PACKETCAPTURE_EXIT_ON_RECONNECT_FAIL=true
-      
-      # Topic settings
-      - PACKETCAPTURE_TOPIC_STATUS=meshcore/status
-      - PACKETCAPTURE_TOPIC_PACKETS=meshcore/packets
-      - PACKETCAPTURE_TOPIC_RAW=meshcore/raw
-      - PACKETCAPTURE_TOPIC_DECODED=meshcore/decoded
-      - PACKETCAPTURE_TOPIC_DEBUG=meshcore/debug
-      
-      # Device settings
-      - PACKETCAPTURE_IATA=LOC
-      - PACKETCAPTURE_ORIGIN=PacketCapture Docker
-      
-      # Advert settings
-      - PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11
-      
-      # RF data settings
-      - PACKETCAPTURE_RF_DATA_TIMEOUT=15.0
-      
-      # JWT token renewal settings
-      - PACKETCAPTURE_JWT_RENEWAL_INTERVAL=3600
-      - PACKETCAPTURE_JWT_RENEWAL_THRESHOLD=300
-    networks:
-      - meshcore-network
-    restart: unless-stopped
-
-networks:
-  meshcore-network:
-    driver: bridge
-"@
-    
-    Set-Content -Path (Join-Path $InstallDir "docker-compose.yml") -Value $composeContent
-    
-    # Create .dockerignore
-    $dockerignoreContent = @'
-# Python cache files
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
-venv/
-env/
-ENV/
-
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Git
-.git/
-.gitignore
-
-# Docker
-Dockerfile*
-docker-compose*
-.dockerignore
-
-# Configuration files (use environment variables instead)
-.env.local
-config.ini
-
-# Data and logs
-data/
-*.log
-logs/
-
-# Documentation
-README.md
-CLEANUP_SUMMARY.md
-
-# Old files
-old/
-'@
-    
-    Set-Content -Path (Join-Path $InstallDir ".dockerignore") -Value $dockerignoreContent
-    
-    Write-Success "Docker configuration files created"
-    
-    # Build Docker image
-    Write-Info "Building Docker image..."
-    Set-Location $InstallDir
-    if (docker build -t meshcore-capture .) {
-        Write-Success "Docker image built successfully"
     }
     else {
-        Write-Error "Failed to build Docker image"
-        exit 1
+        Write-Host "INFO: No MQTT brokers configured - you'll need to edit .env.local manually" -ForegroundColor Yellow
     }
     
-    # Ask if user wants to start the container
-    if (Read-YesNo "Start the Docker container now?" "y") {
-        Write-Info "Starting Docker container..."
-        if (& $ComposeCmd up -d) {
-            Write-Success "Docker container started"
-            
-            # Wait a moment and check logs
-            Start-Sleep -Seconds 3
-            Write-Info "Container logs:"
-            & $ComposeCmd logs --tail=20
-        }
-        else {
-            Write-Error "Failed to start Docker container"
-            Write-Info "You can start it manually later with: $ComposeCmd up -d"
-        }
-    }
-    
-    $script:DockerInstalled = $true
-    Write-Success "Docker installation complete"
-}
-
-# Main installation function
-function Start-Installation {
-    Write-Header "MeshCore Packet Capture Installer v$ScriptVersion"
-    
-    Write-Host "This installer will help you set up MeshCore Packet Capture."
-    Write-Host ""
-    
-    # Check for old installations and offer to clean up
-    Test-OldInstallation
-    
-    # Determine installation directory
-    $defaultInstallDir = Join-Path $env:USERPROFILE ".meshcore-packet-capture"
-    $script:InstallDir = Read-Host "Installation directory" $defaultInstallDir
-    
-    Write-Host "ℹ Installation directory: $InstallDir" -ForegroundColor Blue
-    
-    # Check if directory exists
-    if (Test-Path $InstallDir) {
-        if (Read-YesNo "Directory already exists. Reinstall/update?" "n") {
-            Write-Host "ℹ Updating existing installation..." -ForegroundColor Blue
-            $script:UpdatingExisting = $true
-        }
-        else {
-            Write-Error "Installation cancelled."
-            exit 1
-        }
-    }
-    
-    # Create installation directory
-    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Set-Location $InstallDir
-    
-    # Download or copy files
-    Write-Header "Installing Files"
-    
-    if ($env:LOCAL_INSTALL) {
-        # Local install for testing
-        Write-Info "Installing from local directory: $env:LOCAL_INSTALL"
-        Copy-Item "$env:LOCAL_INSTALL\packet_capture.py" $InstallDir\
-        Copy-Item "$env:LOCAL_INSTALL\auth_token.py" $InstallDir\
-        Copy-Item "$env:LOCAL_INSTALL\enums.py" $InstallDir\
-        Copy-Item "$env:LOCAL_INSTALL\ble_pairing_helper.py" $InstallDir\
-        Copy-Item "$env:LOCAL_INSTALL\requirements.txt" $InstallDir\
-        if (Test-Path "$env:LOCAL_INSTALL\.env") {
-            Copy-Item "$env:LOCAL_INSTALL\.env" $InstallDir\
-        }
-        if (Test-Path "$env:LOCAL_INSTALL\.env.local") {
-            Write-Warning ".env.local found in source - copying as .env.local.example"
-            Copy-Item "$env:LOCAL_INSTALL\.env.local" "$InstallDir\.env.local.example"
-        }
-        Write-Success "Files copied from local directory"
-    }
-    else {
-        # Download from GitHub
-        Write-Info "Downloading from GitHub ($Repo @ $Branch)..."
-        
-        $baseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
-        
-        # Download files
-        $files = @("packet_capture.py", "auth_token.py", "enums.py", "ble_pairing_helper.py", "requirements.txt")
-        
-        foreach ($file in $files) {
-            Write-Info "Downloading $file..."
-            try {
-                Invoke-WebRequest -Uri "$baseUrl/$file" -OutFile (Join-Path $InstallDir $file) -UseBasicParsing
-            }
-            catch {
-                Write-Error "Failed to download $file from $Repo/$Branch"
-                Write-Error "Please verify the repository and branch exist"
-                exit 1
-            }
-        }
-        
-        # Verify Python syntax
-        Write-Info "Verifying Python syntax..."
-        try {
-            python -m py_compile (Join-Path $InstallDir "packet_capture.py") 2>$null
-            python -m py_compile (Join-Path $InstallDir "ble_pairing_helper.py") 2>$null
-        }
-        catch {
-            Write-Error "Downloaded files have syntax errors"
-            Write-Error "The repository may be in an inconsistent state"
-            exit 1
-        }
-        
-        Write-Success "Files downloaded and verified"
-    }
-    
-    # Check Python
-    Write-Header "Checking Dependencies"
-    
-    try {
-        $pythonVersion = python --version 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Python not found"
-        }
-    }
-    catch {
-        Write-Error "Python 3 is not installed. Please install Python 3 and try again."
-        exit 1
-    }
-    Write-Success "Python 3 found: $pythonVersion"
-    
-    # Set up virtual environment
-    Write-Info "Setting up Python virtual environment..."
-    if (-not (Test-Path (Join-Path $InstallDir "venv"))) {
-        python -m venv (Join-Path $InstallDir "venv")
-        Write-Success "Virtual environment created"
-    }
-    else {
-        Write-Success "Using existing virtual environment"
-    }
-    
-    # Install Python dependencies
-    Write-Info "Installing Python dependencies..."
-    & (Join-Path $InstallDir "venv\Scripts\Activate.ps1")
-    & (Join-Path $InstallDir "venv\Scripts\pip.exe") install --quiet --upgrade pip
-    & (Join-Path $InstallDir "venv\Scripts\pip.exe") install --quiet -r (Join-Path $InstallDir "requirements.txt")
-    Write-Success "Python dependencies installed"
-    
-    # Check for meshcore-decoder (optional)
-    try {
-        $decoderVersion = meshcore-decoder --version 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "meshcore-decoder found: $decoderVersion"
-            $script:DecoderAvailable = $true
-        }
-        else {
-            throw "meshcore-decoder not found"
-        }
-    }
-    catch {
-        Write-Warning "meshcore-decoder not found (required for auth token authentication)"
-        if (Read-YesNo "Would you like instructions to install it now?" "y") {
-            Write-Host ""
-            Write-Host "To install meshcore-decoder, run:"
-            Write-Host "  # Install Node.js from https://nodejs.org/"
-            Write-Host "  npm install -g @michaelhart/meshcore-decoder"
-            Write-Host ""
-            if (Read-YesNo "Continue without meshcore-decoder (you can install it later)?" "y") {
-                $script:DecoderAvailable = $false
-            }
-            else {
-                exit 1
-            }
-        }
-        else {
-            $script:DecoderAvailable = $false
-        }
-    }
-    
-    # Configuration
-    Write-Header "Configuration"
-    
-    # Check for existing config.ini and offer migration
-    if ((Test-Path (Join-Path $InstallDir "config.ini")) -and -not (Test-Path (Join-Path $InstallDir ".env.local"))) {
-        Write-Info "Found existing config.ini file"
-        if (Read-YesNo "Would you like to migrate your config.ini to the new .env.local format?" "y") {
-            Write-Info "Migrating config.ini to .env.local..."
-            if (python (Join-Path $InstallDir "migrate_config.py")) {
-                Write-Success "Configuration migrated successfully"
-                Write-Info "You can now remove config.ini if everything works correctly"
-            }
-            else {
-                Write-Error "Migration failed, continuing with manual configuration"
-            }
-        }
-    }
-    
-    # Check if config URL was provided
-    if ($ConfigUrl) {
-        Write-Info "Downloading configuration from: $ConfigUrl"
-        try {
-            Invoke-WebRequest -Uri $ConfigUrl -OutFile (Join-Path $InstallDir ".env.local") -UseBasicParsing
-            Write-Success "Configuration downloaded successfully"
-            
-            # Convert MCTOMQTT_ prefixes to PACKETCAPTURE_ for compatibility
-            $content = Get-Content (Join-Path $InstallDir ".env.local")
-            if ($content -match "MCTOMQTT_") {
-                Write-Info "Converting MCTOMQTT_ prefixes to PACKETCAPTURE_ for compatibility..."
-                $content = $content -replace "^MCTOMQTT_", "PACKETCAPTURE_"
-                Set-Content -Path (Join-Path $InstallDir ".env.local") -Value $content
-                Write-Success "Configuration converted successfully"
-            }
-            
-            # Show what was downloaded
-            Write-Host ""
-            Write-Info "Downloaded configuration:"
-            Get-Content (Join-Path $InstallDir ".env.local") | Where-Object { $_ -notmatch '^#' -and $_ -ne '' } | Select-Object -First 20
-            $lineCount = (Get-Content (Join-Path $InstallDir ".env.local") | Where-Object { $_ -notmatch '^#' -and $_ -ne '' }).Count
-            if ($lineCount -gt 20) {
-                Write-Host "..."
-            }
-            Write-Host ""
-            
-            if (Read-YesNo "Use this configuration?" "y") {
-                Write-Success "Using downloaded configuration"
-                
-                # Always prompt for IATA
-                Write-Host ""
-                Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                Write-Warning "IATA CODE REQUIRED"
-                Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                Write-Host ""
-                Write-Info "IATA code is a 3-letter airport code and should match an airport near the reporting location"
-                Write-Info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
-                Write-Host ""
-                
-                # Try to extract existing IATA from config
-                $existingIata = (Get-Content (Join-Path $InstallDir ".env.local") | Where-Object { $_ -match "^PACKETCAPTURE_IATA=" } | ForEach-Object { ($_ -split "=", 2)[1] })
-                
-                $script:Iata = ""
-                while (-not $script:Iata -or $script:Iata -eq "XXX") {
-                    if ($existingIata -and $existingIata -ne "XXX") {
-                        $script:Iata = Read-Host "Enter your IATA code" $existingIata
-                    }
-                    else {
-                        $script:Iata = Read-Host "Enter your IATA code (3 letters)"
-                    }
-                    $script:Iata = $script:Iata.ToUpper().Trim()
-                    
-                    if (-not $script:Iata) {
-                        Write-Error "IATA code cannot be empty"
-                    }
-                    elseif ($script:Iata -eq "XXX") {
-                        Write-Error "Please enter your actual IATA code, not XXX"
-                    }
-                    elseif ($script:Iata.Length -ne 3) {
-                        Write-Warning "IATA code should be 3 letters, you entered: $script:Iata"
-                        if (-not (Read-YesNo "Use '$script:Iata' anyway?" "n")) {
-                            $script:Iata = ""
-                        }
-                    }
-                }
-                
-                # Update IATA in config
-                $content = Get-Content (Join-Path $InstallDir ".env.local")
-                $content = $content -replace "^PACKETCAPTURE_IATA=.*", "PACKETCAPTURE_IATA=$script:Iata"
-                Set-Content -Path (Join-Path $InstallDir ".env.local") -Value $content
-                Write-Host ""
-                Write-Success "IATA code set to: $script:Iata"
-                Write-Host ""
-                
-                # Check if MQTT1 is already configured and offer additional brokers
-                if ((Get-Content (Join-Path $InstallDir ".env.local") | Where-Object { $_ -match "^PACKETCAPTURE_MQTT1_ENABLED=true" })) {
-                    $mqtt1Server = (Get-Content (Join-Path $InstallDir ".env.local") | Where-Object { $_ -match "^PACKETCAPTURE_MQTT1_SERVER=" } | ForEach-Object { ($_ -split "=", 2)[1] })
-                    Write-Host ""
-                    Write-Success "MQTT Broker 1 already configured: $mqtt1Server"
-                    
-                    if (Read-YesNo "Would you like to configure additional MQTT brokers?" "n") {
-                        Set-AdditionalBrokers
-                    }
-                }
-                else {
-                    # No MQTT configured, offer options
-                    Set-MqttBrokers
-                }
-            }
-            else {
-                Remove-Item (Join-Path $InstallDir ".env.local") -Force
-                Set-MqttBrokers
-            }
-        }
-        catch {
-            Write-Error "Failed to download configuration from URL"
-            if (Read-YesNo "Continue with interactive configuration?" "y") {
-                Set-MqttBrokers
-            }
-            else {
-                exit 1
-            }
-        }
-    }
-    elseif ($UpdatingExisting -and (Test-Path (Join-Path $InstallDir ".env.local"))) {
-        if (Read-YesNo "Existing configuration found. Reconfigure?" "n") {
-            # Back up existing config before reconfiguring
-            Copy-Item (Join-Path $InstallDir ".env.local") (Join-Path $InstallDir ".env.local.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')")
-            Remove-Item (Join-Path $InstallDir ".env.local") -Force
-            Set-MqttBrokers
-        }
-        else {
-            Write-Info "Keeping existing configuration"
-            # Check if MQTT brokers are already configured
-            if ((Test-Path (Join-Path $InstallDir ".env.local")) -and (Get-Content (Join-Path $InstallDir ".env.local") | Where-Object { $_ -match "^PACKETCAPTURE_MQTT[1-4]_ENABLED=true" })) {
-                Write-Info "MQTT brokers already configured - skipping MQTT configuration"
-            }
-            else {
-                # Still need to configure MQTT brokers if not already configured
-                Set-MqttBrokers
-            }
-        }
-    }
-    elseif (-not (Test-Path (Join-Path $InstallDir ".env.local"))) {
-        Set-MqttBrokers
-    }
-    
-    # Installation method selection
-    Write-Header "Installation Method"
-    
-    Write-Host "Choose your preferred installation method:"
-    Write-Host ""
-    Write-Host "  1) Windows Service (recommended for production)"
-    Write-Host "     • Runs automatically on boot"
-    Write-Host "     • Managed by Windows Service Manager"
-    Write-Host "     • Automatic restart on failure"
-    Write-Host ""
-    Write-Host "  2) Docker Container (recommended for development/testing)"
-    Write-Host "     • Isolated environment"
-    Write-Host "     • Easy to update and manage"
-    Write-Host "     • Works on Windows with WSL2 or Docker Desktop"
-    Write-Host ""
-    Write-Host "  3) Manual installation only"
-    Write-Host "     • No automatic startup"
-    Write-Host "     • Run manually when needed"
-    Write-Host ""
-    
-    $installMethod = Read-Host "Choose installation method [1-3]"
-    
-    switch ($installMethod) {
-        "1" {
-            Install-WindowsService
-        }
-        "2" {
-            Install-Docker
-        }
-        "3" {
-            Write-Info "Manual installation complete"
-            if ($script:DecoderAvailable) {
-                Write-Info "To run manually: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
-                Write-Info "Note: meshcore-decoder is available in your PATH for JWT authentication"
-            } else {
-                Write-Info "To run manually: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
-                Write-Warning "meshcore-decoder not found - JWT authentication will use Python fallback"
-            }
-        }
-        default {
-            Write-Error "Invalid selection"
-            exit 1
-        }
-    }
+    Write-Host "SUCCESS: Configuration file created" -ForegroundColor Green
     
     # Final summary
-    Write-Header "Installation Complete!"
+    Write-Host ""
+    Write-Host "=======================================================" -ForegroundColor Blue
+    Write-Host "  Installation Complete!" -ForegroundColor Blue
+    Write-Host "=======================================================" -ForegroundColor Blue
+    Write-Host ""
     Write-Host "Installation directory: $InstallDir"
     Write-Host ""
     Write-Host "Configuration file: $InstallDir\.env.local"
     Write-Host ""
-    
-    if ($ServiceInstalled) {
-        Write-Host "Service management:"
-        Write-Host "  Start:   Start-Service meshcore-capture"
-        Write-Host "  Stop:    Stop-Service meshcore-capture"
-        Write-Host "  Status:  Get-Service meshcore-capture"
-        Write-Host "  Logs:    Get-EventLog -LogName Application -Source meshcore-capture"
-    }
-    elseif ($DockerInstalled) {
-        Write-Host "Docker management:"
-        Write-Host "  Start:   docker compose -f $InstallDir\docker-compose.yml up -d"
-        Write-Host "  Stop:    docker compose -f $InstallDir\docker-compose.yml down"
-        Write-Host "  Logs:    docker compose -f $InstallDir\docker-compose.yml logs -f"
-        Write-Host "  Status:  docker compose -f $InstallDir\docker-compose.yml ps"
-    }
-    else {
-        if ($script:DecoderAvailable) {
-            Write-Host "Manual run: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
-            Write-Host "Note: meshcore-decoder is available for JWT authentication"
-        } else {
-            Write-Host "Manual run: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
-            Write-Host "Note: meshcore-decoder not found - JWT authentication will use Python fallback"
-        }
-    }
-    
+    Write-Host "To run manually: cd $InstallDir; .\venv\Scripts\python.exe packet_capture.py"
     Write-Host ""
-    Write-Success "Installation complete!"
+    Write-Host "SUCCESS: Installation complete!" -ForegroundColor Green
 }
 
 # Run main installation

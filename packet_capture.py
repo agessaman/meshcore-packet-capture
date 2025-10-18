@@ -767,23 +767,31 @@ class PacketCapture:
     def on_mqtt_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         broker_name = userdata.get('name', 'unknown') if userdata else 'unknown'
         
+        # Handle both integer and ReasonCode object types
+        if hasattr(reason_code, 'value'):
+            # ReasonCode object - get the integer value
+            reason_code_int = reason_code.value
+        else:
+            # Integer or other type
+            reason_code_int = int(reason_code) if reason_code is not None else 0
+        
         # Provide more specific logging for different disconnect reasons
-        if reason_code == mqtt.MQTT_ERR_KEEPALIVE:
+        if reason_code_int == mqtt.MQTT_ERR_KEEPALIVE:
             self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Keep alive timeout)")
             self.logger.info("This may be due to network latency or firewall timeouts. Connection will be retried.")
-        elif reason_code == mqtt.MQTT_ERR_CONN_LOST:
+        elif reason_code_int == mqtt.MQTT_ERR_CONN_LOST:
             self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Connection lost)")
             self.logger.info("Network connection was lost. Connection will be retried.")
-        elif reason_code == mqtt.MQTT_ERR_CONN_REFUSED:
+        elif reason_code_int == mqtt.MQTT_ERR_CONN_REFUSED:
             self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Connection refused)")
             self.logger.info("Server refused the connection. Check credentials and server configuration.")
-        elif reason_code == mqtt.MQTT_ERR_AUTH:
+        elif reason_code_int == mqtt.MQTT_ERR_AUTH:
             self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Authentication failed)")
             self.logger.info("Authentication failed. Check username/password or auth token.")
-        elif reason_code == mqtt.MQTT_ERR_ACL_DENIED:
+        elif reason_code_int == mqtt.MQTT_ERR_ACL_DENIED:
             self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: ACL denied)")
             self.logger.info("Access denied. Check topic permissions and broker ACL settings.")
-        elif reason_code == mqtt.MQTT_ERR_TLS:
+        elif reason_code_int == mqtt.MQTT_ERR_TLS:
             self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: TLS error)")
             self.logger.info("TLS/SSL error occurred. Check certificate configuration.")
         else:
@@ -807,8 +815,8 @@ class PacketCapture:
                 15: "Queue size exceeded",
                 16: "Keepalive timeout"
             }
-            error_name = error_names.get(reason_code, f"Unknown error code {reason_code}")
-            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: {reason_code} - {error_name})")
+            error_name = error_names.get(reason_code_int, f"Unknown error code {reason_code_int}")
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: {reason_code_int} - {error_name})")
         
         # Check if any brokers are still connected (excluding the one that just disconnected)
         connected_brokers = []

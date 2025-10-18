@@ -268,48 +268,64 @@ function Start-Installation {
                 # Run the BLE scan helper with delay
                 $bleScanScript = Join-Path $InstallDir "ble_scan_helper.py"
                 Write-Host "INFO: This may take 10-15 seconds..." -ForegroundColor Blue
-                $scanResult = & python $bleScanScript 2>&1
                 
-                if ($LASTEXITCODE -eq 0 -and $scanResult) {
-                    # Parse JSON output
-                    $devices = $scanResult | ConvertFrom-Json
-                    
-                    if ($devices.Count -gt 0) {
-                        Write-Host "INFO: Found $($devices.Count) BLE device(s):" -ForegroundColor Blue
-                        for ($i = 0; $i -lt $devices.Count; $i++) {
-                            $device = $devices[$i]
-                            Write-Host "  $($i + 1)) $($device.name) ($($device.address))" -ForegroundColor Blue
-                        }
-                        Write-Host "  $($devices.Count + 1)) Enter device manually" -ForegroundColor Blue
-                        Write-Host ""
+                # Capture both stdout and stderr separately
+                $scanOutput = & python $bleScanScript 2>&1
+                $scanExitCode = $LASTEXITCODE
+                
+                Write-Host "DEBUG: BLE scan exit code: $scanExitCode" -ForegroundColor Gray
+                Write-Host "DEBUG: BLE scan output: $scanOutput" -ForegroundColor Gray
+                
+                if ($scanExitCode -eq 0 -and $scanOutput) {
+                    # Try to parse JSON output
+                    try {
+                        $devices = $scanOutput | ConvertFrom-Json
                         
-                        while ($true) {
-                            $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
-                            if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
-                                if ([int]$choice -eq ($devices.Count + 1)) {
-                                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                        if ($devices.Count -gt 0) {
+                            Write-Host "INFO: Found $($devices.Count) BLE device(s):" -ForegroundColor Blue
+                            for ($i = 0; $i -lt $devices.Count; $i++) {
+                                $device = $devices[$i]
+                                Write-Host "  $($i + 1)) $($device.name) ($($device.address))" -ForegroundColor Blue
+                            }
+                            Write-Host "  $($devices.Count + 1)) Enter device manually" -ForegroundColor Blue
+                            Write-Host ""
+                            
+                            while ($true) {
+                                $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
+                                if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
+                                    if ([int]$choice -eq ($devices.Count + 1)) {
+                                        $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                                        $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                                    }
+                                    else {
+                                        $selectedDevice = $devices[([int]$choice - 1)]
+                                        $script:SelectedBleDevice = $selectedDevice.address
+                                        $script:SelectedBleName = $selectedDevice.name
+                                    }
+                                    break
                                 }
                                 else {
-                                    $selectedDevice = $devices[([int]$choice - 1)]
-                                    $script:SelectedBleDevice = $selectedDevice.address
-                                    $script:SelectedBleName = $selectedDevice.name
+                                    Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($devices.Count + 1)" -ForegroundColor Red
                                 }
-                                break
-                            }
-                            else {
-                                Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($devices.Count + 1)" -ForegroundColor Red
                             }
                         }
+                        else {
+                            Write-Host "WARNING: No BLE devices found" -ForegroundColor Yellow
+                            $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                            $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                        }
                     }
-                    else {
-                        Write-Host "WARNING: No BLE devices found" -ForegroundColor Yellow
+                    catch {
+                        Write-Host "WARNING: Failed to parse BLE scan results: $($_.Exception.Message)" -ForegroundColor Yellow
+                        Write-Host "INFO: Raw output: $scanOutput" -ForegroundColor Blue
                         $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                         $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
                     }
                 }
                 else {
-                    Write-Host "WARNING: BLE scanning failed, using manual entry" -ForegroundColor Yellow
+                    Write-Host "WARNING: BLE scanning failed (exit code: $scanExitCode)" -ForegroundColor Yellow
+                    Write-Host "INFO: Output: $scanOutput" -ForegroundColor Blue
+                    Write-Host "INFO: This may be due to missing BLE permissions or dependencies" -ForegroundColor Blue
                     $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                     $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
                 }
@@ -331,14 +347,36 @@ function Start-Installation {
                 try {
                     $blePairingScript = Join-Path $InstallDir "ble_pairing_helper.py"
                     $pairingResult = & python $blePairingScript $script:SelectedBleDevice $script:SelectedBleName 2>&1
+                    $pairingExitCode = $LASTEXITCODE
                     
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Host "SUCCESS: BLE device paired successfully" -ForegroundColor Green
+                    Write-Host "DEBUG: BLE pairing exit code: $pairingExitCode" -ForegroundColor Gray
+                    Write-Host "DEBUG: BLE pairing output: $pairingResult" -ForegroundColor Gray
+                    
+                    if ($pairingExitCode -eq 0) {
+                        # Try to parse JSON response
+                        try {
+                            $pairingResponse = $pairingResult | ConvertFrom-Json
+                            if ($pairingResponse.status -eq "paired") {
+                                Write-Host "SUCCESS: BLE device paired successfully" -ForegroundColor Green
+                            }
+                            elseif ($pairingResponse.status -eq "not_paired") {
+                                Write-Host "INFO: Device requires pairing" -ForegroundColor Blue
+                                Write-Host "INFO: You may need to pair manually or the device may already be paired" -ForegroundColor Blue
+                            }
+                            else {
+                                Write-Host "WARNING: BLE pairing status: $($pairingResponse.status)" -ForegroundColor Yellow
+                                Write-Host "INFO: Pairing output: $pairingResult" -ForegroundColor Blue
+                            }
+                        }
+                        catch {
+                            Write-Host "WARNING: Failed to parse pairing response: $($_.Exception.Message)" -ForegroundColor Yellow
+                            Write-Host "INFO: Raw output: $pairingResult" -ForegroundColor Blue
+                        }
                     }
                     else {
-                        Write-Host "WARNING: BLE pairing failed or was skipped" -ForegroundColor Yellow
-                        Write-Host "INFO: You may need to pair manually or the device may already be paired" -ForegroundColor Blue
-                        Write-Host "INFO: Pairing output: $pairingResult" -ForegroundColor Blue
+                        Write-Host "WARNING: BLE pairing failed (exit code: $pairingExitCode)" -ForegroundColor Yellow
+                        Write-Host "INFO: Output: $pairingResult" -ForegroundColor Blue
+                        Write-Host "INFO: This may be due to missing BLE permissions or the device not being in range" -ForegroundColor Blue
                     }
                 }
                 catch {

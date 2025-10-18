@@ -321,6 +321,29 @@ function Start-Installation {
             
             if ($script:SelectedBleDevice) {
                 Write-Host "SUCCESS: BLE device configured: $script:SelectedBleName ($script:SelectedBleDevice)" -ForegroundColor Green
+                
+                # Attempt BLE pairing
+                Write-Host ""
+                Write-Host "INFO: Attempting to pair with BLE device..." -ForegroundColor Blue
+                Write-Host "INFO: This may require user interaction on the device" -ForegroundColor Blue
+                
+                try {
+                    $blePairingScript = Join-Path $InstallDir "ble_pairing_helper.py"
+                    $pairingResult = & python $blePairingScript $script:SelectedBleDevice 2>&1
+                    
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host "SUCCESS: BLE device paired successfully" -ForegroundColor Green
+                    }
+                    else {
+                        Write-Host "WARNING: BLE pairing failed or was skipped" -ForegroundColor Yellow
+                        Write-Host "INFO: You may need to pair manually or the device may already be paired" -ForegroundColor Blue
+                        Write-Host "INFO: Pairing output: $pairingResult" -ForegroundColor Blue
+                    }
+                }
+                catch {
+                    Write-Host "WARNING: BLE pairing failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Host "INFO: You may need to pair the device manually" -ForegroundColor Blue
+                }
             }
             else {
                 Write-Host "WARNING: No BLE device configured" -ForegroundColor Yellow
@@ -516,7 +539,7 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
     Write-Host ""
     Write-Host "Configuration file: $InstallDir\.env.local"
     Write-Host ""
-    Write-Host "To run manually: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
+    Write-Host "To run manually: cd $InstallDir; .\venv\Scripts\python.exe packet_capture.py"
     Write-Host ""
     Write-Host "SUCCESS: Installation complete!" -ForegroundColor Green
 }

@@ -27,7 +27,7 @@ $DockerInstalled = $false
 $UpdatingExisting = $false
 
 # Helper functions for colored output
-function Write-Header {
+function global:Write-Header {
     param([string]$Message)
     Write-Host ""
     Write-Host "═══════════════════════════════════════════════════" -ForegroundColor Blue
@@ -36,22 +36,22 @@ function Write-Header {
     Write-Host ""
 }
 
-function Write-Success {
+function global:Write-Success {
     param([string]$Message)
     Write-Host "✓ $Message" -ForegroundColor Green
 }
 
-function Write-Error {
+function global:Write-Error {
     param([string]$Message)
     Write-Host "✗ $Message" -ForegroundColor Red
 }
 
-function Write-Warning {
+function global:Write-Warning {
     param([string]$Message)
     Write-Host "⚠ $Message" -ForegroundColor Yellow
 }
 
-function Write-Info {
+function global:Write-Info {
     param([string]$Message)
     Write-Host "ℹ $Message" -ForegroundColor Blue
 }

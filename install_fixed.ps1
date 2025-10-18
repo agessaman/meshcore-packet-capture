@@ -269,8 +269,9 @@ function Start-Installation {
                 $bleScanScript = Join-Path $InstallDir "ble_scan_helper.py"
                 Write-Host "INFO: This may take 10-15 seconds..." -ForegroundColor Blue
                 
-                # Capture both stdout and stderr separately
-                $scanOutput = & python $bleScanScript 2>&1
+                # Use the virtual environment Python
+                $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
+                $scanOutput = & $venvPython $bleScanScript 2>&1
                 $scanExitCode = $LASTEXITCODE
                 
                 Write-Host "DEBUG: BLE scan exit code: $scanExitCode" -ForegroundColor Gray
@@ -346,7 +347,8 @@ function Start-Installation {
                 
                 try {
                     $blePairingScript = Join-Path $InstallDir "ble_pairing_helper.py"
-                    $pairingResult = & python $blePairingScript $script:SelectedBleDevice $script:SelectedBleName 2>&1
+                    $venvPython = Join-Path $InstallDir "venv\Scripts\python.exe"
+                    $pairingResult = & $venvPython $blePairingScript $script:SelectedBleDevice $script:SelectedBleName 2>&1
                     $pairingExitCode = $LASTEXITCODE
                     
                     Write-Host "DEBUG: BLE pairing exit code: $pairingExitCode" -ForegroundColor Gray

@@ -10,10 +10,37 @@ import hmac
 import time
 import subprocess
 import sys
+import shutil
+import platform
 
 def base64url_encode(data: bytes) -> str:
     """Base64url encode without padding"""
     return base64.urlsafe_b64encode(data).rstrip(b'=').decode('utf-8')
+
+def _find_meshcore_decoder():
+    """
+    Find the meshcore-decoder executable with proper platform handling.
+    
+    Returns:
+        str: Path to meshcore-decoder executable, or None if not found
+    """
+    # Try to find meshcore-decoder in PATH
+    decoder_path = shutil.which('meshcore-decoder')
+    if decoder_path:
+        return decoder_path
+    
+    # On Windows, also try with .cmd extension
+    if platform.system().lower() == 'windows':
+        decoder_path = shutil.which('meshcore-decoder.cmd')
+        if decoder_path:
+            return decoder_path
+        
+        # Try with .exe extension
+        decoder_path = shutil.which('meshcore-decoder.exe')
+        if decoder_path:
+            return decoder_path
+    
+    return None
 
 def create_auth_token(public_key_hex: str, private_key_hex: str, expiry_seconds: int = 86400, **claims) -> str:
     """
@@ -32,7 +59,12 @@ def create_auth_token(public_key_hex: str, private_key_hex: str, expiry_seconds:
     """
     # Try meshcore-decoder CLI first
     try:
-        cmd = ['meshcore-decoder', 'auth-token', public_key_hex, private_key_hex, '-e', str(expiry_seconds)]
+        # Find the meshcore-decoder executable with proper platform handling
+        decoder_cmd = _find_meshcore_decoder()
+        if not decoder_cmd:
+            raise FileNotFoundError("meshcore-decoder not found in PATH")
+        
+        cmd = [decoder_cmd, 'auth-token', public_key_hex, private_key_hex, '-e', str(expiry_seconds)]
         
         if claims:
             claims_json = json.dumps(claims)
@@ -46,7 +78,7 @@ def create_auth_token(public_key_hex: str, private_key_hex: str, expiry_seconds:
         )
         
         if result.returncode != 0:
-            raise Exception(f"meshcore-decoder error: {result.stderr}")
+            raise Exception(f"meshcore-decoder error (exit code {result.returncode}): {result.stderr}")
         
         token = result.stdout.strip()
         if not token or token.count('.') != 2:

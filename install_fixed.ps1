@@ -108,7 +108,7 @@ function Start-Installation {
         $baseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
         
         # Download files
-        $files = @("packet_capture.py", "auth_token.py", "enums.py", "ble_pairing_helper.py", "requirements.txt")
+        $files = @("packet_capture.py", "auth_token.py", "enums.py", "ble_pairing_helper.py", "ble_scan_helper.py", "requirements.txt")
         
         foreach ($file in $files) {
             Write-Host "INFO: Downloading $file..." -ForegroundColor Blue

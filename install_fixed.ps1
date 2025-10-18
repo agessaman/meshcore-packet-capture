@@ -41,6 +41,11 @@ function Start-Installation {
     $defaultInstallDir = Join-Path $env:USERPROFILE ".meshcore-packet-capture"
     $script:InstallDir = Read-Host "Installation directory" $defaultInstallDir
     
+    # Use default if empty
+    if (-not $script:InstallDir) {
+        $script:InstallDir = $defaultInstallDir
+    }
+    
     Write-Host "INFO: Installation directory: $InstallDir" -ForegroundColor Blue
     
     # Check if directory exists

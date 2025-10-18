@@ -771,10 +771,44 @@ class PacketCapture:
         if reason_code == mqtt.MQTT_ERR_KEEPALIVE:
             self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Keep alive timeout)")
             self.logger.info("This may be due to network latency or firewall timeouts. Connection will be retried.")
-        elif reason_code == mqtt.MQTT_ERR_NETWORK_ERROR:
-            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Network error)")
+        elif reason_code == mqtt.MQTT_ERR_CONN_LOST:
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Connection lost)")
+            self.logger.info("Network connection was lost. Connection will be retried.")
+        elif reason_code == mqtt.MQTT_ERR_CONN_REFUSED:
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Connection refused)")
+            self.logger.info("Server refused the connection. Check credentials and server configuration.")
+        elif reason_code == mqtt.MQTT_ERR_AUTH:
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Authentication failed)")
+            self.logger.info("Authentication failed. Check username/password or auth token.")
+        elif reason_code == mqtt.MQTT_ERR_ACL_DENIED:
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: ACL denied)")
+            self.logger.info("Access denied. Check topic permissions and broker ACL settings.")
+        elif reason_code == mqtt.MQTT_ERR_TLS:
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: TLS error)")
+            self.logger.info("TLS/SSL error occurred. Check certificate configuration.")
         else:
-            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: {reason_code})")
+            # Map numeric codes to human-readable names
+            error_names = {
+                0: "Success",
+                1: "Out of memory", 
+                2: "Protocol error",
+                3: "Invalid arguments",
+                4: "Not connected",
+                5: "Connection refused",
+                6: "Not found",
+                7: "Connection lost",
+                8: "TLS error",
+                9: "Payload too large",
+                10: "Not supported",
+                11: "Authentication failed",
+                12: "ACL denied",
+                13: "Unknown error",
+                14: "System error",
+                15: "Queue size exceeded",
+                16: "Keepalive timeout"
+            }
+            error_name = error_names.get(reason_code, f"Unknown error code {reason_code}")
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: {reason_code} - {error_name})")
         
         # Check if any brokers are still connected (excluding the one that just disconnected)
         connected_brokers = []
@@ -880,7 +914,7 @@ class PacketCapture:
                 "status": "offline",
                 "timestamp": datetime.now().isoformat(),
                 "origin": self.device_name,
-                "origin_id": self.device_public_key
+                "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE'
             })
             lwt_qos = self.get_env_int(f'MQTT{broker_num}_QOS', 0)
             lwt_retain = self.get_env_bool(f'MQTT{broker_num}_RETAIN', True)
@@ -1052,7 +1086,7 @@ class PacketCapture:
             "status": status,
             "timestamp": datetime.now().isoformat(),
             "origin": self.device_name,
-            "origin_id": self.device_public_key
+            "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE'
         }
         if client:
             self.safe_publish(None, json.dumps(status_msg), retain=True, client=client, broker_num=broker_num, topic_type="status")

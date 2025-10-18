@@ -946,7 +946,25 @@ function Install-WindowsService {
     $serviceDisplayName = "MeshCore Packet Capture"
     $serviceDescription = "MeshCore Packet Capture Service"
     
-    # Create service using sc.exe
+    # Build PATH with meshcore-decoder if available
+    $servicePath = $env:PATH
+    if ($script:DecoderAvailable) {
+        try {
+            $decoderPath = (Get-Command meshcore-decoder -ErrorAction SilentlyContinue).Source
+            if ($decoderPath) {
+                $decoderDir = Split-Path $decoderPath -Parent
+                if ($decoderDir -and $servicePath -notlike "*$decoderDir*") {
+                    $servicePath = "$decoderDir;$servicePath"
+                    Write-Info "Added meshcore-decoder to service PATH: $decoderDir"
+                }
+            }
+        }
+        catch {
+            Write-Warning "Could not determine meshcore-decoder path for service"
+        }
+    }
+    
+    # Create service using sc.exe with environment variables
     $scCommand = "sc.exe create `"$serviceName`" binPath= `"$InstallDir\venv\Scripts\python.exe $InstallDir\packet_capture.py`" start= auto DisplayName= `"$serviceDisplayName`""
     
     try {
@@ -954,6 +972,12 @@ function Install-WindowsService {
         
         # Set service description
         sc.exe description $serviceName $serviceDescription 2>$null
+        
+        # Set environment variables for the service
+        if ($servicePath -ne $env:PATH) {
+            Write-Info "Setting PATH environment variable for service..."
+            sc.exe config $serviceName Environment= "PATH=$servicePath" 2>$null
+        }
         
         Write-Success "Windows service installed"
         
@@ -1563,7 +1587,13 @@ function Start-Installation {
         }
         "3" {
             Write-Info "Manual installation complete"
-            Write-Info "To run manually: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
+            if ($script:DecoderAvailable) {
+                Write-Info "To run manually: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
+                Write-Info "Note: meshcore-decoder is available in your PATH for JWT authentication"
+            } else {
+                Write-Info "To run manually: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
+                Write-Warning "meshcore-decoder not found - JWT authentication will use Python fallback"
+            }
         }
         default {
             Write-Error "Invalid selection"
@@ -1593,7 +1623,13 @@ function Start-Installation {
         Write-Host "  Status:  docker compose -f $InstallDir\docker-compose.yml ps"
     }
     else {
-        Write-Host "Manual run: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
+        if ($script:DecoderAvailable) {
+            Write-Host "Manual run: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
+            Write-Host "Note: meshcore-decoder is available for JWT authentication"
+        } else {
+            Write-Host "Manual run: cd $InstallDir && .\venv\Scripts\python.exe packet_capture.py"
+            Write-Host "Note: meshcore-decoder not found - JWT authentication will use Python fallback"
+        }
     }
     
     Write-Host ""

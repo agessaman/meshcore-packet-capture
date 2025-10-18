@@ -265,8 +265,9 @@ function Start-Installation {
             Write-Host "INFO: Scanning for BLE devices..." -ForegroundColor Blue
             
             try {
-                # Run the BLE scan helper
+                # Run the BLE scan helper with delay
                 $bleScanScript = Join-Path $InstallDir "ble_scan_helper.py"
+                Write-Host "INFO: This may take 10-15 seconds..." -ForegroundColor Blue
                 $scanResult = & python $bleScanScript 2>&1
                 
                 if ($LASTEXITCODE -eq 0 -and $scanResult) {
@@ -329,7 +330,7 @@ function Start-Installation {
                 
                 try {
                     $blePairingScript = Join-Path $InstallDir "ble_pairing_helper.py"
-                    $pairingResult = & python $blePairingScript $script:SelectedBleDevice 2>&1
+                    $pairingResult = & python $blePairingScript $script:SelectedBleDevice $script:SelectedBleName 2>&1
                     
                     if ($LASTEXITCODE -eq 0) {
                         Write-Host "SUCCESS: BLE device paired successfully" -ForegroundColor Green

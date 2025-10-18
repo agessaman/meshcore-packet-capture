@@ -127,6 +127,183 @@ EOF
     }
 }
 
+# Function to configure additional MQTT brokers
+function Configure-AdditionalMqttBrokers {
+    $envLocal = Join-Path $InstallDir ".env.local"
+    
+    # Find next available broker number
+    $nextBroker = 2
+    while ((Get-Content $envLocal -ErrorAction SilentlyContinue) -match "PACKETCAPTURE_MQTT${nextBroker}_ENABLED=") {
+        $nextBroker++
+    }
+    
+    Write-Host ""
+    Write-Host "INFO: Configuring Additional MQTT Brokers" -ForegroundColor Blue
+    Write-Host ""
+    
+    $numBrokers = Read-Host "How many additional brokers would you like to configure? [1-3]"
+    if ($numBrokers -notmatch '^[1-3]$') {
+        $numBrokers = "1"
+    }
+    
+    for ($i = 1; $i -le [int]$numBrokers; $i++) {
+        $brokerNum = $nextBroker + $i - 1
+        Configure-SingleMqttBroker $brokerNum
+    }
+}
+
+# Function to configure a single MQTT broker
+function Configure-SingleMqttBroker {
+    param([int]$BrokerNum)
+    
+    $envLocal = Join-Path $InstallDir ".env.local"
+    
+    Write-Host ""
+    Write-Host "INFO: Configuring MQTT Broker $BrokerNum" -ForegroundColor Blue
+    Write-Host ""
+    
+    # Server configuration
+    $server = Read-Host "MQTT Server hostname/IP"
+    if (-not $server) {
+        Write-Host "WARNING: Server hostname required - skipping broker $BrokerNum" -ForegroundColor Yellow
+        return
+    }
+    
+    Add-Content -Path $envLocal -Value ""
+    Add-Content -Path $envLocal -Value "# MQTT Broker $BrokerNum"
+    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_ENABLED=true"
+    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_SERVER=$server"
+    
+    # Port configuration
+    $port = Read-Host "Port" "1883"
+    if (-not ($port -match '^\d+$') -or [int]$port -lt 1 -or [int]$port -gt 65535) {
+        Write-Host "WARNING: Invalid port number, using default 1883" -ForegroundColor Yellow
+        $port = "1883"
+    }
+    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PORT=$port"
+    
+    # Transport configuration
+    Write-Host ""
+    $useWebsockets = Read-Host "Use WebSockets transport? (y/N)"
+    if ($useWebsockets -match '^[yY]') {
+        Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TRANSPORT=websockets"
+    }
+    
+    # TLS configuration
+    Write-Host ""
+    $useTls = Read-Host "Use TLS/SSL encryption? (y/N)"
+    if ($useTls -match '^[yY]') {
+        Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USE_TLS=true"
+        
+        $verifyTls = Read-Host "Verify TLS certificates? (Y/n)"
+        if ($verifyTls -match '^[nN]') {
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TLS_VERIFY=false"
+        }
+    }
+    
+    # Authentication configuration
+    Write-Host ""
+    Write-Host "Authentication method:" -ForegroundColor Blue
+    Write-Host "  1) Username/Password" -ForegroundColor Blue
+    Write-Host "  2) MeshCore Auth Token (requires meshcore-decoder)" -ForegroundColor Blue
+    Write-Host "  3) None (anonymous)" -ForegroundColor Blue
+    
+    $authChoice = Read-Host "Choose authentication method [1-3]"
+    
+    switch ($authChoice) {
+        "1" {
+            $username = Read-Host "Username" ""
+            if ($username) {
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USERNAME=$username"
+                $password = Read-Host "Password" ""
+                if ($password) {
+                    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PASSWORD=$password"
+                }
+            }
+        }
+        "2" {
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USE_AUTH_TOKEN=true"
+            $tokenAudience = Read-Host "Token audience (optional)" ""
+            if ($tokenAudience) {
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOKEN_AUDIENCE=$tokenAudience"
+            }
+        }
+        "3" {
+            # No authentication
+        }
+        default {
+            Write-Host "WARNING: Invalid choice, using username/password" -ForegroundColor Yellow
+            $username = Read-Host "Username" ""
+            if ($username) {
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USERNAME=$username"
+                $password = Read-Host "Password" ""
+                if ($password) {
+                    Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PASSWORD=$password"
+                }
+            }
+        }
+    }
+    
+    # Topic configuration
+    Write-Host ""
+    Write-Host "INFO: MQTT Topic Configuration for Broker $BrokerNum" -ForegroundColor Blue
+    Write-Host "INFO: MQTT topics define where different types of data are published." -ForegroundColor Blue
+    Write-Host "INFO: You can use template variables: {IATA}, {IATA_lower}, {PUBLIC_KEY}" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "Choose topic configuration:" -ForegroundColor Blue
+    Write-Host "  1) Default pattern (meshcore/{IATA}/{PUBLIC_KEY}/status, meshcore/{IATA}/{PUBLIC_KEY}/packets)" -ForegroundColor Blue
+    Write-Host "  2) Classic pattern (meshcore/status, meshcore/packets, meshcore/raw)" -ForegroundColor Blue
+    Write-Host "  3) Custom topics (enter your own)" -ForegroundColor Blue
+    Write-Host ""
+    
+    $topicChoice = Read-Host "Select topic configuration [1-3]"
+    
+    switch ($topicChoice) {
+        "1" {
+            # Default pattern (IATA + PUBLIC_KEY)
+            Add-Content -Path $envLocal -Value ""
+            Add-Content -Path $envLocal -Value "# MQTT Topics for Broker $BrokerNum - Default Pattern"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets"
+            Write-Host "SUCCESS: Default pattern topics configured" -ForegroundColor Green
+        }
+        "2" {
+            # Classic pattern (simple meshcore topics, needed for map.w0z.is)
+            Add-Content -Path $envLocal -Value ""
+            Add-Content -Path $envLocal -Value "# MQTT Topics for Broker $BrokerNum - Classic Pattern"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS=meshcore/status"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS=meshcore/packets"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_RAW=meshcore/raw"
+            Write-Host "SUCCESS: Classic pattern topics configured" -ForegroundColor Green
+        }
+        "3" {
+            # Custom topics
+            Write-Host ""
+            Write-Host "INFO: Enter custom topic paths (use {IATA}, {IATA_lower}, {PUBLIC_KEY} for templates)" -ForegroundColor Blue
+            Write-Host "INFO: You can also manually edit the .env.local file after installation to customize topics" -ForegroundColor Blue
+            Write-Host ""
+            
+            $statusTopic = Read-Host "Status topic" "meshcore/{IATA}/{PUBLIC_KEY}/status"
+            $packetsTopic = Read-Host "Packets topic" "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+            
+            Add-Content -Path $envLocal -Value ""
+            Add-Content -Path $envLocal -Value "# MQTT Topics for Broker $BrokerNum - Custom"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS=$statusTopic"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS=$packetsTopic"
+            Write-Host "SUCCESS: Custom topics configured" -ForegroundColor Green
+        }
+        default {
+            Write-Host "ERROR: Invalid choice, using default pattern" -ForegroundColor Red
+            Add-Content -Path $envLocal -Value ""
+            Add-Content -Path $envLocal -Value "# MQTT Topics for Broker $BrokerNum - Default Pattern"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status"
+            Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets"
+        }
+    }
+    
+    Write-Host "SUCCESS: Broker $BrokerNum configured" -ForegroundColor Green
+}
+
 # Main installation function
 function Start-Installation {
     Write-Host ""
@@ -386,107 +563,129 @@ function Start-Installation {
                 $startTime = Get-Date
                 $timeout = 15
                 
-                # Start discovery in background
-                $discoveryJob = Start-Job -ScriptBlock {
-                    # Import Bluetooth module if available
-                    try {
-                        Import-Module -Name Bluetooth -ErrorAction SilentlyContinue
-                    } catch {}
-                    
-                    # Get discovered devices
-                    $devices = @()
-                    $endTime = (Get-Date).AddSeconds(15)
-                    
-                    while ((Get-Date) -lt $endTime) {
-                        try {
-                            # Try different methods to get Bluetooth devices
-                            $btDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
-                                Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*MeshCore*" }
-                            
-                            foreach ($device in $btDevices) {
-                                if ($device.FriendlyName -and $device.FriendlyName -like "*MeshCore*") {
-                                    $devices += @{
-                                        Name = $device.FriendlyName
-                                        Address = $device.InstanceId
-                                        Status = $device.Status
-                                    }
-                                }
-                            }
-                            
-                            # Also try to get paired devices
-                            $pairedDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
-                                Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*MeshCore*" }
-                            
-                            foreach ($device in $pairedDevices) {
-                                if ($device.FriendlyName -and $device.FriendlyName -like "*MeshCore*") {
-                                    $devices += @{
-                                        Name = $device.FriendlyName
-                                        Address = $device.InstanceId
-                                        Status = "Paired"
-                                    }
-                                }
-                            }
-                            
-                            Start-Sleep -Seconds 2
-                        } catch {
-                            # Continue scanning
-                        }
+                # Check for already paired MeshCore devices first
+                Write-Host "INFO: Checking for already paired MeshCore devices..." -ForegroundColor Blue
+                $pairedMeshCoreDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
+                    Where-Object { $_.FriendlyName -like "*MeshCore*" -and $_.Status -eq "OK" }
+                
+                if ($pairedMeshCoreDevices.Count -gt 0) {
+                    Write-Host "INFO: Found $($pairedMeshCoreDevices.Count) already paired MeshCore device(s):" -ForegroundColor Blue
+                    for ($i = 0; $i -lt $pairedMeshCoreDevices.Count; $i++) {
+                        $device = $pairedMeshCoreDevices[$i]
+                        Write-Host "  $($i + 1)) $($device.FriendlyName) (Already Paired)" -ForegroundColor Blue
                     }
-                    
-                    return $devices
-                }
-                
-                # Wait for discovery to complete
-                $completed = Wait-Job $discoveryJob -Timeout $timeout
-                
-                if ($completed) {
-                    $discoveredDevices = Receive-Job $discoveryJob
-                } else {
-                    Stop-Job $discoveryJob
-                    Write-Host "WARNING: Bluetooth discovery timed out" -ForegroundColor Yellow
-                }
-                Remove-Job $discoveryJob
-                
-                # Filter and display results
-                $meshcoreDevices = $discoveredDevices | Where-Object { $_.Name -like "*MeshCore*" } | Sort-Object Name -Unique
-                
-                if ($meshcoreDevices.Count -gt 0) {
-                    Write-Host "INFO: Found $($meshcoreDevices.Count) MeshCore device(s):" -ForegroundColor Blue
-                    for ($i = 0; $i -lt $meshcoreDevices.Count; $i++) {
-                        $device = $meshcoreDevices[$i]
-                        Write-Host "  $($i + 1)) $($device.Name) ($($device.Address))" -ForegroundColor Blue
-                    }
-                    Write-Host "  $($meshcoreDevices.Count + 1)) Enter device manually" -ForegroundColor Blue
+                    Write-Host "  $($pairedMeshCoreDevices.Count + 1)) Enter device manually" -ForegroundColor Blue
                     Write-Host ""
                     
                     while ($true) {
-                        $choice = Read-Host "Select device [1-$($meshcoreDevices.Count + 1)]"
-                        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($meshcoreDevices.Count + 1)) {
-                            if ([int]$choice -eq ($meshcoreDevices.Count + 1)) {
+                        $choice = Read-Host "Select device [1-$($pairedMeshCoreDevices.Count + 1)]"
+                        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($pairedMeshCoreDevices.Count + 1)) {
+                            if ([int]$choice -eq ($pairedMeshCoreDevices.Count + 1)) {
                                 $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                                 $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
                             }
                             else {
-                                $selectedDevice = $meshcoreDevices[([int]$choice - 1)]
-                                $script:SelectedBleDevice = $selectedDevice.Address
-                                $script:SelectedBleName = $selectedDevice.Name
+                                $selectedDevice = $pairedMeshCoreDevices[([int]$choice - 1)]
+                                $script:SelectedBleDevice = $selectedDevice.InstanceId
+                                $script:SelectedBleName = $selectedDevice.FriendlyName
                             }
                             break
                         }
                         else {
-                            Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($meshcoreDevices.Count + 1)" -ForegroundColor Red
+                            Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($pairedMeshCoreDevices.Count + 1)" -ForegroundColor Red
                         }
                     }
-                }
-                else {
-                    Write-Host "WARNING: No MeshCore BLE devices found" -ForegroundColor Yellow
-                    Write-Host "INFO: Make sure your MeshCore device is:" -ForegroundColor Blue
-                    Write-Host "  - Powered on and within range" -ForegroundColor Blue
-                    Write-Host "  - In pairing mode (if not already paired)" -ForegroundColor Blue
-                    Write-Host "  - Not connected to another device" -ForegroundColor Blue
-                    Write-Host ""
-                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                } else {
+                    # Start discovery in background for unpaired devices
+                    Write-Host "INFO: No paired MeshCore devices found, scanning for unpaired devices..." -ForegroundColor Blue
+                    
+                    $discoveryJob = Start-Job -ScriptBlock {
+                        # Import Bluetooth module if available
+                        try {
+                            Import-Module -Name Bluetooth -ErrorAction SilentlyContinue
+                        } catch {}
+                        
+                        # Get discovered devices
+                        $devices = @()
+                        $endTime = (Get-Date).AddSeconds(15)
+                        
+                        while ((Get-Date) -lt $endTime) {
+                            try {
+                                # Try different methods to get Bluetooth devices
+                                $btDevices = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | 
+                                    Where-Object { $_.Status -eq "OK" -and $_.FriendlyName -like "*MeshCore*" }
+                                
+                                foreach ($device in $btDevices) {
+                                    if ($device.FriendlyName -and $device.FriendlyName -like "*MeshCore*") {
+                                        $devices += @{
+                                            Name = $device.FriendlyName
+                                            Address = $device.InstanceId
+                                            Status = $device.Status
+                                        }
+                                    }
+                                }
+                                
+                                Start-Sleep -Seconds 2
+                            } catch {
+                                # Continue scanning
+                            }
+                        }
+                        
+                        return $devices
+                    }
+                    
+                    # Wait for discovery to complete
+                    $completed = Wait-Job $discoveryJob -Timeout $timeout
+                    
+                    if ($completed) {
+                        $discoveredDevices = Receive-Job $discoveryJob
+                    } else {
+                        Stop-Job $discoveryJob
+                        Write-Host "WARNING: Bluetooth discovery timed out" -ForegroundColor Yellow
+                    }
+                    Remove-Job $discoveryJob
+                    
+                    # Filter and display results
+                    $meshcoreDevices = $discoveredDevices | Where-Object { $_.Name -like "*MeshCore*" } | Sort-Object Name -Unique
+                    
+                    if ($meshcoreDevices.Count -gt 0) {
+                        Write-Host "INFO: Found $($meshcoreDevices.Count) MeshCore device(s):" -ForegroundColor Blue
+                        for ($i = 0; $i -lt $meshcoreDevices.Count; $i++) {
+                            $device = $meshcoreDevices[$i]
+                            Write-Host "  $($i + 1)) $($device.Name) ($($device.Address))" -ForegroundColor Blue
+                        }
+                        Write-Host "  $($meshcoreDevices.Count + 1)) Enter device manually" -ForegroundColor Blue
+                        Write-Host ""
+                        
+                        while ($true) {
+                            $choice = Read-Host "Select device [1-$($meshcoreDevices.Count + 1)]"
+                            if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($meshcoreDevices.Count + 1)) {
+                                if ([int]$choice -eq ($meshcoreDevices.Count + 1)) {
+                                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                                }
+                                else {
+                                    $selectedDevice = $meshcoreDevices[([int]$choice - 1)]
+                                    $script:SelectedBleDevice = $selectedDevice.Address
+                                    $script:SelectedBleName = $selectedDevice.Name
+                                }
+                                break
+                            }
+                            else {
+                                Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($meshcoreDevices.Count + 1)" -ForegroundColor Red
+                            }
+                        }
+                    }
+                    else {
+                        Write-Host "WARNING: No MeshCore BLE devices found" -ForegroundColor Yellow
+                        Write-Host "INFO: Make sure your MeshCore device is:" -ForegroundColor Blue
+                        Write-Host "  - Powered on and within range" -ForegroundColor Blue
+                        Write-Host "  - In pairing mode (if not already paired)" -ForegroundColor Blue
+                        Write-Host "  - Not connected to another device" -ForegroundColor Blue
+                        Write-Host ""
+                        $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                        $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                    }
                 }
             }
             catch {
@@ -793,6 +992,13 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status"
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets"
             }
+        }
+        
+        # Ask if user wants to configure additional MQTT brokers
+        Write-Host ""
+        $addMoreBrokers = Read-Host "Would you like to configure additional MQTT brokers? (y/N)"
+        if ($addMoreBrokers -match '^[yY]') {
+            Configure-AdditionalMqttBrokers
         }
     }
     else {

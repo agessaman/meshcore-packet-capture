@@ -12,6 +12,18 @@ param(
 $ScriptVersion = "1.0.0"
 $ErrorActionPreference = "Stop"
 
+# Verify functions are loaded
+if (-not (Get-Command Write-Info -ErrorAction SilentlyContinue)) {
+    Write-Host "Error: Script functions not loaded properly. This may be due to:" -ForegroundColor Red
+    Write-Host "1. Execution policy restrictions" -ForegroundColor Yellow
+    Write-Host "2. Script syntax errors" -ForegroundColor Yellow
+    Write-Host "3. Script not being dot-sourced" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Try running: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser" -ForegroundColor Cyan
+    Write-Host "Then run: .\install.ps1" -ForegroundColor Cyan
+    exit 1
+}
+
 # Global variables
 $InstallDir = ""
 $ConnectionType = ""
@@ -1638,4 +1650,11 @@ function Start-Installation {
 }
 
 # Run main installation
-Start-Installation
+try {
+    Start-Installation
+} catch {
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "This may be due to execution policy restrictions." -ForegroundColor Yellow
+    Write-Host "Try running: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser" -ForegroundColor Yellow
+    exit 1
+}

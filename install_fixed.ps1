@@ -153,16 +153,16 @@ function Start-Installation {
     Write-Host "INFO: How would you like to connect to your MeshCore device?" -ForegroundColor Blue
     Write-Host ""
     Write-Host "  1) Serial Connection - For devices with USB/serial interface" -ForegroundColor Blue
-    Write-Host "     • Direct USB or serial cable connection" -ForegroundColor Blue
-    Write-Host "     • More reliable for continuous operation" -ForegroundColor Blue
+    Write-Host "     - Direct USB or serial cable connection" -ForegroundColor Blue
+    Write-Host "     - More reliable for continuous operation" -ForegroundColor Blue
     Write-Host ""
     Write-Host "  2) Bluetooth Low Energy (BLE) - For BLE-capable nodes" -ForegroundColor Blue
-    Write-Host "     • Wireless connection" -ForegroundColor Blue
-    Write-Host "     • Works with BLE-enabled MeshCore devices" -ForegroundColor Blue
+    Write-Host "     - Wireless connection" -ForegroundColor Blue
+    Write-Host "     - Works with BLE-enabled MeshCore devices" -ForegroundColor Blue
     Write-Host ""
     Write-Host "  3) TCP Connection - For network-connected devices" -ForegroundColor Blue
-    Write-Host "     • Connect to your node over the network" -ForegroundColor Blue
-    Write-Host "     • Works with ser2net or other TCP-to-serial bridges" -ForegroundColor Blue
+    Write-Host "     - Connect to your node over the network" -ForegroundColor Blue
+    Write-Host "     - Works with ser2net or other TCP-to-serial bridges" -ForegroundColor Blue
     Write-Host ""
     
     $connectionChoice = ""
@@ -259,9 +259,72 @@ function Start-Installation {
         "2" {
             $script:ConnectionType = "ble"
             Write-Host "SUCCESS: Selected Bluetooth Low Energy (BLE)" -ForegroundColor Green
-            Write-Host "INFO: BLE scanning requires meshcore library - will be configured after installation" -ForegroundColor Blue
-            $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-            $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+            
+            # Scan for BLE devices
+            Write-Host ""
+            Write-Host "INFO: Scanning for BLE devices..." -ForegroundColor Blue
+            
+            try {
+                # Run the BLE scan helper
+                $bleScanScript = Join-Path $InstallDir "ble_scan_helper.py"
+                $scanResult = & python $bleScanScript 2>&1
+                
+                if ($LASTEXITCODE -eq 0 -and $scanResult) {
+                    # Parse JSON output
+                    $devices = $scanResult | ConvertFrom-Json
+                    
+                    if ($devices.Count -gt 0) {
+                        Write-Host "INFO: Found $($devices.Count) BLE device(s):" -ForegroundColor Blue
+                        for ($i = 0; $i -lt $devices.Count; $i++) {
+                            $device = $devices[$i]
+                            Write-Host "  $($i + 1)) $($device.name) ($($device.address))" -ForegroundColor Blue
+                        }
+                        Write-Host "  $($devices.Count + 1)) Enter device manually" -ForegroundColor Blue
+                        Write-Host ""
+                        
+                        while ($true) {
+                            $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
+                            if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
+                                if ([int]$choice -eq ($devices.Count + 1)) {
+                                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                                }
+                                else {
+                                    $selectedDevice = $devices[([int]$choice - 1)]
+                                    $script:SelectedBleDevice = $selectedDevice.address
+                                    $script:SelectedBleName = $selectedDevice.name
+                                }
+                                break
+                            }
+                            else {
+                                Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($devices.Count + 1)" -ForegroundColor Red
+                            }
+                        }
+                    }
+                    else {
+                        Write-Host "WARNING: No BLE devices found" -ForegroundColor Yellow
+                        $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                        $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                    }
+                }
+                else {
+                    Write-Host "WARNING: BLE scanning failed, using manual entry" -ForegroundColor Yellow
+                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                }
+            }
+            catch {
+                Write-Host "WARNING: BLE scanning failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
+                $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+            }
+            
+            if ($script:SelectedBleDevice) {
+                Write-Host "SUCCESS: BLE device configured: $script:SelectedBleName ($script:SelectedBleDevice)" -ForegroundColor Green
+            }
+            else {
+                Write-Host "WARNING: No BLE device configured" -ForegroundColor Yellow
+            }
         }
         "3" {
             $script:ConnectionType = "tcp"

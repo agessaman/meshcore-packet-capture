@@ -420,7 +420,7 @@ function Select-ConnectionType {
                 Write-Info "Selected: Bluetooth Low Energy (BLE)"
                 Write-Host ""
                 
-                if (Read-Host "Would you like to scan for nearby BLE devices? (y/N)") -match '^[yY]' {
+                if ((Read-Host "Would you like to scan for nearby BLE devices? (y/N)") -match '^[yY]') {
                     while ($true) {
                         $bleDevice = Get-BleDevices
                         if ($bleDevice) {

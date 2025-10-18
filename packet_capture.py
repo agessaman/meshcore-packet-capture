@@ -262,11 +262,15 @@ class PacketCapture:
         if global_topic:
             return self.resolve_topic_template(global_topic, broker_num)
         
+        # For RAW topic, don't provide a default - only publish if explicitly configured
+        if topic_type_upper == 'RAW':
+            if self.debug:
+                self.logger.debug(f"No RAW topic configured for broker {broker_num}, skipping RAW publish")
+            return None
         
-        # CRITICAL FIX: Always provide a valid default topic
+        # CRITICAL FIX: Always provide a valid default topic for other types
         default_topics = {
             'STATUS': 'meshcore/status',
-            'RAW': 'meshcore/raw', 
             'DECODED': 'meshcore/decoded',
             'PACKETS': 'meshcore/packets',
             'DEBUG': 'meshcore/debug'
@@ -762,7 +766,15 @@ class PacketCapture:
 
     def on_mqtt_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         broker_name = userdata.get('name', 'unknown') if userdata else 'unknown'
-        self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: {reason_code})")
+        
+        # Provide more specific logging for different disconnect reasons
+        if reason_code == mqtt.MQTT_ERR_KEEPALIVE:
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Keep alive timeout)")
+            self.logger.info("This may be due to network latency or firewall timeouts. Connection will be retried.")
+        elif reason_code == mqtt.MQTT_ERR_NETWORK_ERROR:
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: Network error)")
+        else:
+            self.logger.warning(f"Disconnected from MQTT broker {broker_name} (code: {reason_code})")
         
         # Check if any brokers are still connected (excluding the one that just disconnected)
         connected_brokers = []
@@ -908,8 +920,14 @@ class PacketCapture:
                     headers=None
                 )
             
-            # Connect
-            keepalive = self.get_env_int(f'MQTT{broker_num}_KEEPALIVE', 60)
+            # Connect with adaptive keep-alive based on transport type
+            if transport == "websockets":
+                # WebSocket connections need longer keep-alive to handle network latency
+                keepalive = self.get_env_int(f'MQTT{broker_num}_KEEPALIVE', 120)
+            else:
+                # TCP connections can use shorter keep-alive
+                keepalive = self.get_env_int(f'MQTT{broker_num}_KEEPALIVE', 60)
+            
             mqtt_client.connect(server, port, keepalive=keepalive)
             mqtt_client.loop_start()
             
@@ -1089,6 +1107,12 @@ class PacketCapture:
                     resolved_topic = topic
                 else:
                     self.logger.error("Neither topic nor topic_type provided to safe_publish")
+                    continue
+
+                # Skip publishing if topic is None (e.g., RAW topic not configured)
+                if resolved_topic is None:
+                    if self.debug:
+                        self.logger.debug(f"Skipping publish to MQTT{current_broker_num} - topic not configured for {topic_type}")
                     continue
 
                 # Validate topic before publishing
@@ -1593,7 +1617,7 @@ class PacketCapture:
             # Publish full packet data
             packet_metrics = self.safe_publish(None, json.dumps(packet_data), topic_type="packets")
             
-            # Publish raw data if TOPIC_RAW is configured
+            # Publish raw data only to brokers that have RAW topic explicitly configured
             raw_data = {
                 "origin": packet_data["origin"],
                 "origin_id": packet_data["origin_id"],
@@ -1603,7 +1627,7 @@ class PacketCapture:
             }
             raw_metrics = self.safe_publish(None, json.dumps(raw_data), topic_type="raw")
             
-            # Combine metrics: success only if BOTH packets and raw publish successfully
+            # Combine metrics: success only if BOTH packets and raw (if configured) publish successfully
             # This ensures we count a broker as successful only if all its topics succeed
             publish_metrics["attempted"] = max(packet_metrics["attempted"], raw_metrics["attempted"])
             publish_metrics["succeeded"] = min(packet_metrics["succeeded"], raw_metrics["succeeded"])

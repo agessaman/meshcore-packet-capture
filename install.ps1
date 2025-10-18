@@ -776,6 +776,7 @@ PACKETCAPTURE_MQTT1_TRANSPORT=websockets
 PACKETCAPTURE_MQTT1_USE_TLS=true
 PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN=true
 PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt-us-v1.letsmesh.net
+PACKETCAPTURE_MQTT1_KEEPALIVE=120
 "@
             Add-Content -Path $envLocal -Value $letsMeshConfig
             Write-Success "LetsMesh Packet Analyzer enabled"

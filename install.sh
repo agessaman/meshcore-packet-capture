@@ -860,6 +860,9 @@ EOF
 
 # Location Code
 PACKETCAPTURE_IATA=XXX
+
+# Advert Settings
+PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11
 EOF
     fi
     

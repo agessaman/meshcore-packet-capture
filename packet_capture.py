@@ -620,6 +620,9 @@ class PacketCapture:
                 if self.meshcore.self_info:
                     self.device_name = self.meshcore.self_info.get('name', 'Unknown')
                     self.device_public_key = self.meshcore.self_info.get('public_key', 'Unknown')
+                    # Normalize public key to uppercase
+                    if self.device_public_key != 'Unknown':
+                        self.device_public_key = self.device_public_key.upper()
                     self.logger.info(f"Device name: {self.device_name}")
                     self.logger.info(f"Device public key: {self.device_public_key}")
                     
@@ -1427,6 +1430,10 @@ class PacketCapture:
                 device_name = self.device_name or 'Unknown'
                 origin_id = hashlib.sha256(device_name.encode()).hexdigest()
                 self.logger.warning(f"Using generated origin_id from device name: {origin_id}")
+        
+        # Normalize origin_id to uppercase
+        if origin_id and origin_id != 'Unknown':
+            origin_id = origin_id.upper()
         
         # Extract RF data if available
         snr = "Unknown"

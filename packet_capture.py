@@ -148,6 +148,7 @@ class PacketCapture:
         self.device_name = None
         self.device_public_key = None
         self.device_private_key = None
+        self.radio_info = None
         
         # Private key export capability
         self.private_key_export_available = False
@@ -692,8 +693,17 @@ class PacketCapture:
                     # Normalize public key to uppercase
                     if self.device_public_key != 'Unknown':
                         self.device_public_key = self.device_public_key.upper()
+                    
+                    # Extract radio information
+                    radio_freq = self.meshcore.self_info.get('radio_freq', 0)
+                    radio_bw = self.meshcore.self_info.get('radio_bw', 0)
+                    radio_sf = self.meshcore.self_info.get('radio_sf', 0)
+                    radio_cr = self.meshcore.self_info.get('radio_cr', 0)
+                    self.radio_info = f"{radio_freq},{radio_bw},{radio_sf},{radio_cr}"
+                    
                     self.logger.info(f"Device name: {self.device_name}")
                     self.logger.info(f"Device public key: {self.device_public_key}")
+                    self.logger.info(f"Radio info: {self.radio_info}")
                     
                     # Don't publish status here - wait for MQTT connections
                     # Status will be published after MQTT connections are established
@@ -1172,6 +1182,7 @@ class PacketCapture:
             "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE',
             "model": "unknown",
             "firmware_version": "unknown",  # Will be updated later with async version
+            "radio": self.radio_info or "unknown",
             "client_version": self._load_client_version()
         }
         if client:
@@ -1191,6 +1202,7 @@ class PacketCapture:
             "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE',
             "model": firmware_info.get('model', 'unknown'),
             "firmware_version": firmware_info.get('version', 'unknown'),
+            "radio": self.radio_info or "unknown",
             "client_version": self._load_client_version()
         }
         if client:

@@ -4,7 +4,7 @@
 # ============================================================================
 set -e
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 DEFAULT_REPO="agessaman/meshcore-packet-capture"
 DEFAULT_BRANCH="main"
 
@@ -48,6 +48,34 @@ print_header() {
     echo -e "\n${BLUE}═══════════════════════════════════════════════════${NC}"
     echo -e "${BLUE}  $1${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}\n"
+}
+
+# Create version info file with installer version and git hash
+create_version_info() {
+    local git_hash="unknown"
+    local git_branch="${BRANCH}"
+    local git_repo="${REPO}"
+
+    # Try to resolve the branch/tag to a specific commit hash via GitHub API
+    if command -v curl >/dev/null 2>&1; then
+        # Try to get commit SHA from GitHub API
+        local api_url="https://api.github.com/repos/${git_repo}/commits/${git_branch}"
+        git_hash=$(curl -fsSL "$api_url" 2>/dev/null | grep -m1 '"sha"' | cut -d'"' -f4 | head -c7)
+        [ -z "$git_hash" ] && git_hash="unknown"
+    fi
+
+    # Create version info JSON file
+    cat > "$INSTALL_DIR/.version_info" <<EOF
+{
+  "installer_version": "${SCRIPT_VERSION}",
+  "git_hash": "${git_hash}",
+  "git_branch": "${git_branch}",
+  "git_repo": "${git_repo}",
+  "install_date": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+
+    print_info "Version info saved: ${SCRIPT_VERSION}-${git_hash} (${git_repo}@${git_branch})"
 }
 
 print_success() {
@@ -1147,6 +1175,10 @@ main() {
             cp "${LOCAL_INSTALL}/.env.local" "$INSTALL_DIR/.env.local.example"
         fi
         chmod +x "$INSTALL_DIR/packet_capture.py"
+        
+        # Create version info file
+        create_version_info
+        
         print_success "Files copied from local directory"
     else
         # Download from GitHub
@@ -1213,6 +1245,10 @@ main() {
         # meshcore_py no longer needed - using PyPI version
         
         chmod +x "$INSTALL_DIR/packet_capture.py"
+        
+        # Create version info file
+        create_version_info
+        
         print_success "Files downloaded and verified"
     fi
     

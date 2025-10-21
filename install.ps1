@@ -9,7 +9,7 @@ param(
 )
 
 # Script configuration
-$ScriptVersion = "1.0.0"
+$ScriptVersion = "1.1.0"
 $ErrorActionPreference = "Stop"
 
 # Global variables
@@ -25,6 +25,37 @@ $DecoderAvailable = $false
 $ServiceInstalled = $false
 $DockerInstalled = $false
 $UpdatingExisting = $false
+
+# Create version info file with installer version and git hash
+function New-VersionInfo {
+    $gitHash = "unknown"
+    $gitBranch = $Branch
+    $gitRepo = $Repo
+
+    # Try to resolve the branch/tag to a specific commit hash via GitHub API
+    try {
+        $apiUrl = "https://api.github.com/repos/$gitRepo/commits/$gitBranch"
+        $response = Invoke-WebRequest -Uri $apiUrl -UseBasicParsing
+        $json = $response.Content | ConvertFrom-Json
+        $gitHash = $json.sha.Substring(0, 7)
+    }
+    catch {
+        Write-Host "WARNING: Could not fetch git hash from GitHub API" -ForegroundColor Yellow
+    }
+
+    # Create version info JSON file
+    $versionInfo = @{
+        installer_version = $ScriptVersion
+        git_hash = $gitHash
+        git_branch = $gitBranch
+        git_repo = $gitRepo
+        install_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    } | ConvertTo-Json -Depth 2
+
+    $versionInfo | Out-File -FilePath (Join-Path $InstallDir ".version_info") -Encoding UTF8
+
+    Write-Host "INFO: Version info saved: $ScriptVersion-$gitHash ($gitRepo@$gitBranch)" -ForegroundColor Blue
+}
 
 # Helper function for Windows Bluetooth API pairing
 function Invoke-BluetoothPairing {
@@ -115,15 +146,15 @@ EOF
         Remove-Item $tempScript -ErrorAction SilentlyContinue
         
         if ($wslResult -match "Pairing successful" -or $gitBashResult -match "Pairing successful") {
-            return $true
+                return $true
         } else {
             Write-Host "DEBUG: bluetoothctl pairing failed" -ForegroundColor Gray
-            return $false
-        }
+                return $false
+            }
         
     } catch {
         Write-Host "DEBUG: bluetoothctl approach failed: $($_.Exception.Message)" -ForegroundColor Gray
-        return $false
+                return $false
     }
 }
 
@@ -158,9 +189,9 @@ function Configure-SingleMqttBroker {
     
     $envLocal = Join-Path $InstallDir ".env.local"
     
-    Write-Host ""
+        Write-Host ""
     Write-Host "INFO: Configuring MQTT Broker $BrokerNum" -ForegroundColor Blue
-    Write-Host ""
+        Write-Host ""
     
     # Server configuration
     $server = Read-Host "MQTT Server hostname/IP"
@@ -350,7 +381,7 @@ function Start-Installation {
     Write-Host "SUCCESS: Installation directory created" -ForegroundColor Green
     
     # Check Python
-    Write-Host ""
+        Write-Host ""
     Write-Host "INFO: Checking Python installation..." -ForegroundColor Blue
     
     try {
@@ -366,7 +397,7 @@ function Start-Installation {
     Write-Host "SUCCESS: Python 3 found: $pythonVersion" -ForegroundColor Green
     
     # Download files first
-    Write-Host ""
+        Write-Host ""
     Write-Host "INFO: Downloading application files..." -ForegroundColor Blue
     
     if ($env:LOCAL_INSTALL) {
@@ -380,9 +411,12 @@ function Start-Installation {
         if (Test-Path "$env:LOCAL_INSTALL\.env") {
             Copy-Item "$env:LOCAL_INSTALL\.env" $InstallDir\
         }
+        # Create version info file
+        New-VersionInfo
+        
         Write-Host "SUCCESS: Files copied from local directory" -ForegroundColor Green
-    }
-    else {
+        }
+        else {
         # Download from GitHub
         Write-Host "INFO: Downloading from GitHub ($Repo @ $Branch)..." -ForegroundColor Blue
         
@@ -403,6 +437,9 @@ function Start-Installation {
             }
         }
         
+        # Create version info file
+        New-VersionInfo
+        
         Write-Host "SUCCESS: Files downloaded and verified" -ForegroundColor Green
     }
     
@@ -412,8 +449,8 @@ function Start-Installation {
     if (-not (Test-Path (Join-Path $InstallDir "venv"))) {
         python -m venv (Join-Path $InstallDir "venv")
         Write-Host "SUCCESS: Virtual environment created" -ForegroundColor Green
-    }
-    else {
+        }
+        else {
         Write-Host "SUCCESS: Using existing virtual environment" -ForegroundColor Green
     }
     
@@ -467,7 +504,7 @@ function Start-Installation {
             Write-Host "SUCCESS: Selected Serial Connection" -ForegroundColor Green
             
             # Detect serial devices
-            Write-Host ""
+    Write-Host ""
             Write-Host "INFO: Detecting serial devices..." -ForegroundColor Blue
             
             $devices = @()
@@ -517,8 +554,8 @@ function Start-Installation {
                     Write-Host "  $($i + 1)) $($devices[$i])" -ForegroundColor Blue
                 }
                 Write-Host "  $($devices.Count + 1)) Enter path manually" -ForegroundColor Blue
-                Write-Host ""
-                
+        Write-Host ""
+        
                 while ($true) {
                     $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
                     if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
@@ -529,8 +566,8 @@ function Start-Installation {
                             $script:SelectedSerialDevice = $devices[([int]$choice - 1)]
                         }
                         break
-                    }
-                    else {
+        }
+        else {
                         Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($devices.Count + 1)" -ForegroundColor Red
                     }
                 }
@@ -621,8 +658,8 @@ function Start-Installation {
                                 $script:SelectedBleName = $selectedDevice.FriendlyName
                             }
                             break
-                        }
-                        else {
+            }
+            else {
                             Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($pairedMeshCoreDevices.Count + 1)" -ForegroundColor Red
                         }
                     }
@@ -694,8 +731,8 @@ function Start-Installation {
                                 if ([int]$choice -eq ($meshcoreDevices.Count + 1)) {
                                     $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                                     $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
-                                }
-                                else {
+    }
+    else {
                                     $selectedDevice = $meshcoreDevices[([int]$choice - 1)]
                                     # Extract MAC address from Address if it's a Windows device ID
                                     $macAddress = $selectedDevice.Address
@@ -711,8 +748,8 @@ function Start-Installation {
                                     $script:SelectedBleName = $selectedDevice.Name
                                 }
                                 break
-                            }
-                            else {
+        }
+        else {
                                 Write-Host "ERROR: Invalid selection. Please enter a number between 1 and $($meshcoreDevices.Count + 1)" -ForegroundColor Red
                             }
                         }
@@ -723,7 +760,7 @@ function Start-Installation {
                         Write-Host "  - Powered on and within range" -ForegroundColor Blue
                         Write-Host "  - In pairing mode (if not already paired)" -ForegroundColor Blue
                         Write-Host "  - Not connected to another device" -ForegroundColor Blue
-                        Write-Host ""
+    Write-Host ""
                         $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
                         $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
                     }
@@ -750,8 +787,8 @@ function Start-Installation {
                     
                     if ($pairedDevice -and $pairedDevice.Status -eq "OK") {
                         Write-Host "SUCCESS: Device is already paired and ready to use" -ForegroundColor Green
-                    }
-                    else {
+    }
+    else {
                         Write-Host "INFO: Device requires pairing" -ForegroundColor Blue
                         Write-Host "INFO: Attempting to pair programmatically..." -ForegroundColor Blue
                         
@@ -850,9 +887,9 @@ function Start-Installation {
                             Write-Host "WARNING: Pairing attempt failed: $($_.Exception.Message)" -ForegroundColor Yellow
                             Write-Host "INFO: Please pair the device manually using Windows Bluetooth settings" -ForegroundColor Blue
                         }
-                    }
-                }
-                catch {
+        }
+    }
+    catch {
                     Write-Host "WARNING: Could not check pairing status: $($_.Exception.Message)" -ForegroundColor Yellow
                     Write-Host "INFO: You may need to pair the device manually" -ForegroundColor Blue
                 }
@@ -921,46 +958,46 @@ PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11
     Set-Content -Path $envLocal -Value $configContent
     
     # Configure IATA code
-    Write-Host ""
+                Write-Host ""
     Write-Host "INFO: IATA code is a 3-letter airport code identifying your geographic region" -ForegroundColor Blue
     Write-Host "INFO: Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)" -ForegroundColor Blue
-    Write-Host ""
-    
-    $script:Iata = ""
-    while (-not $script:Iata -or $script:Iata -eq "XXX") {
-        $script:Iata = Read-Host "Enter your IATA code (3 letters)"
-        $script:Iata = $script:Iata.ToUpper().Trim()
-        
-        if (-not $script:Iata) {
+                Write-Host ""
+                
+                $script:Iata = ""
+                while (-not $script:Iata -or $script:Iata -eq "XXX") {
+                        $script:Iata = Read-Host "Enter your IATA code (3 letters)"
+                    $script:Iata = $script:Iata.ToUpper().Trim()
+                    
+                    if (-not $script:Iata) {
             Write-Host "ERROR: IATA code cannot be empty" -ForegroundColor Red
-        }
-        elseif ($script:Iata -eq "XXX") {
+                    }
+                    elseif ($script:Iata -eq "XXX") {
             Write-Host "ERROR: Please enter your actual IATA code, not XXX" -ForegroundColor Red
-        }
-        elseif ($script:Iata.Length -ne 3) {
+                    }
+                    elseif ($script:Iata.Length -ne 3) {
             Write-Host "WARNING: IATA code should be 3 letters, you entered: $script:Iata" -ForegroundColor Yellow
             $response = Read-Host "Use '$script:Iata' anyway? (y/N)"
             if ($response -notmatch '^[yY]') {
                 $script:Iata = "XXX"  # Reset to force re-prompt
-            }
-        }
-    }
-    
-    # Update IATA in config
+                        }
+                    }
+                }
+                
+                # Update IATA in config
     $content = Get-Content $envLocal
-    $content = $content -replace "^PACKETCAPTURE_IATA=.*", "PACKETCAPTURE_IATA=$script:Iata"
+                $content = $content -replace "^PACKETCAPTURE_IATA=.*", "PACKETCAPTURE_IATA=$script:Iata"
     Set-Content -Path $envLocal -Value $content
     Write-Host "SUCCESS: IATA code set to: $script:Iata" -ForegroundColor Green
     
     # Configure MQTT brokers
-    Write-Host ""
+                Write-Host ""
     Write-Host "INFO: MQTT Broker Configuration" -ForegroundColor Blue
     Write-Host "INFO: Enable the LetsMesh.net Packet Analyzer (mqtt-us-v1.letsmesh.net) broker?" -ForegroundColor Blue
     Write-Host "  • Real-time packet analysis and visualization" -ForegroundColor Blue
     Write-Host "  • Network health monitoring" -ForegroundColor Blue
     Write-Host "  • Requires meshcore-decoder for authentication" -ForegroundColor Blue
-    Write-Host ""
-    
+                Write-Host ""
+                
     $response = Read-Host "Enable LetsMesh Packet Analyzer? (y/N)"
     if ($response -match '^[yY]') {
         $letsMeshConfig = @"
@@ -979,17 +1016,17 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
         Write-Host "SUCCESS: LetsMesh Packet Analyzer enabled" -ForegroundColor Green
         
         # Configure topics for LetsMesh
-        Write-Host ""
+    Write-Host ""
         Write-Host "INFO: MQTT Topic Configuration for Broker 1" -ForegroundColor Blue
         Write-Host "INFO: MQTT topics define where different types of data are published." -ForegroundColor Blue
         Write-Host "INFO: You can use template variables: {IATA}, {IATA_lower}, {PUBLIC_KEY}" -ForegroundColor Blue
-        Write-Host ""
+    Write-Host ""
         Write-Host "Choose topic configuration:" -ForegroundColor Blue
         Write-Host "  1) Default pattern (meshcore/{IATA}/{PUBLIC_KEY}/status, meshcore/{IATA}/{PUBLIC_KEY}/packets)" -ForegroundColor Blue
         Write-Host "  2) Classic pattern (meshcore/status, meshcore/packets, meshcore/raw)" -ForegroundColor Blue
         Write-Host "  3) Custom topics (enter your own)" -ForegroundColor Blue
-        Write-Host ""
-        
+    Write-Host ""
+    
         $topicChoice = Read-Host "Select topic configuration [1-3]" "1" "1"
         
         switch ($topicChoice) {
@@ -1000,8 +1037,8 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status"
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets"
                 Write-Host "SUCCESS: Default pattern topics configured" -ForegroundColor Green
-            }
-            "2" {
+        }
+        "2" {
                 # Classic pattern (simple meshcore topics, needed for map.w0z.is)
                 Add-Content -Path $envLocal -Value ""
                 Add-Content -Path $envLocal -Value "# MQTT Topics for Broker 1 - Classic Pattern"
@@ -1009,8 +1046,8 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_PACKETS=meshcore/packets"
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_RAW=meshcore/raw"
                 Write-Host "SUCCESS: Classic pattern topics configured" -ForegroundColor Green
-            }
-            "3" {
+        }
+        "3" {
                 # Custom topics
                 Write-Host ""
                 Write-Host "INFO: Enter custom topic paths (use {IATA}, {IATA_lower}, {PUBLIC_KEY} for templates)" -ForegroundColor Blue
@@ -1025,8 +1062,8 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_STATUS=$statusTopic"
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT1_TOPIC_PACKETS=$packetsTopic"
                 Write-Host "SUCCESS: Custom topics configured" -ForegroundColor Green
-            }
-            default {
+        }
+        default {
                 Write-Host "ERROR: Invalid choice, using default pattern" -ForegroundColor Red
                 Add-Content -Path $envLocal -Value ""
                 Add-Content -Path $envLocal -Value "# MQTT Topics for Broker 1 - Default Pattern"
@@ -1036,7 +1073,7 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
         }
         
         # Ask if user wants to configure additional MQTT brokers
-        Write-Host ""
+    Write-Host ""
         $addMoreBrokers = Read-Host "Would you like to configure additional MQTT brokers? (y/N)"
         if ($addMoreBrokers -match '^[yY]') {
             Configure-AdditionalMqttBrokers

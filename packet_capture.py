@@ -158,7 +158,7 @@ class PacketCapture:
         self.jwt_renewal_threshold = self.get_env_int('JWT_RENEWAL_THRESHOLD', 300)  # Renew 5 minutes before expiry
         
         # Advert settings
-        self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 1)
+        self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 11)
         self.last_advert_time = 0
         self.advert_task = None
         
@@ -223,6 +223,71 @@ class PacketCapture:
             return float(self.get_env(key, str(fallback)))
         except ValueError:
             return fallback
+    
+    def _load_client_version(self):
+        """Load client version from .version_info file"""
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            version_file = os.path.join(script_dir, '.version_info')
+            if os.path.exists(version_file):
+                with open(version_file, 'r') as f:
+                    version_data = json.load(f)
+                    installer_ver = version_data.get('installer_version', 'unknown')
+                    git_hash = version_data.get('git_hash', 'unknown')
+                    return f"meshcore-packet-capture/{installer_ver}-{git_hash}"
+        except Exception as e:
+            self.logger.debug(f"Could not load version info: {e}")
+        return "meshcore-packet-capture/unknown"
+    
+    async def get_firmware_info(self):
+        """Get firmware information from meshcore device using send_device_query()"""
+        try:
+            if not self.meshcore or not self.meshcore.is_connected:
+                self.logger.debug("Cannot get firmware info - not connected to device")
+                return {"model": "unknown", "version": "unknown"}
+            
+            self.logger.debug("Querying device for firmware info...")
+            # Use send_device_query() to get firmware version
+            result = await self.meshcore.commands.send_device_query()
+            
+            self.logger.debug(f"Device query result type: {result.type}")
+            self.logger.debug(f"Device query result: {result}")
+            
+            if result.type == EventType.ERROR:
+                self.logger.debug(f"Device query failed: {result}")
+                return {"model": "unknown", "version": "unknown"}
+            
+            if result.payload:
+                payload = result.payload
+                self.logger.debug(f"Device query payload: {payload}")
+                
+                # Check firmware version format
+                fw_ver = payload.get('fw ver', 0)
+                self.logger.debug(f"Firmware version number: {fw_ver}")
+                
+                if fw_ver >= 3:
+                    # For newer firmware versions (v3+)
+                    model = payload.get('model', 'Unknown')
+                    version = payload.get('ver', 'Unknown')
+                    build_date = payload.get('fw_build', 'Unknown')
+                    # Remove 'v' prefix from version if it already has one
+                    if version.startswith('v'):
+                        version = version[1:]
+                    version_str = f"v{version} (Build: {build_date})"
+                    self.logger.debug(f"New firmware format - Model: {model}, Version: {version_str}")
+                    return {"model": model, "version": version_str}
+                else:
+                    # For older firmware versions
+                    version_str = f"v{fw_ver}"
+                    self.logger.debug(f"Old firmware format - Model: unknown, Version: {version_str}")
+                    return {"model": "unknown", "version": version_str}
+            
+            self.logger.debug("No payload in device query result")
+            return {"model": "unknown", "version": "unknown"}
+            
+        except Exception as e:
+            self.logger.debug(f"Error getting firmware info: {e}")
+            return {"model": "unknown", "version": "unknown"}
     
     def base64url_encode(self, data: bytes) -> str:
         """Base64url encode without padding"""
@@ -630,6 +695,9 @@ class PacketCapture:
                     self.logger.info(f"Device name: {self.device_name}")
                     self.logger.info(f"Device public key: {self.device_public_key}")
                     
+                    # Don't publish status here - wait for MQTT connections
+                    # Status will be published after MQTT connections are established
+                    
                     # Setup JWT authentication using private key from device
                     self.logger.info("Setting up JWT authentication...")
                     
@@ -759,8 +827,9 @@ class PacketCapture:
         if rc == 0:
             self.mqtt_connected = True
             self.logger.info(f"Connected to MQTT broker: {broker_name}")
-            # Publish online status once on connection
-            self.publish_status("online", client, broker_num)
+            # Don't publish status here - it will be published after device connection
+            # This callback fires when MQTT connects, but device might not be ready yet
+            self.logger.debug(f"MQTT broker {broker_name} connected, waiting for device connection...")
         else:
             self.logger.error(f"MQTT connection failed for {broker_name} with code {rc}")
 
@@ -996,6 +1065,12 @@ class PacketCapture:
             return False
         
         self.logger.info(f"Connected to {len(self.mqtt_clients)} MQTT broker(s)")
+        
+        # Publish initial status with firmware version now that MQTT is connected
+        if self.enable_mqtt:
+            await asyncio.sleep(1)  # Give MQTT connections a moment to stabilize
+            await self.publish_status("online")
+        
         return True
     
     def disconnect_mqtt(self):
@@ -1088,13 +1163,35 @@ class PacketCapture:
                 self.logger.info(f"{len(disconnected_brokers)} MQTT broker(s) disconnected, attempting reconnection...")
                 await self.reconnect_mqtt()
     
-    def publish_status(self, status, client=None, broker_num=None):
-        """Publish status with additional information"""
+    def publish_status_sync(self, status, client=None, broker_num=None):
+        """Publish status synchronously (for use in MQTT callbacks)"""
         status_msg = {
             "status": status,
             "timestamp": datetime.now().isoformat(),
             "origin": self.device_name,
-            "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE'
+            "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE',
+            "model": "unknown",
+            "firmware_version": "unknown",  # Will be updated later with async version
+            "client_version": self._load_client_version()
+        }
+        if client:
+            self.safe_publish(None, json.dumps(status_msg), retain=True, client=client, broker_num=broker_num, topic_type="status")
+        else:
+            self.safe_publish(None, json.dumps(status_msg), retain=True, topic_type="status")
+        if self.debug:
+            self.logger.debug(f"Published status: {status}")
+
+    async def publish_status(self, status, client=None, broker_num=None):
+        """Publish status with additional information"""
+        firmware_info = await self.get_firmware_info()
+        status_msg = {
+            "status": status,
+            "timestamp": datetime.now().isoformat(),
+            "origin": self.device_name,
+            "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE',
+            "model": firmware_info.get('model', 'unknown'),
+            "firmware_version": firmware_info.get('version', 'unknown'),
+            "client_version": self._load_client_version()
         }
         if client:
             self.safe_publish(None, json.dumps(status_msg), retain=True, client=client, broker_num=broker_num, topic_type="status")
@@ -1791,7 +1888,7 @@ class PacketCapture:
         
         # Publish offline status
         if self.enable_mqtt and self.mqtt_connected:
-            self.publish_status("offline")
+            await self.publish_status("offline")
         
         # Handle BLE disconnection if using BLE connection
         if self.meshcore and self.get_env('CONNECTION_TYPE', 'ble').lower() == 'ble':

@@ -166,6 +166,10 @@ class PacketCapture:
         # JWT renewal task
         self.jwt_renewal_task = None
         
+        # Task tracking to prevent duplicate tasks
+        self.active_tasks = set()
+        self.jwt_renewal_in_progress = False
+        
         # Output file handle
         self.output_handle = None
         if self.output_file:
@@ -1231,8 +1235,12 @@ class PacketCapture:
                 
                 if expired_brokers:
                     self.logger.warning(f"Detected expired JWT tokens for brokers: {expired_brokers}")
-                    # Schedule renewal (don't await here to avoid blocking publish)
-                    asyncio.create_task(self.check_and_renew_jwt_tokens())
+                    # Schedule renewal only if not already in progress (prevent task explosion)
+                    if not self.jwt_renewal_in_progress:
+                        self.jwt_renewal_in_progress = True
+                        task = asyncio.create_task(self.check_and_renew_jwt_tokens())
+                        self.active_tasks.add(task)
+                        task.add_done_callback(lambda t: (self.active_tasks.discard(t), setattr(self, 'jwt_renewal_in_progress', False)))
             except Exception as e:
                 self.logger.debug(f"Error checking token expiry before publish: {e}")
 
@@ -1868,15 +1876,23 @@ class PacketCapture:
                     await self.check_mqtt_reconnection()
                     last_mqtt_check = current_time
                 
-                await asyncio.sleep(1)
+                # Use a longer sleep to reduce CPU usage
+                await asyncio.sleep(5)
         except KeyboardInterrupt:
             self.logger.info("Received interrupt signal")
         finally:
+            # Cancel all active tasks
             monitoring_task.cancel()
             if self.advert_task:
                 self.advert_task.cancel()
             if self.jwt_renewal_task:
                 self.jwt_renewal_task.cancel()
+            
+            # Cancel all tracked active tasks
+            for task in self.active_tasks.copy():
+                task.cancel()
+            
+            # Wait for all tasks to complete
             try:
                 await monitoring_task
             except asyncio.CancelledError:
@@ -1891,6 +1907,11 @@ class PacketCapture:
                     await self.jwt_renewal_task
                 except asyncio.CancelledError:
                     pass
+            
+            # Wait for all active tasks to complete
+            if self.active_tasks:
+                await asyncio.gather(*self.active_tasks, return_exceptions=True)
+            
             await self.stop()
     
     async def stop(self):

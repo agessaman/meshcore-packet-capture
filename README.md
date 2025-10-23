@@ -1,8 +1,25 @@
 # MeshCore Packet Capture
 
-A standalone Python script for capturing and analyzing packets from MeshCore companion radios. The script connects to MeshCore devices via Bluetooth Low Energy (BLE), serial, or TCP connection, captures incoming packets, and outputs structured data to console, file, and MQTT broker.
+A standalone Python script for capturing and analyzing packets from **MeshCore Companion radios only**. The script connects to MeshCore Companion devices via Bluetooth Low Energy (BLE), serial, or TCP connection, captures incoming packets, and outputs structured data to console, file, and MQTT broker.
+
+> **⚠️ IMPORTANT: This package is for Companion radios only!**
+> 
+> - **For Repeaters and RoomServers**: Use [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt) instead
+> - **For Companion radios**: Use this package (meshcore-packet-capture)
 
 Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt) project by [Cisien](https://github.com/Cisien) and uses the official [meshcore](https://github.com/meshcore-dev/meshcore_py) Python package.
+
+## Device Compatibility
+
+### ✅ **Companion Radios** - Use this package
+- **meshcore-packet-capture** is designed specifically for Companion radios
+- Supports BLE, serial, and TCP connections
+- Captures packets from Companion devices without the need for custom firmware
+
+### ❌ **Repeaters and RoomServers** - Use meshcoretomqtt instead
+- **Repeaters**: Use [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt) for repeater packet capture
+- **RoomServers**: Use [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt) for roomserver packet capture
+- These devices have different connection requirements and packet formats
 
 ## Quick Start
 
@@ -18,14 +35,15 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 
 ## Features
 
-- **Packet Capture**: Captures incoming packets from MeshCore devices
-- **Connection Types**: Supports BLE, serial, and TCP connections
+- **Companion Radio Packet Capture**: Captures incoming packets from MeshCore Companion devices
+- **Connection Types**: Supports BLE, serial, and TCP connections to Companion radios
 - **Packet Analysis**: Parses packet headers, routes, payloads, and metadata
 - **RF Data**: Captures signal quality metrics (SNR, RSSI)
 - **Multi-Broker MQTT**: Supports up to 4 MQTT brokers simultaneously
 - **Auth Token Authentication**: JWT-based authentication using device private key
 - **TLS/WebSocket Support**: Secure connections with TLS/SSL and WebSocket transport
 - **Topic Templates**: Per-broker topic templates
+- **Device Information**: Includes model, firmware version, and radio configuration in status messages
 
 ## Requirements
 

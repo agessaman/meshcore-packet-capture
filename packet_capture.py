@@ -126,6 +126,9 @@ class PacketCapture:
         self.connection_retry_count = 0
         self.max_connection_retries = self.get_env_int('MAX_CONNECTION_RETRIES', 5)
         self.connection_retry_delay = self.get_env_int('CONNECTION_RETRY_DELAY', 5)
+        self.connection_retry_delay_max = self.get_env_int('CONNECTION_RETRY_DELAY_MAX', 300)  # 5 minutes max
+        self.connection_retry_backoff_multiplier = self.get_env_float('CONNECTION_RETRY_BACKOFF_MULTIPLIER', 2.0)
+        self.connection_retry_jitter = self.get_env_bool('CONNECTION_RETRY_JITTER', True)
         self.health_check_interval = self.get_env_int('HEALTH_CHECK_INTERVAL', 30)
         
         # MQTT connection
@@ -134,8 +137,23 @@ class PacketCapture:
         self.mqtt_retry_count = 0
         self.max_mqtt_retries = self.get_env_int('MAX_MQTT_RETRIES', 5)
         self.mqtt_retry_delay = self.get_env_int('MQTT_RETRY_DELAY', 5)
+        self.mqtt_retry_delay_max = self.get_env_int('MQTT_RETRY_DELAY_MAX', 300)  # 5 minutes max
+        self.mqtt_retry_backoff_multiplier = self.get_env_float('MQTT_RETRY_BACKOFF_MULTIPLIER', 2.0)
+        self.mqtt_retry_jitter = self.get_env_bool('MQTT_RETRY_JITTER', True)
         self.should_exit = False  # Flag to exit when reconnection attempts fail
         self.exit_on_reconnect_fail = self.get_env_bool('EXIT_ON_RECONNECT_FAIL', True)
+        
+        # Service-level failure tracking for systemd restart
+        self.service_failure_count = 0
+        self.max_service_failures = self.get_env_int('MAX_SERVICE_FAILURES', 3)
+        self.service_failure_window = self.get_env_int('SERVICE_FAILURE_WINDOW', 300)  # 5 minutes
+        self.last_service_failure = 0
+        self.critical_failure_threshold = self.get_env_int('CRITICAL_FAILURE_THRESHOLD', 5)
+        
+        # Track consecutive failures for more intelligent failure detection
+        self.consecutive_connection_failures = 0
+        self.consecutive_mqtt_failures = 0
+        self.max_consecutive_failures = self.get_env_int('MAX_CONSECUTIVE_FAILURES', 3)
         
         # Packet correlation cache
         self.rf_data_cache = {}
@@ -169,6 +187,17 @@ class PacketCapture:
         # Task tracking to prevent duplicate tasks
         self.active_tasks = set()
         self.jwt_renewal_in_progress = False
+        
+        # Circuit breaker for JWT failures
+        self.jwt_failure_count = 0
+        self.max_jwt_failures = 5
+        self.jwt_circuit_breaker_timeout = 300  # 5 minutes
+        self.jwt_circuit_breaker_reset_time = 0
+        
+        # Resource monitoring
+        self.max_active_tasks = 100  # Prevent task explosion
+        self.task_monitoring_interval = 60  # Check every minute
+        self.last_task_check = 0
         
         # Output file handle
         self.output_handle = None
@@ -228,6 +257,109 @@ class PacketCapture:
             return float(self.get_env(key, str(fallback)))
         except ValueError:
             return fallback
+    
+    def calculate_mqtt_retry_delay(self, attempt: int) -> float:
+        """Calculate exponential backoff delay with jitter for MQTT retries"""
+        import random
+        
+        # Calculate exponential backoff: base_delay * (multiplier ^ (attempt - 1))
+        delay = self.mqtt_retry_delay * (self.mqtt_retry_backoff_multiplier ** (attempt - 1))
+        
+        # Cap at maximum delay
+        delay = min(delay, self.mqtt_retry_delay_max)
+        
+        # Add jitter to prevent thundering herd (random factor between 0.5 and 1.5)
+        if self.mqtt_retry_jitter:
+            jitter_factor = random.uniform(0.5, 1.5)
+            delay *= jitter_factor
+        
+        return max(1.0, delay)  # Minimum 1 second delay
+    
+    def calculate_connection_retry_delay(self, attempt: int) -> float:
+        """Calculate exponential backoff delay with jitter for connection retries"""
+        import random
+        
+        # Calculate exponential backoff: base_delay * (multiplier ^ (attempt - 1))
+        delay = self.connection_retry_delay * (self.connection_retry_backoff_multiplier ** (attempt - 1))
+        
+        # Cap at maximum delay
+        delay = min(delay, self.connection_retry_delay_max)
+        
+        # Add jitter to prevent thundering herd (random factor between 0.5 and 1.5)
+        if self.connection_retry_jitter:
+            jitter_factor = random.uniform(0.5, 1.5)
+            delay *= jitter_factor
+        
+        return max(1.0, delay)  # Minimum 1 second delay
+    
+    def track_service_failure(self, failure_type: str, details: str = ""):
+        """Track service-level failures and determine if we should exit for systemd restart"""
+        import time
+        
+        current_time = time.time()
+        
+        # Reset failure count if outside the failure window
+        if current_time - self.last_service_failure > self.service_failure_window:
+            self.service_failure_count = 0
+        
+        self.service_failure_count += 1
+        self.last_service_failure = current_time
+        
+        self.logger.error(f"Service failure #{self.service_failure_count}: {failure_type}")
+        if details:
+            self.logger.error(f"Failure details: {details}")
+        
+        # Check if we should exit for systemd restart
+        if self.service_failure_count >= self.max_service_failures:
+            self.logger.critical(f"Maximum service failures ({self.max_service_failures}) reached within {self.service_failure_window}s window")
+            self.logger.critical("Exiting to allow systemd to restart the service with fresh state")
+            self.should_exit = True
+            return True
+        
+        return False
+    
+    def track_consecutive_failure(self, failure_type: str) -> bool:
+        """Track consecutive failures and determine if they warrant a service failure"""
+        if failure_type == "connection":
+            self.consecutive_connection_failures += 1
+            self.consecutive_mqtt_failures = 0  # Reset other type
+        elif failure_type == "mqtt":
+            self.consecutive_mqtt_failures += 1
+            self.consecutive_connection_failures = 0  # Reset other type
+        
+        # Check if consecutive failures warrant a service failure
+        if (self.consecutive_connection_failures >= self.max_consecutive_failures or 
+            self.consecutive_mqtt_failures >= self.max_consecutive_failures):
+            
+            failure_details = f"Consecutive {failure_type} failures: {self.consecutive_connection_failures if failure_type == 'connection' else self.consecutive_mqtt_failures}"
+            return self.track_service_failure(f"Consecutive {failure_type} failures", failure_details)
+        
+        return False
+    
+    def reset_consecutive_failures(self, failure_type: str):
+        """Reset consecutive failure count when connection is restored"""
+        if failure_type == "connection":
+            self.consecutive_connection_failures = 0
+        elif failure_type == "mqtt":
+            self.consecutive_mqtt_failures = 0
+    
+    def should_exit_for_systemd_restart(self) -> bool:
+        """Determine if we should exit to allow systemd restart"""
+        import time
+        
+        # Check for critical failure threshold
+        if self.service_failure_count >= self.critical_failure_threshold:
+            self.logger.critical(f"Critical failure threshold ({self.critical_failure_threshold}) reached")
+            return True
+        
+        # Check for recent failure pattern
+        current_time = time.time()
+        if (current_time - self.last_service_failure) < self.service_failure_window:
+            if self.service_failure_count >= self.max_service_failures:
+                self.logger.critical(f"Too many failures ({self.service_failure_count}) in {self.service_failure_window}s")
+                return True
+        
+        return False
     
     def _load_client_version(self):
         """Load client version from .version_info file"""
@@ -488,13 +620,21 @@ class PacketCapture:
             new_token = await self.create_auth_token_jwt(audience, broker_num)
             if new_token:
                 self.logger.info(f"✓ JWT token renewed for broker {broker_num}")
+                # Reset failure count on success
+                self.jwt_failure_count = 0
                 return True
             else:
                 self.logger.error(f"Failed to renew JWT token for broker {broker_num}")
+                # Increment failure count
+                self.jwt_failure_count += 1
+                self.jwt_circuit_breaker_reset_time = time.time()
                 return False
                 
         except Exception as e:
             self.logger.error(f"Error renewing JWT token for broker {broker_num}: {e}")
+            # Increment failure count
+            self.jwt_failure_count += 1
+            self.jwt_circuit_breaker_reset_time = time.time()
             return False
     
     async def check_and_renew_jwt_tokens(self):
@@ -757,13 +897,23 @@ class PacketCapture:
             return False
     
     async def reconnect_meshcore(self) -> bool:
-        """Attempt to reconnect to MeshCore device with retry logic"""
+        """Attempt to reconnect to MeshCore device with exponential backoff retry logic"""
         if self.max_connection_retries > 0 and self.connection_retry_count >= self.max_connection_retries:
             self.logger.error(f"Maximum connection retry attempts ({self.max_connection_retries}) reached")
+            
+            # Track service failure for systemd restart decision
+            if self.track_service_failure("MeshCore connection exhausted", 
+                                        f"Failed {self.connection_retry_count} reconnection attempts"):
+                return False
+            
             return False
         
         self.connection_retry_count += 1
-        self.logger.info(f"Attempting MeshCore reconnection (attempt {self.connection_retry_count}/{self.max_connection_retries if self.max_connection_retries > 0 else '∞'})...")
+        
+        # Calculate exponential backoff delay
+        delay = self.calculate_connection_retry_delay(self.connection_retry_count)
+        
+        self.logger.info(f"Attempting MeshCore reconnection (attempt {self.connection_retry_count}/{self.max_connection_retries if self.max_connection_retries > 0 else '∞'}) with {delay:.1f}s delay...")
         
         # Clean up existing connection
         if self.meshcore:
@@ -773,10 +923,10 @@ class PacketCapture:
                 self.logger.debug(f"Error disconnecting during reconnect: {e}")
             self.meshcore = None
         
-        # Wait before retrying
-        if self.connection_retry_delay > 0:
-            self.logger.info(f"Waiting {self.connection_retry_delay} seconds before retry...")
-            await asyncio.sleep(self.connection_retry_delay)
+        # Wait before retrying with exponential backoff
+        if delay > 0:
+            self.logger.info(f"Waiting {delay:.1f} seconds before retry (exponential backoff)...")
+            await asyncio.sleep(delay)
         
         # Attempt to reconnect
         success = await self.connect()
@@ -808,11 +958,17 @@ class PacketCapture:
                     if await self.reconnect_meshcore():
                         self.logger.info("MeshCore reconnection successful, resuming packet capture")
                         
+                        # Reset consecutive failures on successful reconnection
+                        self.reset_consecutive_failures("connection")
+                        
                         # Re-setup event handlers after reconnection
                         await self.setup_event_handlers()
                         await self.meshcore.start_auto_message_fetching()
                     else:
                         self.logger.error("MeshCore reconnection failed, will retry on next health check")
+                        # Track consecutive failures for more intelligent failure detection
+                        if self.track_consecutive_failure("connection"):
+                            return  # Exit if service failure threshold reached
                 
                 # Check MQTT connection health
                 if self.enable_mqtt:
@@ -1130,21 +1286,31 @@ class PacketCapture:
         self.logger.info("Packet capture stopped")
     
     async def reconnect_mqtt(self):
-        """Attempt to reconnect to MQTT broker with retry logic"""
+        """Attempt to reconnect to MQTT broker with exponential backoff retry logic"""
         if self.max_mqtt_retries > 0 and self.mqtt_retry_count >= self.max_mqtt_retries:
             self.logger.error(f"Maximum MQTT retry attempts ({self.max_mqtt_retries}) reached")
+            
+            # Track service failure for systemd restart decision
+            if self.track_service_failure("MQTT connection exhausted", 
+                                        f"Failed {self.mqtt_retry_count} MQTT reconnection attempts"):
+                return False
+            
             if self.exit_on_reconnect_fail:
                 self.logger.error("Exiting due to failed MQTT reconnection attempts")
                 self.should_exit = True
             return False
         
         self.mqtt_retry_count += 1
-        self.logger.info(f"Attempting MQTT reconnection (attempt {self.mqtt_retry_count}/{self.max_mqtt_retries if self.max_mqtt_retries > 0 else '∞'})...")
         
-        # Wait before retrying
-        if self.mqtt_retry_delay > 0:
-            self.logger.info(f"Waiting {self.mqtt_retry_delay} seconds before MQTT retry...")
-            await asyncio.sleep(self.mqtt_retry_delay)
+        # Calculate exponential backoff delay
+        delay = self.calculate_mqtt_retry_delay(self.mqtt_retry_count)
+        
+        self.logger.info(f"Attempting MQTT reconnection (attempt {self.mqtt_retry_count}/{self.max_mqtt_retries if self.max_mqtt_retries > 0 else '∞'}) with {delay:.1f}s delay...")
+        
+        # Wait before retrying with exponential backoff
+        if delay > 0:
+            self.logger.info(f"Waiting {delay:.1f} seconds before MQTT retry (exponential backoff)...")
+            await asyncio.sleep(delay)
         
         # Clean up existing connections before reconnecting
         self.disconnect_mqtt()
@@ -1153,9 +1319,13 @@ class PacketCapture:
         success = await self.connect_mqtt()
         if success:
             self.mqtt_retry_count = 0  # Reset counter on successful connection
+            self.reset_consecutive_failures("mqtt")  # Reset consecutive MQTT failures
             self.logger.info("MQTT reconnection successful")
         else:
             self.logger.warning(f"MQTT reconnection attempt {self.mqtt_retry_count} failed")
+            # Track consecutive MQTT failures
+            if self.track_consecutive_failure("mqtt"):
+                return False  # Exit if service failure threshold reached
         
         return success
     
@@ -1235,6 +1405,15 @@ class PacketCapture:
                 
                 if expired_brokers:
                     self.logger.warning(f"Detected expired JWT tokens for brokers: {expired_brokers}")
+                    # Check circuit breaker before attempting JWT renewal
+                    current_time = time.time()
+                    if (current_time - self.jwt_circuit_breaker_reset_time) > self.jwt_circuit_breaker_timeout:
+                        self.jwt_failure_count = 0  # Reset circuit breaker
+                    
+                    if self.jwt_failure_count >= self.max_jwt_failures:
+                        self.logger.warning(f"JWT circuit breaker open - too many failures ({self.jwt_failure_count}). Skipping JWT renewal.")
+                        return metrics
+                    
                     # Schedule renewal only if not already in progress (prevent task explosion)
                     if not self.jwt_renewal_in_progress:
                         self.jwt_renewal_in_progress = True
@@ -1875,6 +2054,23 @@ class PacketCapture:
                 if current_time - last_mqtt_check >= mqtt_check_interval:
                     await self.check_mqtt_reconnection()
                     last_mqtt_check = current_time
+                
+                # Check if we should exit for systemd restart
+                if self.should_exit_for_systemd_restart():
+                    self.logger.critical("Service failure threshold reached - exiting for systemd restart")
+                    self.should_exit = True
+                
+                # Monitor active tasks to prevent explosion
+                if current_time - self.last_task_check >= self.task_monitoring_interval:
+                    active_count = len(self.active_tasks)
+                    if active_count > self.max_active_tasks:
+                        self.logger.warning(f"Too many active tasks ({active_count}), cleaning up...")
+                        # Cancel excess tasks
+                        tasks_to_cancel = list(self.active_tasks)[self.max_active_tasks:]
+                        for task in tasks_to_cancel:
+                            task.cancel()
+                            self.active_tasks.discard(task)
+                    self.last_task_check = current_time
                 
                 # Use a longer sleep to reduce CPU usage
                 await asyncio.sleep(5)

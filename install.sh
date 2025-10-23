@@ -1497,6 +1497,21 @@ main() {
                 echo "  Stop:    sudo systemctl stop meshcore-capture"
                 echo "  Status:  sudo systemctl status meshcore-capture"
                 echo "  Logs:    sudo journalctl -u meshcore-capture -f"
+                echo ""
+                echo "Resource monitoring:"
+                echo "  CPU usage:  sudo systemctl show meshcore-capture --property=CPUUsageNSec"
+                echo "  Memory:     sudo systemctl show meshcore-capture --property=MemoryCurrent"
+                echo "  Tasks:      sudo systemctl show meshcore-capture --property=TasksCurrent"
+                echo ""
+echo "Resource limits (prevent runaway processes):"
+echo "  Memory: 512MB limit"
+echo "  CPU:     50% limit"
+echo "  Tasks:   200 max"
+echo ""
+echo "Service failure handling:"
+echo "  Max failures: 3 within 5 minutes"
+echo "  Critical threshold: 5 total failures"
+echo "  Auto-restart: systemd will restart on persistent failures"
                 ;;
             launchd)
                 echo "Service management:"
@@ -1512,6 +1527,19 @@ main() {
         echo "  Stop:    $COMPOSE_CMD -f $INSTALL_DIR/docker-compose.yml down"
         echo "  Logs:    $COMPOSE_CMD -f $INSTALL_DIR/docker-compose.yml logs -f"
         echo "  Status:  $COMPOSE_CMD -f $INSTALL_DIR/docker-compose.yml ps"
+        echo ""
+        echo "Resource monitoring:"
+        echo "  Stats:   docker stats meshcore-packet-capture"
+        echo "  Top:     docker exec meshcore-packet-capture top"
+        echo ""
+echo "Resource limits (prevent runaway processes):"
+echo "  Memory: 512MB limit, 128MB reserved"
+echo "  CPU:     50% limit,   10% reserved"
+echo ""
+echo "Service failure handling:"
+echo "  Max failures: 3 within 5 minutes"
+echo "  Critical threshold: 5 total failures"
+echo "  Auto-restart: Docker will restart on persistent failures"
     else
         echo "Manual run: cd $INSTALL_DIR && ./venv/bin/python3 packet_capture.py"
     fi
@@ -1576,12 +1604,44 @@ Wants=time-sync.target
 User=$current_user
 WorkingDirectory=$INSTALL_DIR
 Environment="PATH=$service_path"
+Environment="PACKETCAPTURE_MAX_ACTIVE_TASKS=50"
+Environment="PACKETCAPTURE_JWT_CIRCUIT_BREAKER_FAILURES=3"
+Environment="PACKETCAPTURE_JWT_CIRCUIT_BREAKER_TIMEOUT=180"
+Environment="PACKETCAPTURE_MQTT_RETRY_DELAY_MAX=300"
+Environment="PACKETCAPTURE_MQTT_RETRY_BACKOFF_MULTIPLIER=2.0"
+Environment="PACKETCAPTURE_MQTT_RETRY_JITTER=true"
+Environment="PACKETCAPTURE_CONNECTION_RETRY_DELAY_MAX=300"
+Environment="PACKETCAPTURE_CONNECTION_RETRY_BACKOFF_MULTIPLIER=2.0"
+Environment="PACKETCAPTURE_CONNECTION_RETRY_JITTER=true"
+
+# Service failure tracking (let systemd restart on persistent failures)
+Environment="PACKETCAPTURE_MAX_SERVICE_FAILURES=3"
+Environment="PACKETCAPTURE_SERVICE_FAILURE_WINDOW=300"
+Environment="PACKETCAPTURE_CRITICAL_FAILURE_THRESHOLD=5"
+Environment="PACKETCAPTURE_MAX_CONSECUTIVE_FAILURES=3"
 ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/packet_capture.py
 ExecStop=/bin/bash -c 'if [ -f $INSTALL_DIR/.env.local ] && grep -q "PACKETCAPTURE_CONNECTION_TYPE=ble" $INSTALL_DIR/.env.local; then BLE_DEVICE=\$(grep "PACKETCAPTURE_BLE_DEVICE=" $INSTALL_DIR/.env.local | cut -d= -f2); if [ -n "\$BLE_DEVICE" ] && command -v bluetoothctl >/dev/null 2>&1; then echo "Disconnecting BLE device \$BLE_DEVICE..."; bluetoothctl disconnect "\$BLE_DEVICE" 2>/dev/null || true; sleep 2; fi; fi'
 KillMode=process
 Restart=on-failure
 RestartSec=10
 Type=exec
+
+# Resource limits to prevent runaway processes
+MemoryLimit=512M
+CPUQuota=50%
+TasksMax=200
+
+# Security and isolation
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$INSTALL_DIR
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshcore-capture
 
 [Install]
 WantedBy=multi-user.target
@@ -1783,6 +1843,15 @@ services:
       - ./data:/app/data
       # Configuration files
       - ./.env.local:/app/.env.local:ro
+    # Resource limits to prevent runaway processes
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
     environment:
       # Connection settings
       - PACKETCAPTURE_CONNECTION_TYPE=ble
@@ -1824,6 +1893,25 @@ services:
       # JWT token renewal settings
       - PACKETCAPTURE_JWT_RENEWAL_INTERVAL=3600
       - PACKETCAPTURE_JWT_RENEWAL_THRESHOLD=300
+      
+      # Resource management settings (prevent runaway processes)
+      - PACKETCAPTURE_MAX_ACTIVE_TASKS=50
+      - PACKETCAPTURE_JWT_CIRCUIT_BREAKER_FAILURES=3
+      - PACKETCAPTURE_JWT_CIRCUIT_BREAKER_TIMEOUT=180
+      
+      # Exponential backoff settings (prevent server overload)
+      - PACKETCAPTURE_MQTT_RETRY_DELAY_MAX=300
+      - PACKETCAPTURE_MQTT_RETRY_BACKOFF_MULTIPLIER=2.0
+      - PACKETCAPTURE_MQTT_RETRY_JITTER=true
+      - PACKETCAPTURE_CONNECTION_RETRY_DELAY_MAX=300
+      - PACKETCAPTURE_CONNECTION_RETRY_BACKOFF_MULTIPLIER=2.0
+      - PACKETCAPTURE_CONNECTION_RETRY_JITTER=true
+      
+      # Service failure tracking (let Docker restart on persistent failures)
+      - PACKETCAPTURE_MAX_SERVICE_FAILURES=3
+      - PACKETCAPTURE_SERVICE_FAILURE_WINDOW=300
+      - PACKETCAPTURE_CRITICAL_FAILURE_THRESHOLD=5
+      - PACKETCAPTURE_MAX_CONSECUTIVE_FAILURES=3
     networks:
       - meshcore-network
     restart: unless-stopped

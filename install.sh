@@ -1631,13 +1631,6 @@ MemoryLimit=512M
 CPUQuota=50%
 TasksMax=200
 
-# Security and isolation
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=$INSTALL_DIR
-
 # Logging
 StandardOutput=journal
 StandardError=journal

@@ -25,7 +25,6 @@ import hashlib
 import time
 import re
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -425,11 +424,6 @@ class PacketCapture:
         except Exception as e:
             self.logger.debug(f"Error getting firmware info: {e}")
             return {"model": "unknown", "version": "unknown"}
-    
-    def base64url_encode(self, data: bytes) -> str:
-        """Base64url encode without padding"""
-        import base64
-        return base64.urlsafe_b64encode(data).rstrip(b'=').decode('utf-8')
     
     def resolve_topic_template(self, template, broker_num=None):
         """Resolve topic template with {IATA}, {IATA_lower}, and {PUBLIC_KEY} placeholders"""
@@ -1065,8 +1059,12 @@ class PacketCapture:
         
         if not connected_brokers:
             self.mqtt_connected = False
-            self.logger.warning("All MQTT brokers disconnected. Will attempt reconnection...")
-            # Don't exit immediately - let reconnection logic handle it
+            # Only attempt reconnection if we're not shutting down
+            if not self.should_exit:
+                self.logger.warning("All MQTT brokers disconnected. Will attempt reconnection...")
+                # Don't exit immediately - let reconnection logic handle it
+            else:
+                self.logger.info("All MQTT brokers disconnected during shutdown")
         else:
             self.logger.info(f"Still connected to {len(connected_brokers)} broker(s)")
 
@@ -1265,26 +1263,6 @@ class PacketCapture:
             self.mqtt_clients.clear()
             self.mqtt_connected = False
     
-    async def stop(self):
-        """Stop packet capture and clean up resources"""
-        self.logger.info("Stopping packet capture...")
-        self.connected = False
-        self.should_exit = True
-        
-        # Disconnect from MQTT brokers
-        self.disconnect_mqtt()
-        
-        # Disconnect from MeshCore device
-        if self.meshcore:
-            try:
-                await self.meshcore.disconnect()
-            except Exception as e:
-                self.logger.warning(f"Error disconnecting from MeshCore device: {e}")
-        
-        # Private key cleanup (no separate instance to clean up)
-        
-        self.logger.info("Packet capture stopped")
-    
     async def reconnect_mqtt(self):
         """Attempt to reconnect to MQTT broker with exponential backoff retry logic"""
         if self.max_mqtt_retries > 0 and self.mqtt_retry_count >= self.max_mqtt_retries:
@@ -1346,25 +1324,6 @@ class PacketCapture:
             if disconnected_brokers:
                 self.logger.info(f"{len(disconnected_brokers)} MQTT broker(s) disconnected, attempting reconnection...")
                 await self.reconnect_mqtt()
-    
-    def publish_status_sync(self, status, client=None, broker_num=None):
-        """Publish status synchronously (for use in MQTT callbacks)"""
-        status_msg = {
-            "status": status,
-            "timestamp": datetime.now().isoformat(),
-            "origin": self.device_name,
-            "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE',
-            "model": "unknown",
-            "firmware_version": "unknown",  # Will be updated later with async version
-            "radio": self.radio_info or "unknown",
-            "client_version": self._load_client_version()
-        }
-        if client:
-            self.safe_publish(None, json.dumps(status_msg), retain=True, client=client, broker_num=broker_num, topic_type="status")
-        else:
-            self.safe_publish(None, json.dumps(status_msg), retain=True, topic_type="status")
-        if self.debug:
-            self.logger.debug(f"Published status: {status}")
 
     async def publish_status(self, status, client=None, broker_num=None):
         """Publish status with additional information"""

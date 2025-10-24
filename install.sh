@@ -4,7 +4,7 @@
 # ============================================================================
 set -e
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.1.1"
 DEFAULT_REPO="agessaman/meshcore-packet-capture"
 DEFAULT_BRANCH="main"
 
@@ -791,17 +791,18 @@ configure_mqtt_brokers_only() {
     echo ""
     print_header "MQTT Broker Configuration"
     echo ""
-    print_info "Enable the LetsMesh.net Packet Analyzer (mqtt-us-v1.letsmesh.net) broker?"
+    print_info "Enable the LetsMesh.net Packet Analyzer (US + EU servers) brokers?"
     echo "  • Real-time packet analysis and visualization"
     echo "  • Network health monitoring"
+    echo "  • Redundant servers: mqtt-us-v1.letsmesh.net + mqtt-eu-v1.letsmesh.net"
     echo "  • Requires meshcore-decoder for authentication"
     echo ""
     
     if [ "$DECODER_AVAILABLE" = true ]; then
-        if prompt_yes_no "Enable LetsMesh Packet Analyzer?" "y"; then
+        if prompt_yes_no "Enable LetsMesh Packet Analyzer with redundancy?" "y"; then
             cat >> "$ENV_LOCAL" << EOF
 
-# MQTT Broker 1 - LetsMesh.net Packet Analyzer
+# MQTT Broker 1 - LetsMesh.net Packet Analyzer (US)
 PACKETCAPTURE_MQTT1_ENABLED=true
 PACKETCAPTURE_MQTT1_SERVER=mqtt-us-v1.letsmesh.net
 PACKETCAPTURE_MQTT1_PORT=443
@@ -810,8 +811,18 @@ PACKETCAPTURE_MQTT1_USE_TLS=true
 PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN=true
 PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt-us-v1.letsmesh.net
 PACKETCAPTURE_MQTT1_KEEPALIVE=120
+
+# MQTT Broker 2 - LetsMesh.net Packet Analyzer (EU)
+PACKETCAPTURE_MQTT2_ENABLED=true
+PACKETCAPTURE_MQTT2_SERVER=mqtt-eu-v1.letsmesh.net
+PACKETCAPTURE_MQTT2_PORT=443
+PACKETCAPTURE_MQTT2_TRANSPORT=websockets
+PACKETCAPTURE_MQTT2_USE_TLS=true
+PACKETCAPTURE_MQTT2_USE_AUTH_TOKEN=true
+PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
+PACKETCAPTURE_MQTT2_KEEPALIVE=120
 EOF
-            print_success "LetsMesh Packet Analyzer enabled"
+            print_success "LetsMesh Packet Analyzer enabled with redundancy"
             
             # Configure topics for LetsMesh
             configure_mqtt_topics 1
@@ -932,17 +943,18 @@ EOF
     echo ""
     print_header "MQTT Broker Configuration"
     echo ""
-    print_info "Enable the LetsMesh.net Packet Analyzer (mqtt-us-v1.letsmesh.net) broker?"
+    print_info "Enable the LetsMesh.net Packet Analyzer (US + EU servers) for redundancy?"
     echo "  • Real-time packet analysis and visualization"
     echo "  • Network health monitoring"
+    echo "  • Redundant servers: mqtt-us-v1.letsmesh.net + mqtt-eu-v1.letsmesh.net"
     echo "  • Requires meshcore-decoder for authentication"
     echo ""
     
     if [ "$DECODER_AVAILABLE" = true ]; then
-        if prompt_yes_no "Enable LetsMesh Packet Analyzer?" "y"; then
+        if prompt_yes_no "Enable LetsMesh Packet Analyzer with redundancy?" "y"; then
             cat >> "$ENV_LOCAL" << EOF
 
-# MQTT Broker 1 - LetsMesh.net Packet Analyzer
+# MQTT Broker 1 - LetsMesh.net Packet Analyzer (US)
 PACKETCAPTURE_MQTT1_ENABLED=true
 PACKETCAPTURE_MQTT1_SERVER=mqtt-us-v1.letsmesh.net
 PACKETCAPTURE_MQTT1_PORT=443
@@ -951,8 +963,18 @@ PACKETCAPTURE_MQTT1_USE_TLS=true
 PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN=true
 PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt-us-v1.letsmesh.net
 PACKETCAPTURE_MQTT1_KEEPALIVE=120
+
+# MQTT Broker 2 - LetsMesh.net Packet Analyzer (EU)
+PACKETCAPTURE_MQTT2_ENABLED=true
+PACKETCAPTURE_MQTT2_SERVER=mqtt-eu-v1.letsmesh.net
+PACKETCAPTURE_MQTT2_PORT=443
+PACKETCAPTURE_MQTT2_TRANSPORT=websockets
+PACKETCAPTURE_MQTT2_USE_TLS=true
+PACKETCAPTURE_MQTT2_USE_AUTH_TOKEN=true
+PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
+PACKETCAPTURE_MQTT2_KEEPALIVE=120
 EOF
-            print_success "LetsMesh Packet Analyzer enabled"
+            print_success "LetsMesh Packet Analyzer brokers enabled"
             
             # Configure topics for LetsMesh
             configure_mqtt_topics 1

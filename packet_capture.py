@@ -1093,7 +1093,7 @@ class PacketCapture:
             mqtt_client = mqtt.Client(
                 mqtt.CallbackAPIVersion.VERSION2,
                 client_id=client_id,
-                clean_session=False,
+                clean_session=True,  # Disable paho-mqtt auto-reconnect
                 transport=transport
             )
             

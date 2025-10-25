@@ -30,10 +30,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 RUN npm install -g meshcore-decoder
 
 # Copy application files
-COPY --chown=meshcore:meshcore packet_capture.py .
-COPY --chown=meshcore:meshcore enums.py .
-COPY --chown=meshcore:meshcore auth_token.py .
-COPY --chown=meshcore:meshcore config.ini .
+COPY --chown=meshcore:meshcore packet_capture.py enums.py auth_token.py ./
 
 # Create data directory for output files
 RUN mkdir -p /app/data && chown -R meshcore:meshcore /app

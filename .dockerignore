@@ -82,7 +82,7 @@ data/
 output/
 *.json
 *.csv
-*.txt
+# Note: requirements.txt is needed for Docker build, so we don't exclude *.txt
 
 # Configuration files that might contain secrets
 .env

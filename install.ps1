@@ -953,6 +953,9 @@ PACKETCAPTURE_IATA=XXX
 
 # Advert Settings
 PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11
+
+# Logging Settings
+PACKETCAPTURE_LOG_LEVEL=INFO
 "@
     
     Set-Content -Path $envLocal -Value $configContent

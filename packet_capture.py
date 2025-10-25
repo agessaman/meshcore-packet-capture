@@ -79,6 +79,9 @@ def load_env_files():
                     key, value = line.split('=', 1)
                     key = key.strip()
                     value = value.strip()
+                    # Remove inline comments (everything after #)
+                    if '#' in value:
+                        value = value.split('#')[0].strip()
                     # Remove quotes if present
                     if value and value[0] in ('"', "'") and value[-1] == value[0]:
                         value = value[1:-1]
@@ -211,6 +214,17 @@ class PacketCapture:
         for handler in logging.root.handlers[:]:
             logging.root.removeHandler(handler)
         
+        # Get log level from environment variable
+        log_level_str = self.get_env('LOG_LEVEL', 'INFO').upper()
+        log_level_map = {
+            'DEBUG': logging.DEBUG,
+            'INFO': logging.INFO,
+            'WARNING': logging.WARNING,
+            'ERROR': logging.ERROR,
+            'CRITICAL': logging.CRITICAL
+        }
+        log_level = log_level_map.get(log_level_str, logging.INFO)
+        
         # Create a custom formatter with timestamp
         formatter = logging.Formatter(
             fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -223,7 +237,7 @@ class PacketCapture:
         
         # Configure root logger
         logging.basicConfig(
-            level=logging.INFO,
+            level=log_level,
             handlers=[console_handler],
             force=True
         )
@@ -231,7 +245,7 @@ class PacketCapture:
         self.logger = logging.getLogger('PacketCapture')
         
         # Test the logging format
-        self.logger.info("Logging initialized with timestamp format")
+        self.logger.info(f"Logging initialized with level: {log_level_str}")
     
     def get_env(self, key, fallback=''):
         """Get environment variable with fallback (all vars are PACKETCAPTURE_ prefixed)"""
@@ -934,6 +948,11 @@ class PacketCapture:
     
     async def connection_monitor(self):
         """Monitor connection health and attempt reconnection if needed"""
+        if self.health_check_interval <= 0:
+            if self.debug:
+                self.logger.debug("Connection monitoring disabled (health_check_interval <= 0)")
+            return
+        
         if self.debug:
             self.logger.debug(f"Starting connection monitoring (health check every {self.health_check_interval} seconds)")
         
@@ -2215,10 +2234,12 @@ async def main():
         enable_mqtt=not args.no_mqtt
     )
     
+    # Command line arguments override environment variable
     if args.debug:
         capture.logger.setLevel(logging.DEBUG)
     elif args.verbose:
         capture.logger.setLevel(logging.INFO)
+    # If neither debug nor verbose specified, use environment variable (already set in setup_logging)
     
     # Setup signal handlers for graceful shutdown
     import signal

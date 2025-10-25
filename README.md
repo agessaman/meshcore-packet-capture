@@ -112,6 +112,10 @@ Configuration is handled via environment variables and `.env` files. The install
 - `PACKETCAPTURE_CONNECTION_RETRY_DELAY`: Delay between MeshCore reconnection attempts (seconds)
 - `PACKETCAPTURE_HEALTH_CHECK_INTERVAL`: How often to check connection health (seconds)
 
+#### Logging Settings
+- `PACKETCAPTURE_LOG_LEVEL`: Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) - default: `INFO`
+  - Command line arguments (`--debug`, `--verbose`) override this setting
+
 #### MQTT Settings
 The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4). Each broker can be configured independently:
 

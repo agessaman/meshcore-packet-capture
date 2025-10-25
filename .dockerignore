@@ -1,10 +1,13 @@
-# Python cache files
+# Git and version control
+.git
+.gitignore
+.github/
+
+# Python cache and build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -26,39 +29,72 @@ wheels/
 venv/
 env/
 ENV/
+.venv/
 
-# IDE files
+# IDE and editor files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS files
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# Git
-.git/
-.gitignore
+# Documentation and README files
+README.md
+*.md
+docs/
 
-# Docker
+# Test files and directories
+tests/
+test_*
+*_test.py
+pytest.ini
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docker files (don't include in build context)
 Dockerfile*
-docker-compose*
+docker-compose*.yml
 .dockerignore
 
-# Configuration files (use environment variables instead)
-.env.local
-config.ini
+# Installation scripts
+install.sh
+install.ps1
+uninstall.sh
 
-# Data and logs
-data/
-*.log
-logs/
-
-# Documentation
-README.md
-CLEANUP_SUMMARY.md
-
-# Old files
+# Old and temporary files
 old/
+*.tmp
+*.temp
+*.log
+
+# Data and output files
+data/
+output/
+*.json
+*.csv
+*.txt
+
+# Configuration files that might contain secrets
+.env
+.env.local
+.env.*.local
+
+# Node.js (if any)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Backup files
+*.bak
+*.backup

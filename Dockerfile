@@ -1,11 +1,14 @@
 # Use Python 3.11 slim image for smaller size
 FROM python:3.11-slim as base
 
-# Install system dependencies for BLE and serial communication
+# Install system dependencies for BLE, serial communication, and Node.js
 # Use --no-install-recommends to minimize package size
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libbluetooth-dev \
+    curl \
+    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -23,12 +26,13 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && pip cache purge
 
-# Copy only necessary files (use .dockerignore to exclude unnecessary files)
+# Install meshcore-decoder npm package for JWT token generation
+RUN npm install -g meshcore-decoder
+
+# Copy application files
 COPY --chown=meshcore:meshcore packet_capture.py .
 COPY --chown=meshcore:meshcore enums.py .
 COPY --chown=meshcore:meshcore auth_token.py .
-COPY --chown=meshcore:meshcore ble_pairing_helper.py .
-COPY --chown=meshcore:meshcore ble_scan_helper.py .
 COPY --chown=meshcore:meshcore config.ini .
 
 # Create data directory for output files

@@ -1,14 +1,12 @@
 # Use Python 3.11 slim image for smaller size
 FROM python:3.11-slim as base
 
-# Install system dependencies for BLE, serial communication, and Node.js
+# Install system dependencies for BLE, serial communication
 # Use --no-install-recommends to minimize package size
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libbluetooth-dev \
     curl \
-    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -26,8 +24,16 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && pip cache purge
 
-# Install meshcore-decoder npm package for JWT token generation
-RUN npm install @michaelhart/meshcore-decoder
+# Install Node.js via nvm and meshcore-decoder for auth token support
+ENV NVM_DIR=/root/.nvm
+ENV NODE_VERSION=lts/*
+
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
+    && . "$NVM_DIR/nvm.sh" \
+    && nvm install $NODE_VERSION \
+    && nvm use $NODE_VERSION \
+    && npm install -g @michaelhart/meshcore-decoder \
+    && ln -s "$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node | head -1)/bin/"* /usr/local/bin/
 
 # Copy application files
 COPY --chown=meshcore:meshcore packet_capture.py enums.py auth_token.py ./

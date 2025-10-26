@@ -26,14 +26,16 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # Install Node.js via nvm and meshcore-decoder for auth token support
 ENV NVM_DIR=/root/.nvm
-ENV NODE_VERSION=lts/*
+ENV NODE_VERSION=22.11.0
 
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
     && . "$NVM_DIR/nvm.sh" \
     && nvm install $NODE_VERSION \
     && nvm use $NODE_VERSION \
+    && npm install -g npm@latest \
     && npm install -g @michaelhart/meshcore-decoder \
-    && ln -s "$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node | head -1)/bin/"* /usr/local/bin/
+    && ln -s "$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node | head -1)/bin/"* /usr/local/bin/ \
+    && meshcore-decoder --version
 
 # Copy application files
 COPY --chown=meshcore:meshcore packet_capture.py enums.py auth_token.py ./

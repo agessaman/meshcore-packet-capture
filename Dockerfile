@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip cache purge
 
 # Install meshcore-decoder npm package for JWT token generation
-RUN npm install -g meshcore-decoder
+RUN npm install @michaelhart/meshcore-decoder
 
 # Copy application files
 COPY --chown=meshcore:meshcore packet_capture.py enums.py auth_token.py ./

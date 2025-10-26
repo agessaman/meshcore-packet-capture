@@ -56,6 +56,31 @@ except ImportError:
 # Private key functionality using meshcore_py library
 
 
+def enable_tcp_keepalive(transport, idle=10, interval=5, count=3):
+    """Enable TCP keepalive on the transport's socket"""
+    import socket
+    try:
+        sock = transport.get_extra_info('socket')
+        if sock:
+            # Enable TCP keepalive
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            
+            # Platform-specific keepalive settings
+            if hasattr(socket, 'TCP_KEEPIDLE'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
+            if hasattr(socket, 'TCP_KEEPINTVL'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
+            if hasattr(socket, 'TCP_KEEPCNT'):
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
+            
+            return True
+    except Exception as e:
+        # Log but don't fail the connection
+        print(f"Warning: Could not enable TCP keepalive: {e}")
+        return False
+    return False
+
+
 def load_env_files():
     """Load environment variables from .env and .env.local files"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -125,6 +150,7 @@ class PacketCapture:
         # Connection
         self.meshcore = None
         self.connected = False
+        self.connection_type = None  # Track connection type for health checks
         self.connection_retry_count = 0
         self.max_connection_retries = self.get_env_int('MAX_CONNECTION_RETRIES', 5)
         self.connection_retry_delay = self.get_env_int('CONNECTION_RETRY_DELAY', 5)
@@ -136,14 +162,7 @@ class PacketCapture:
         # MQTT connection
         self.mqtt_clients = []  # List of MQTT client info dictionaries
         self.mqtt_connected = False
-        self.mqtt_retry_count = 0
-        self.max_mqtt_retries = self.get_env_int('MAX_MQTT_RETRIES', 5)
-        self.mqtt_retry_delay = self.get_env_int('MQTT_RETRY_DELAY', 5)
-        self.mqtt_retry_delay_max = self.get_env_int('MQTT_RETRY_DELAY_MAX', 300)  # 5 minutes max
-        self.mqtt_retry_backoff_multiplier = self.get_env_float('MQTT_RETRY_BACKOFF_MULTIPLIER', 2.0)
-        self.mqtt_retry_jitter = self.get_env_bool('MQTT_RETRY_JITTER', True)
         self.should_exit = False  # Flag to exit when reconnection attempts fail
-        self.exit_on_reconnect_fail = self.get_env_bool('EXIT_ON_RECONNECT_FAIL', True)
         
         # Service-level failure tracking for systemd restart
         self.service_failure_count = 0
@@ -169,6 +188,7 @@ class PacketCapture:
         self.device_public_key = None
         self.device_private_key = None
         self.radio_info = None
+        self.cached_firmware_info = None  # Cache firmware info to avoid queries during shutdown
         
         # Private key export capability
         self.private_key_export_available = False
@@ -189,6 +209,12 @@ class PacketCapture:
         # Task tracking to prevent duplicate tasks
         self.active_tasks = set()
         self.jwt_renewal_in_progress = False
+        
+        # TCP keepalive settings
+        self.tcp_keepalive_enabled = self.get_env_bool('TCP_KEEPALIVE_ENABLED', True)
+        self.tcp_keepalive_idle = self.get_env_int('TCP_KEEPALIVE_IDLE', 10)
+        self.tcp_keepalive_interval = self.get_env_int('TCP_KEEPALIVE_INTERVAL', 5)
+        self.tcp_keepalive_count = self.get_env_int('TCP_KEEPALIVE_COUNT', 3)
         
         # Circuit breaker for JWT failures
         self.jwt_failure_count = 0
@@ -271,22 +297,6 @@ class PacketCapture:
         except ValueError:
             return fallback
     
-    def calculate_mqtt_retry_delay(self, attempt: int) -> float:
-        """Calculate exponential backoff delay with jitter for MQTT retries"""
-        import random
-        
-        # Calculate exponential backoff: base_delay * (multiplier ^ (attempt - 1))
-        delay = self.mqtt_retry_delay * (self.mqtt_retry_backoff_multiplier ** (attempt - 1))
-        
-        # Cap at maximum delay
-        delay = min(delay, self.mqtt_retry_delay_max)
-        
-        # Add jitter to prevent thundering herd (random factor between 0.5 and 1.5)
-        if self.mqtt_retry_jitter:
-            jitter_factor = random.uniform(0.5, 1.5)
-            delay *= jitter_factor
-        
-        return max(1.0, delay)  # Minimum 1 second delay
     
     def calculate_connection_retry_delay(self, attempt: int) -> float:
         """Calculate exponential backoff delay with jitter for connection retries"""
@@ -392,6 +402,11 @@ class PacketCapture:
     async def get_firmware_info(self):
         """Get firmware information from meshcore device using send_device_query()"""
         try:
+            # Return cached info if available and device is not connected (e.g., during shutdown)
+            if self.cached_firmware_info and (not self.meshcore or not self.meshcore.is_connected):
+                self.logger.debug("Using cached firmware info")
+                return self.cached_firmware_info
+            
             if not self.meshcore or not self.meshcore.is_connected:
                 self.logger.debug("Cannot get firmware info - not connected to device")
                 return {"model": "unknown", "version": "unknown"}
@@ -425,12 +440,16 @@ class PacketCapture:
                         version = version[1:]
                     version_str = f"v{version} (Build: {build_date})"
                     self.logger.debug(f"New firmware format - Model: {model}, Version: {version_str}")
-                    return {"model": model, "version": version_str}
+                    firmware_info = {"model": model, "version": version_str}
+                    self.cached_firmware_info = firmware_info  # Cache the result
+                    return firmware_info
                 else:
                     # For older firmware versions
                     version_str = f"v{fw_ver}"
                     self.logger.debug(f"Old firmware format - Model: unknown, Version: {version_str}")
-                    return {"model": "unknown", "version": version_str}
+                    firmware_info = {"model": "unknown", "version": version_str}
+                    self.cached_firmware_info = firmware_info  # Cache the result
+                    return firmware_info
             
             self.logger.debug("No payload in device query result")
             return {"model": "unknown", "version": "unknown"}
@@ -645,119 +664,72 @@ class PacketCapture:
             self.jwt_circuit_breaker_reset_time = time.time()
             return False
     
+    async def check_jwt_renewal_for_broker(self, broker_num: int):
+        """Check and renew JWT token for a specific broker if needed"""
+        try:
+            if broker_num not in self.jwt_tokens:
+                return
+            
+            if self.is_jwt_token_expired(broker_num):
+                self.logger.info(f"JWT token for broker {broker_num} needs renewal")
+                
+                # Renew the token
+                renewal_success = await self.renew_jwt_token(broker_num)
+                if renewal_success:
+                    # Find the broker client and update credentials
+                    for client_info in self.mqtt_clients:
+                        if client_info['broker_num'] == broker_num:
+                            mqtt_client = client_info['client']
+                            new_token = self.jwt_tokens[broker_num]['token']
+                            username = f"v1_{self.device_public_key.upper()}"
+                            
+                            # Update credentials and reconnect
+                            mqtt_client.username_pw_set(username, new_token)
+                            mqtt_client.reconnect()
+                            
+                            self.logger.info(f"✓ Updated credentials for MQTT broker {broker_num}")
+                            break
+                else:
+                    self.logger.error(f"Failed to renew JWT token for broker {broker_num}")
+                    
+        except Exception as e:
+            self.logger.error(f"Error checking JWT renewal for broker {broker_num}: {e}")
+
     async def check_and_renew_jwt_tokens(self):
         """Check all JWT tokens and renew if needed"""
         try:
             for broker_num in list(self.jwt_tokens.keys()):
-                if self.is_jwt_token_expired(broker_num):
-                    self.logger.info(f"JWT token for broker {broker_num} needs renewal")
-                    
-                    # Renew the token first
-                    renewal_success = await self.renew_jwt_token(broker_num)
-                    if not renewal_success:
-                        self.logger.error(f"Failed to renew JWT token for broker {broker_num}, skipping reconnection")
-                        continue
-                    
-                    # Only reconnect if token renewal was successful
-                    self.logger.info(f"Reconnecting MQTT broker {broker_num} with new token...")
-                    reconnection_success = await self.reconnect_mqtt_broker_with_new_token(broker_num)
-                    if reconnection_success:
-                        self.logger.info(f"✓ MQTT broker {broker_num} successfully reconnected with new JWT token")
-                    else:
-                        self.logger.error(f"Failed to reconnect MQTT broker {broker_num} with new token")
+                await self.check_jwt_renewal_for_broker(broker_num)
                     
         except Exception as e:
             self.logger.error(f"Error checking JWT token renewals: {e}")
     
-    async def reconnect_mqtt_broker_with_new_token(self, broker_num: int):
-        """Reconnect MQTT broker with renewed JWT token"""
-        try:
-            # Find the broker in our client list
-            broker_info = None
-            for client_info in self.mqtt_clients:
-                if client_info['broker_num'] == broker_num:
-                    broker_info = client_info
-                    break
-            
-            if not broker_info:
-                self.logger.warning(f"Broker {broker_num} not found in client list")
-                return False
-            
-            # Check if broker uses auth tokens
-            use_auth_token = self.get_env_bool(f'MQTT{broker_num}_USE_AUTH_TOKEN', False)
-            if not use_auth_token:
-                self.logger.debug(f"Broker {broker_num} doesn't use auth tokens, skipping renewal")
-                return True
-            
-            # Get new token
-            if broker_num not in self.jwt_tokens:
-                self.logger.error(f"No JWT token available for broker {broker_num}")
-                return False
-            
-            new_token = self.jwt_tokens[broker_num]['token']
-            audience = self.jwt_tokens[broker_num].get('audience', '')
-            
-            # Disconnect existing client
-            mqtt_client = broker_info['client']
-            if mqtt_client.is_connected():
-                mqtt_client.loop_stop()
-                mqtt_client.disconnect()
-            
-            # Create new client with new token
-            username = f"v1_{self.device_public_key.upper()}"
-            mqtt_client.username_pw_set(username, new_token)
-            
-            # Reconnect
-            server = self.get_env(f'MQTT{broker_num}_SERVER', "")
-            port = self.get_env_int(f'MQTT{broker_num}_PORT', 1883)
-            keepalive = self.get_env_int(f'MQTT{broker_num}_KEEPALIVE', 60)
-            
-            # Connect and wait for connection to establish
-            result = mqtt_client.connect(server, port, keepalive=keepalive)
-            if result != mqtt.MQTT_ERR_SUCCESS:
-                self.logger.error(f"Failed to initiate connection to MQTT{broker_num}: {mqtt.error_string(result)}")
-                return False
-            
-            mqtt_client.loop_start()
-            
-            # Wait for connection to establish (with timeout)
-            connection_timeout = 10  # seconds
-            start_time = time.time()
-            while not mqtt_client.is_connected() and (time.time() - start_time) < connection_timeout:
-                await asyncio.sleep(0.1)
-            
-            if mqtt_client.is_connected():
-                self.logger.info(f"✓ MQTT broker {broker_num} reconnected with new JWT token")
-                return True
-            else:
-                self.logger.error(f"MQTT broker {broker_num} connection timeout after {connection_timeout}s")
-                return False
-            
-        except Exception as e:
-            self.logger.error(f"Error reconnecting MQTT broker {broker_num} with new token: {e}")
-            return False
     
     
     
 
     async def check_connection_health(self) -> bool:
-        """Check if the MeshCore connection is still healthy"""
+        """Enhanced health check with network validation"""
         try:
+            # 1. Check if meshcore object exists and reports connected
             if not self.meshcore or not self.meshcore.is_connected:
-                self.logger.warning("MeshCore connection is not active")
+                self.logger.warning("MeshCore reports not connected")
                 return False
             
-            # Primary health check: Verify device info is still available
-            if hasattr(self.meshcore, 'self_info') and self.meshcore.self_info:
-                if self.debug:
-                    self.logger.debug("Connection health check passed (device info available)")
-                return True
+            # 2. For TCP connections, verify socket state
+            if self.connection_type == 'tcp':
+                if hasattr(self.meshcore, '_connection') and hasattr(self.meshcore._connection, 'transport'):
+                    transport = self.meshcore._connection.transport
+                    if not transport or transport.is_closing():
+                        self.logger.warning("TCP transport is closed or closing")
+                        return False
             
-            # Secondary health check: Try a simple device query command
-            if self.debug:
-                self.logger.debug("Testing device connection health with device query...")
+            # 3. Try a lightweight command with timeout
             try:
-                result = await self.meshcore.commands.send_device_query()
+                result = await asyncio.wait_for(
+                    self.meshcore.commands.send_device_query(),
+                    timeout=5.0  # Shorter timeout for faster detection
+                )
                 if result and hasattr(result, 'type') and result.type != EventType.ERROR:
                     if self.debug:
                         self.logger.debug("Connection health check passed (device query successful)")
@@ -765,14 +737,14 @@ class PacketCapture:
                 else:
                     if self.debug:
                         self.logger.debug(f"Health check device query failed: {result}")
-            except Exception as query_error:
-                if self.debug:
-                    self.logger.debug(f"Health check device query failed: {query_error}")
-            
-            # If we get here, the connection is not healthy
-            self.logger.warning("Connection health check failed - no device info or query failed")
-            return False
-                
+                    return False
+            except asyncio.TimeoutError:
+                self.logger.warning("Health check timed out")
+                return False
+            except Exception as e:
+                self.logger.warning(f"Health check command failed: {e}")
+                return False
+        
         except Exception as e:
             self.logger.warning(f"Connection health check failed: {e}")
             return False
@@ -784,6 +756,7 @@ class PacketCapture:
             
             # Get connection type from environment
             connection_type = self.get_env('CONNECTION_TYPE', 'ble').lower()
+            self.connection_type = connection_type  # Store for health checks
             self.logger.info(f"Using connection type: {connection_type}")
             
             if connection_type == 'serial':
@@ -800,6 +773,23 @@ class PacketCapture:
                 tcp_port = self.get_env_int('TCP_PORT', 5000)
                 self.logger.info(f"Connecting via TCP to {tcp_host}:{tcp_port}")
                 self.meshcore = await meshcore.MeshCore.create_tcp(tcp_host, tcp_port, debug=False)
+                
+                # Enable TCP keepalive if configured
+                if self.tcp_keepalive_enabled and hasattr(self.meshcore, 'transport'):
+                    try:
+                        if enable_tcp_keepalive(
+                            self.meshcore.transport, 
+                            idle=self.tcp_keepalive_idle,
+                            interval=self.tcp_keepalive_interval,
+                            count=self.tcp_keepalive_count
+                        ):
+                            self.logger.info(f"TCP keepalive enabled (idle={self.tcp_keepalive_idle}s, interval={self.tcp_keepalive_interval}s, count={self.tcp_keepalive_count})")
+                        else:
+                            self.logger.warning("Failed to enable TCP keepalive")
+                    except Exception as e:
+                        self.logger.warning(f"Could not enable TCP keepalive: {e}")
+                elif not self.tcp_keepalive_enabled:
+                    self.logger.debug("TCP keepalive disabled by configuration")
             else:
                 # Create BLE connection (default)
                 # Support both BLE_ADDRESS and BLE_DEVICE for MAC address
@@ -956,18 +946,23 @@ class PacketCapture:
         if self.debug:
             self.logger.debug(f"Starting connection monitoring (health check every {self.health_check_interval} seconds)")
         
-        while self.connected:
+        while not self.should_exit:
             try:
                 await asyncio.sleep(self.health_check_interval)
                 
-                if not self.connected:
+                if self.should_exit:
                     break
                 
-                # Check MeshCore connection health
-                if not await self.check_connection_health():
-                    self.logger.warning("MeshCore connection health check failed, attempting reconnection...")
+                # Check if we need to reconnect (either disconnected or health check failed)
+                needs_reconnection = not self.connected or not await self.check_connection_health()
+                
+                if needs_reconnection:
+                    if not self.connected:
+                        self.logger.info("Connection is disconnected, attempting reconnection...")
+                    else:
+                        self.logger.warning("MeshCore connection health check failed, attempting reconnection...")
                     
-                    # Attempt to reconnect without changing self.connected
+                    # Attempt to reconnect
                     if await self.reconnect_meshcore():
                         self.logger.info("MeshCore reconnection successful, resuming packet capture")
                         
@@ -983,9 +978,6 @@ class PacketCapture:
                         if self.track_consecutive_failure("connection"):
                             return  # Exit if service failure threshold reached
                 
-                # Check MQTT connection health
-                if self.enable_mqtt:
-                    await self.check_mqtt_reconnection()
                 
                 # JWT token renewal is now handled proactively in safe_publish()
                 # and by the dedicated jwt_renewal_scheduler task
@@ -1010,6 +1002,10 @@ class PacketCapture:
         if rc == 0:
             self.mqtt_connected = True
             self.logger.info(f"Connected to MQTT broker: {broker_name}")
+            
+            # JWT renewal is handled by the dedicated JWT renewal scheduler
+            # No need to check here as it will be handled proactively
+            
             # Don't publish status here - it will be published after device connection
             # This callback fires when MQTT connects, but device might not be ready yet
             self.logger.debug(f"MQTT broker {broker_name} connected, waiting for device connection...")
@@ -1112,9 +1108,13 @@ class PacketCapture:
             mqtt_client = mqtt.Client(
                 mqtt.CallbackAPIVersion.VERSION2,
                 client_id=client_id,
-                clean_session=True,  # Disable paho-mqtt auto-reconnect
+                clean_session=True,
                 transport=transport
             )
+            
+            # Enable paho-mqtt's built-in reconnection
+            mqtt_client.enable_logger(self.logger)
+            mqtt_client.reconnect_delay_set(min_delay=1, max_delay=120)
             
             # Set user data for callbacks
             mqtt_client.user_data_set({
@@ -1282,67 +1282,7 @@ class PacketCapture:
             self.mqtt_clients.clear()
             self.mqtt_connected = False
     
-    async def reconnect_mqtt(self):
-        """Attempt to reconnect to MQTT broker with exponential backoff retry logic"""
-        if self.max_mqtt_retries > 0 and self.mqtt_retry_count >= self.max_mqtt_retries:
-            self.logger.error(f"Maximum MQTT retry attempts ({self.max_mqtt_retries}) reached")
-            
-            # Track service failure for systemd restart decision
-            if self.track_service_failure("MQTT connection exhausted", 
-                                        f"Failed {self.mqtt_retry_count} MQTT reconnection attempts"):
-                return False
-            
-            if self.exit_on_reconnect_fail:
-                self.logger.error("Exiting due to failed MQTT reconnection attempts")
-                self.should_exit = True
-            return False
-        
-        self.mqtt_retry_count += 1
-        
-        # Calculate exponential backoff delay
-        delay = self.calculate_mqtt_retry_delay(self.mqtt_retry_count)
-        
-        self.logger.info(f"Attempting MQTT reconnection (attempt {self.mqtt_retry_count}/{self.max_mqtt_retries if self.max_mqtt_retries > 0 else '∞'}) with {delay:.1f}s delay...")
-        
-        # Wait before retrying with exponential backoff
-        if delay > 0:
-            self.logger.info(f"Waiting {delay:.1f} seconds before MQTT retry (exponential backoff)...")
-            await asyncio.sleep(delay)
-        
-        # Clean up existing connections before reconnecting
-        self.disconnect_mqtt()
-        
-        # Attempt to reconnect
-        success = await self.connect_mqtt()
-        if success:
-            self.mqtt_retry_count = 0  # Reset counter on successful connection
-            self.reset_consecutive_failures("mqtt")  # Reset consecutive MQTT failures
-            self.logger.info("MQTT reconnection successful")
-        else:
-            self.logger.warning(f"MQTT reconnection attempt {self.mqtt_retry_count} failed")
-            # Track consecutive MQTT failures
-            if self.track_consecutive_failure("mqtt"):
-                return False  # Exit if service failure threshold reached
-        
-        return success
     
-    async def check_mqtt_reconnection(self):
-        """Check if MQTT reconnection is needed and attempt it"""
-        if self.mqtt_clients:
-            # Check if any brokers are actually connected
-            connected_brokers = [info for info in self.mqtt_clients if info['client'].is_connected()]
-            disconnected_brokers = [info for info in self.mqtt_clients if not info['client'].is_connected()]
-            
-            # Update global connection status
-            if connected_brokers:
-                self.mqtt_connected = True
-            else:
-                self.mqtt_connected = False
-            
-            # If we have disconnected brokers, attempt reconnection
-            if disconnected_brokers:
-                self.logger.info(f"{len(disconnected_brokers)} MQTT broker(s) disconnected, attempting reconnection...")
-                await self.reconnect_mqtt()
 
     async def publish_status(self, status, client=None, broker_num=None):
         """Publish status with additional information"""
@@ -1952,6 +1892,30 @@ class PacketCapture:
 
         return publish_metrics
     
+    async def setup_disconnect_handler(self):
+        """Set up handler for disconnect events from meshcore"""
+        async def on_disconnect(event):
+            reason = event.payload.get('reason', 'unknown')
+            self.logger.warning(f"Disconnect event received: {reason}")
+            
+            if reason == 'tcp_no_response':
+                self.logger.error("Disconnected due to no TCP responses - possible WiFi issue")
+            elif reason == 'tcp_disconnect':
+                self.logger.error("TCP connection closed by remote - possible radio reset")
+            elif reason == 'ble_disconnect':
+                self.logger.error("BLE connection lost - device may have moved out of range")
+            elif reason == 'serial_disconnect':
+                self.logger.error("Serial connection lost - cable may be disconnected")
+            else:
+                self.logger.warning(f"Disconnected for unknown reason: {reason}")
+            
+            # Update connection status - connection monitor will handle reconnection
+            self.connected = False
+            self.logger.info("Connection status updated - connection monitor will handle reconnection")
+        
+        self.meshcore.subscribe(EventType.DISCONNECTED, on_disconnect)
+        self.logger.debug("Disconnect event handler registered")
+
     async def setup_event_handlers(self):
         """Setup event handlers for packet capture"""
         # Handle RF log data for SNR/RSSI information
@@ -1978,6 +1942,9 @@ class PacketCapture:
         self.meshcore.subscribe(EventType.RX_LOG_DATA, on_rf_data)
         self.meshcore.subscribe(EventType.RAW_DATA, on_raw_data)
         self.meshcore.subscribe(EventType.STATUS_RESPONSE, on_status_response)
+        
+        # Setup disconnect handler
+        await self.setup_disconnect_handler()
         
         self.logger.info("Event handlers setup complete")
         
@@ -2022,16 +1989,8 @@ class PacketCapture:
             self.jwt_renewal_task = asyncio.create_task(self.jwt_renewal_scheduler())
         
         try:
-            mqtt_check_interval = 10  # Check MQTT reconnection every 10 seconds
-            last_mqtt_check = 0
-            
-            while self.connected and not self.should_exit:
+            while not self.should_exit:
                 current_time = time.time()
-                
-                # Check MQTT reconnection periodically
-                if current_time - last_mqtt_check >= mqtt_check_interval:
-                    await self.check_mqtt_reconnection()
-                    last_mqtt_check = current_time
                 
                 # Check if we should exit for systemd restart
                 if self.should_exit_for_systemd_restart():
@@ -2160,7 +2119,7 @@ class PacketCapture:
         if self.debug:
             self.logger.debug(f"Starting advert scheduler with {self.advert_interval_hours} hour interval")
         
-        while self.connected:
+        while not self.should_exit:
             try:
                 # Calculate seconds until next advert
                 current_time = time.time()
@@ -2197,11 +2156,11 @@ class PacketCapture:
         if self.debug:
             self.logger.debug(f"Starting JWT renewal scheduler with {self.jwt_renewal_interval} second interval")
         
-        while self.connected:
+        while not self.should_exit:
             try:
                 await asyncio.sleep(self.jwt_renewal_interval)
                 
-                if not self.connected:
+                if self.should_exit:
                     break
                 
                 # Check and renew JWT tokens

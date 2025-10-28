@@ -135,11 +135,12 @@ load_env_files()
 class PacketCapture:
     """Standalone packet capture using meshcore package"""
     
-    def __init__(self, output_file: Optional[str] = None, verbose: bool = False, debug: bool = False, enable_mqtt: bool = True):
+    def __init__(self, output_file: Optional[str] = None, verbose: bool = False, debug: bool = False, enable_mqtt: bool = True, shutdown_event=None):
         self.output_file = output_file
         self.verbose = verbose
         self.debug = debug
         self.enable_mqtt = enable_mqtt
+        self.shutdown_event = shutdown_event
         
         # Setup logging
         self.setup_logging()
@@ -202,6 +203,7 @@ class PacketCapture:
         self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 11)
         self.last_advert_time = 0
         self.advert_task = None
+        
         
         # JWT renewal task
         self.jwt_renewal_task = None
@@ -366,6 +368,18 @@ class PacketCapture:
         elif failure_type == "mqtt":
             self.consecutive_mqtt_failures = 0
     
+    async def wait_with_shutdown(self, timeout: float) -> bool:
+        """Wait for specified time but return immediately if shutdown is requested"""
+        if self.shutdown_event:
+            try:
+                await asyncio.wait_for(self.shutdown_event.wait(), timeout=timeout)
+                return True  # Shutdown was requested
+            except asyncio.TimeoutError:
+                return False  # Timeout reached, no shutdown
+        else:
+            await asyncio.sleep(timeout)
+            return False
+
     def should_exit_for_systemd_restart(self) -> bool:
         """Determine if we should exit to allow systemd restart"""
         import time
@@ -513,6 +527,46 @@ class PacketCapture:
             self.logger.debug(f"Using default topic for {topic_type}: {resolved}")
         return resolved
     
+    async def set_radio_clock(self) -> bool:
+        """Set radio clock only if device time is earlier than current system time"""
+        try:
+            if not self.meshcore or not self.meshcore.is_connected:
+                self.logger.warning("Cannot set radio clock - not connected to device")
+                return False
+            
+            # Get current device time
+            self.logger.info("Checking device time...")
+            time_result = await self.meshcore.commands.get_time()
+            if time_result.type == EventType.ERROR:
+                self.logger.warning("Device does not support time commands")
+                return False
+            
+            device_time = time_result.payload.get('time', 0)
+            current_time = int(time.time())
+            
+            self.logger.info(f"Device time: {device_time}, System time: {current_time}")
+            
+            # Only set time if device time is earlier than current time
+            if device_time < current_time:
+                time_diff = current_time - device_time
+                self.logger.info(f"Device time is {time_diff} seconds behind, updating...")
+                
+                result = await self.meshcore.commands.set_time(current_time)
+                if result.type == EventType.OK:
+                    self.logger.info(f"✓ Radio clock updated to: {current_time}")
+                    self.last_clock_sync_time = current_time
+                    return True
+                else:
+                    self.logger.warning(f"Failed to update radio clock: {result}")
+                    return False
+            else:
+                self.logger.info("Device time is current or ahead - no update needed")
+                return True
+                
+        except Exception as e:
+            self.logger.warning(f"Error checking/setting radio clock: {e}")
+            return False
+
     async def fetch_private_key_from_device(self) -> bool:
         """Fetch private key from device using meshcore library"""
         try:
@@ -847,6 +901,9 @@ class PacketCapture:
                     self.logger.info(f"Device public key: {self.device_public_key}")
                     self.logger.info(f"Radio info: {self.radio_info}")
                     
+                    # Set radio clock to current system time
+                    await self.set_radio_clock()
+                    
                     # Don't publish status here - wait for MQTT connections
                     # Status will be published after MQTT connections are established
                     
@@ -924,7 +981,8 @@ class PacketCapture:
         # Wait before retrying with exponential backoff
         if delay > 0:
             self.logger.info(f"Waiting {delay:.1f} seconds before retry (exponential backoff)...")
-            await asyncio.sleep(delay)
+            if await self.wait_with_shutdown(delay):
+                return False  # Shutdown was requested during delay
         
         # Attempt to reconnect
         success = await self.connect()
@@ -948,10 +1006,8 @@ class PacketCapture:
         
         while not self.should_exit:
             try:
-                await asyncio.sleep(self.health_check_interval)
-                
-                if self.should_exit:
-                    break
+                if await self.wait_with_shutdown(self.health_check_interval):
+                    break  # Shutdown was requested
                 
                 # Check if we need to reconnect (either disconnected or health check failed)
                 needs_reconnection = not self.connected or not await self.check_connection_health()
@@ -988,7 +1044,8 @@ class PacketCapture:
                 break
             except Exception as e:
                 self.logger.error(f"Error in connection monitoring: {e}")
-                await asyncio.sleep(5)  # Wait before retrying monitoring
+                if await self.wait_with_shutdown(5):
+                    break  # Shutdown was requested
     
     def sanitize_client_id(self, name):
         """Convert device name to valid MQTT client ID"""
@@ -1988,6 +2045,7 @@ class PacketCapture:
         if self.jwt_renewal_interval > 0:
             self.jwt_renewal_task = asyncio.create_task(self.jwt_renewal_scheduler())
         
+        
         try:
             while not self.should_exit:
                 current_time = time.time()
@@ -2009,8 +2067,9 @@ class PacketCapture:
                             self.active_tasks.discard(task)
                     self.last_task_check = current_time
                 
-                # Use a longer sleep to reduce CPU usage
-                await asyncio.sleep(5)
+                # Use shutdown-aware waiting
+                if await self.wait_with_shutdown(5):
+                    break  # Shutdown was requested
         except KeyboardInterrupt:
             self.logger.info("Received interrupt signal")
         finally:
@@ -2048,19 +2107,24 @@ class PacketCapture:
             await self.stop()
     
     async def stop(self):
-        """Stop packet capture"""
+        """Stop packet capture with timeout"""
         self.logger.info("Stopping packet capture...")
         self.connected = False
         
-        # Publish offline status
-        if self.enable_mqtt and self.mqtt_connected:
-            await self.publish_status("offline")
+        try:
+            # Publish offline status with timeout
+            if self.enable_mqtt and self.mqtt_connected:
+                await asyncio.wait_for(self.publish_status("offline"), timeout=5.0)
+        except asyncio.TimeoutError:
+            self.logger.warning("Timeout publishing offline status")
+        except Exception as e:
+            self.logger.warning(f"Error publishing offline status: {e}")
         
         # Handle BLE disconnection if using BLE connection
         if self.meshcore and self.get_env('CONNECTION_TYPE', 'ble').lower() == 'ble':
             try:
                 self.logger.info("Disconnecting BLE device...")
-                await self.meshcore.disconnect()
+                await asyncio.wait_for(self.meshcore.disconnect(), timeout=10.0)
                 
                 # Additional BLE disconnection using bluetoothctl on Linux
                 import platform
@@ -2075,10 +2139,17 @@ class PacketCapture:
                             await asyncio.sleep(1)  # Give time for disconnection
                     except Exception as e:
                         self.logger.debug(f"Could not force BLE disconnect via bluetoothctl: {e}")
+            except asyncio.TimeoutError:
+                self.logger.warning("Timeout disconnecting BLE device")
             except Exception as e:
                 self.logger.warning(f"Error during BLE disconnection: {e}")
         elif self.meshcore:
-            await self.meshcore.disconnect()
+            try:
+                await asyncio.wait_for(self.meshcore.disconnect(), timeout=5.0)
+            except asyncio.TimeoutError:
+                self.logger.warning("Timeout disconnecting MeshCore device")
+            except Exception as e:
+                self.logger.warning(f"Error disconnecting MeshCore device: {e}")
         
         for mqtt_client_info in self.mqtt_clients:
             try:
@@ -2130,13 +2201,15 @@ class PacketCapture:
                     # Time to send an advert
                     await self.send_advert()
                     # Sleep for the full interval to avoid rapid-fire adverts
-                    await asyncio.sleep(interval_seconds)
+                    if await self.wait_with_shutdown(interval_seconds):
+                        break  # Shutdown was requested
                 else:
                     # Sleep until it's time for the next advert
                     sleep_time = interval_seconds - time_since_last
                     if self.debug:
                         self.logger.debug(f"Next advert in {sleep_time/3600:.1f} hours")
-                    await asyncio.sleep(sleep_time)
+                    if await self.wait_with_shutdown(sleep_time):
+                        break  # Shutdown was requested
                     
             except asyncio.CancelledError:
                 if self.debug:
@@ -2144,7 +2217,8 @@ class PacketCapture:
                 break
             except Exception as e:
                 self.logger.error(f"Error in advert scheduler: {e}")
-                await asyncio.sleep(60)  # Wait 1 minute before retrying
+                if await self.wait_with_shutdown(60):
+                    break  # Shutdown was requested
     
     async def jwt_renewal_scheduler(self):
         """Background task to check and renew JWT tokens"""
@@ -2158,10 +2232,8 @@ class PacketCapture:
         
         while not self.should_exit:
             try:
-                await asyncio.sleep(self.jwt_renewal_interval)
-                
-                if self.should_exit:
-                    break
+                if await self.wait_with_shutdown(self.jwt_renewal_interval):
+                    break  # Shutdown was requested
                 
                 # Check and renew JWT tokens
                 await self.check_and_renew_jwt_tokens()
@@ -2172,7 +2244,9 @@ class PacketCapture:
                 break
             except Exception as e:
                 self.logger.error(f"Error in JWT renewal scheduler: {e}")
-                await asyncio.sleep(60)  # Wait 1 minute before retrying
+                if await self.wait_with_shutdown(60):
+                    break  # Shutdown was requested
+
 
 
 async def main():
@@ -2185,12 +2259,30 @@ async def main():
     
     args = parser.parse_args()
     
-    # Create packet capture instance
+    # Command line arguments will be handled after PacketCapture instantiation
+    
+    # Setup signal handlers for graceful shutdown
+    import signal
+    
+    # Global shutdown event for immediate response
+    shutdown_event = asyncio.Event()
+    
+    def signal_handler(signum, frame):
+        capture.logger.info(f"Received signal {signum}, initiating immediate shutdown...")
+        capture.should_exit = True
+        shutdown_event.set()  # Wake up all waiting tasks immediately
+    
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    # Create packet capture instance with shutdown event
     capture = PacketCapture(
         output_file=args.output, 
         verbose=args.verbose,
         debug=args.debug,
-        enable_mqtt=not args.no_mqtt
+        enable_mqtt=not args.no_mqtt,
+        shutdown_event=shutdown_event
     )
     
     # Command line arguments override environment variable
@@ -2200,19 +2292,25 @@ async def main():
         capture.logger.setLevel(logging.INFO)
     # If neither debug nor verbose specified, use environment variable (already set in setup_logging)
     
-    # Setup signal handlers for graceful shutdown
-    import signal
-    
-    def signal_handler(signum, frame):
-        capture.logger.info(f"Received signal {signum}, shutting down gracefully...")
-        capture.should_exit = True
-    
-    # Register signal handlers
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-    
     try:
-        await capture.start()
+        # Start the capture in a task so we can wait on shutdown event
+        capture_task = asyncio.create_task(capture.start())
+        
+        # Wait for either completion or shutdown signal
+        done, pending = await asyncio.wait(
+            [capture_task, asyncio.create_task(shutdown_event.wait())],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        # Cancel any pending tasks
+        for task in pending:
+            task.cancel()
+        
+        # If shutdown was triggered, stop the capture
+        if shutdown_event.is_set():
+            capture.logger.info("Shutdown signal received, stopping capture...")
+            await capture.stop()
+            
     except KeyboardInterrupt:
         print("\nShutting down...")
         await capture.stop()

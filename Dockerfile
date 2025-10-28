@@ -25,10 +25,11 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip cache purge
 
 # Install Node.js via nvm and meshcore-decoder for auth token support
-ENV NVM_DIR=/root/.nvm
+ENV NVM_DIR=/opt/nvm
 ENV NODE_VERSION=lts/*
 
-RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
+RUN mkdir -p "$NVM_DIR" && \
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
     && . "$NVM_DIR/nvm.sh" \
     && nvm install $NODE_VERSION \
     && nvm use $NODE_VERSION \

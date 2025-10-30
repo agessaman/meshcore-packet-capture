@@ -399,18 +399,34 @@ class PacketCapture:
         return False
     
     def _load_client_version(self):
-        """Load client version from .version_info file"""
+        """Load client version from .version_info file or git"""
         try:
             script_dir = os.path.dirname(os.path.abspath(__file__))
             version_file = os.path.join(script_dir, '.version_info')
+            
+            # First try to load from .version_info file (created by installer)
             if os.path.exists(version_file):
                 with open(version_file, 'r') as f:
                     version_data = json.load(f)
                     installer_ver = version_data.get('installer_version', 'unknown')
                     git_hash = version_data.get('git_hash', 'unknown')
                     return f"meshcore-packet-capture/{installer_ver}-{git_hash}"
+            
+            # Fallback: try to get git information directly
+            try:
+                import subprocess
+                result = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], 
+                                      cwd=script_dir, capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    git_hash = result.stdout.strip()
+                    return f"meshcore-packet-capture/dev-{git_hash}"
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+                pass
+                
         except Exception as e:
             self.logger.debug(f"Could not load version info: {e}")
+        
+        # Final fallback
         return "meshcore-packet-capture/unknown"
     
     async def get_firmware_info(self):

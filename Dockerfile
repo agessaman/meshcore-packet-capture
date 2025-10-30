@@ -1,5 +1,5 @@
 # Use Python 3.11 slim image for smaller size
-FROM python:3.11-slim as base
+FROM python:3.11-slim AS base
 
 # Install system dependencies for BLE, serial communication
 # Use --no-install-recommends to minimize package size

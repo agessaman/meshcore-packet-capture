@@ -56,6 +56,42 @@ except ImportError:
 # Private key functionality using meshcore_py library
 
 
+def get_transport(meshcore_instance):
+    """Get transport from meshcore instance, trying both possible access paths.
+    
+    Returns the transport object or None if not available.
+    Tries direct access first (self.meshcore.transport), then falls back to
+    indirect access (self.meshcore._connection.transport).
+    
+    Note: This function only returns a reference to the existing transport object
+    owned by the meshcore instance. It does not create new objects or store references.
+    Transport objects are cleaned up automatically when meshcore.disconnect() is called
+    or when the meshcore instance is garbage collected.
+    """
+    if not meshcore_instance:
+        return None
+    
+    # Try direct access first (public interface)
+    if hasattr(meshcore_instance, 'transport'):
+        try:
+            transport = meshcore_instance.transport
+            if transport is not None:
+                return transport
+        except Exception:
+            pass
+    
+    # Fall back to indirect access (private interface)
+    if hasattr(meshcore_instance, '_connection') and hasattr(meshcore_instance._connection, 'transport'):
+        try:
+            transport = meshcore_instance._connection.transport
+            if transport is not None:
+                return transport
+        except Exception:
+            pass
+    
+    return None
+
+
 def enable_tcp_keepalive(transport, idle=10, interval=5, count=3):
     """Enable TCP keepalive on the transport's socket"""
     import socket
@@ -177,6 +213,11 @@ class PacketCapture:
         self.consecutive_mqtt_failures = 0
         self.max_consecutive_failures = self.get_env_int('MAX_CONSECUTIVE_FAILURES', 3)
         
+        # MQTT failure tracking with grace period
+        self.mqtt_health_check_interval = self.get_env_int('MQTT_HEALTH_CHECK_INTERVAL', 60)  # Check every minute
+        self.mqtt_grace_period = self.get_env_int('MQTT_GRACE_PERIOD', 180)  # 3 minutes grace before counting failures
+        self.mqtt_disconnect_timestamps = {}  # Track when brokers disconnected: {broker_num: timestamp}
+        
         # Packet correlation cache
         self.rf_data_cache = {}
         self.packet_count = 0
@@ -217,6 +258,11 @@ class PacketCapture:
         self.tcp_keepalive_idle = self.get_env_int('TCP_KEEPALIVE_IDLE', 10)
         self.tcp_keepalive_interval = self.get_env_int('TCP_KEEPALIVE_INTERVAL', 5)
         self.tcp_keepalive_count = self.get_env_int('TCP_KEEPALIVE_COUNT', 3)
+        
+        # SDK auto-reconnect settings for TCP
+        self.tcp_sdk_auto_reconnect_enabled = self.get_env_bool('TCP_SDK_AUTO_RECONNECT_ENABLED', True)
+        self.tcp_sdk_max_reconnect_attempts = self.get_env_int('TCP_SDK_MAX_RECONNECT_ATTEMPTS', 100)
+        self.sdk_reconnect_exhausted = False  # Track if SDK auto-reconnect has given up (TCP only)
         
         # Circuit breaker for JWT failures
         self.jwt_failure_count = 0
@@ -432,7 +478,16 @@ class PacketCapture:
     async def get_firmware_info(self):
         """Get firmware information from meshcore device using send_device_query()"""
         try:
-            # Return cached info if available and device is not connected (e.g., during shutdown)
+            # During shutdown, always use cached info - don't query the device
+            if self.should_exit:
+                if self.cached_firmware_info:
+                    self.logger.debug("Using cached firmware info (shutdown in progress)")
+                    return self.cached_firmware_info
+                else:
+                    self.logger.debug("No cached firmware info available during shutdown")
+                    return {"model": "unknown", "version": "unknown"}
+            
+            # Return cached info if available and device is not connected
             if self.cached_firmware_info and (not self.meshcore or not self.meshcore.is_connected):
                 self.logger.debug("Using cached firmware info")
                 return self.cached_firmware_info
@@ -856,11 +911,15 @@ class PacketCapture:
             
             # 2. For TCP connections, verify socket state
             if self.connection_type == 'tcp':
-                if hasattr(self.meshcore, '_connection') and hasattr(self.meshcore._connection, 'transport'):
-                    transport = self.meshcore._connection.transport
-                    if not transport or transport.is_closing():
+                transport = get_transport(self.meshcore)
+                if transport:
+                    if transport.is_closing():
                         self.logger.warning("TCP transport is closed or closing")
                         return False
+                else:
+                    # Transport not available might mean connection is lost
+                    if self.debug:
+                        self.logger.debug("TCP transport not available")
             
             # 3. Try a lightweight command with timeout
             try:
@@ -887,6 +946,59 @@ class PacketCapture:
             self.logger.warning(f"Connection health check failed: {e}")
             return False
     
+    def check_mqtt_health(self) -> bool:
+        """Check MQTT broker health with grace period before counting failures"""
+        import time
+        
+        if not self.enable_mqtt or not self.mqtt_clients:
+            return True  # MQTT not enabled or no brokers configured
+        
+        current_time = time.time()
+        connected_brokers = 0
+        failed_brokers = 0
+        total_brokers = len(self.mqtt_clients)
+        
+        # Check each broker's connection status
+        for client_info in self.mqtt_clients:
+            broker_num = client_info['broker_num']
+            mqtt_client = client_info['client']
+            
+            if mqtt_client.is_connected():
+                # Broker is connected - clear any disconnect timestamp
+                if broker_num in self.mqtt_disconnect_timestamps:
+                    disconnect_duration = current_time - self.mqtt_disconnect_timestamps[broker_num]
+                    self.logger.info(f"MQTT{broker_num} reconnected after {disconnect_duration:.1f} seconds")
+                    del self.mqtt_disconnect_timestamps[broker_num]
+                    # Reset consecutive failures on successful reconnection
+                    self.reset_consecutive_failures("mqtt")
+                connected_brokers += 1
+            else:
+                # Broker is disconnected
+                # Record disconnect timestamp if not already recorded
+                if broker_num not in self.mqtt_disconnect_timestamps:
+                    self.mqtt_disconnect_timestamps[broker_num] = current_time
+                    self.logger.debug(f"MQTT{broker_num} disconnected - grace period started")
+                
+                # Check if grace period has elapsed
+                disconnect_time = self.mqtt_disconnect_timestamps[broker_num]
+                time_disconnected = current_time - disconnect_time
+                
+                if time_disconnected >= self.mqtt_grace_period:
+                    # Grace period elapsed - this broker has persistently failed
+                    failed_brokers += 1
+                    if self.debug:
+                        self.logger.debug(f"MQTT{broker_num} disconnected for {time_disconnected:.1f}s (grace period: {self.mqtt_grace_period}s) - persistent failure")
+        
+        # If all enabled brokers have been disconnected past grace period, this is a failure
+        # We require ALL brokers to be failed, not just one, to avoid false positives with multiple brokers
+        all_brokers_failed = (failed_brokers == total_brokers and total_brokers > 0)
+        
+        if all_brokers_failed:
+            if self.debug:
+                self.logger.debug(f"All {total_brokers} MQTT broker(s) have persistent failures")
+        
+        return not all_brokers_failed
+    
     async def connect(self) -> bool:
         """Connect to MeshCore node using official package"""
         try:
@@ -906,26 +1018,43 @@ class PacketCapture:
                 self.logger.info(f"Connecting via serial port: {serial_port}")
                 self.meshcore = await meshcore.MeshCore.create_serial(serial_port, debug=False)
             elif connection_type == 'tcp':
-                # Create TCP connection
+                # Create TCP connection with SDK auto-reconnect if enabled
                 tcp_host = self.get_env('TCP_HOST', 'localhost')
                 tcp_port = self.get_env_int('TCP_PORT', 5000)
                 self.logger.info(f"Connecting via TCP to {tcp_host}:{tcp_port}")
-                self.meshcore = await meshcore.MeshCore.create_tcp(tcp_host, tcp_port, debug=False)
+                
+                # Enable SDK auto-reconnect for TCP connections
+                create_kwargs = {'debug': False}
+                if self.tcp_sdk_auto_reconnect_enabled:
+                    create_kwargs['auto_reconnect'] = True
+                    create_kwargs['max_reconnect_attempts'] = self.tcp_sdk_max_reconnect_attempts
+                    self.logger.info(f"SDK auto-reconnect enabled with max {self.tcp_sdk_max_reconnect_attempts} attempts")
+                else:
+                    self.logger.info("SDK auto-reconnect disabled - using custom reconnect logic")
+                
+                self.meshcore = await meshcore.MeshCore.create_tcp(tcp_host, tcp_port, **create_kwargs)
+                
+                # Reset SDK reconnect exhaustion flag on new connection
+                self.sdk_reconnect_exhausted = False
                 
                 # Enable TCP keepalive if configured
-                if self.tcp_keepalive_enabled and hasattr(self.meshcore, 'transport'):
-                    try:
-                        if enable_tcp_keepalive(
-                            self.meshcore.transport, 
-                            idle=self.tcp_keepalive_idle,
-                            interval=self.tcp_keepalive_interval,
-                            count=self.tcp_keepalive_count
-                        ):
-                            self.logger.info(f"TCP keepalive enabled (idle={self.tcp_keepalive_idle}s, interval={self.tcp_keepalive_interval}s, count={self.tcp_keepalive_count})")
-                        else:
-                            self.logger.warning("Failed to enable TCP keepalive")
-                    except Exception as e:
-                        self.logger.warning(f"Could not enable TCP keepalive: {e}")
+                if self.tcp_keepalive_enabled:
+                    transport = get_transport(self.meshcore)
+                    if transport:
+                        try:
+                            if enable_tcp_keepalive(
+                                transport, 
+                                idle=self.tcp_keepalive_idle,
+                                interval=self.tcp_keepalive_interval,
+                                count=self.tcp_keepalive_count
+                            ):
+                                self.logger.info(f"TCP keepalive enabled (idle={self.tcp_keepalive_idle}s, interval={self.tcp_keepalive_interval}s, count={self.tcp_keepalive_count})")
+                            else:
+                                self.logger.warning("Failed to enable TCP keepalive")
+                        except Exception as e:
+                            self.logger.warning(f"Could not enable TCP keepalive: {e}")
+                    else:
+                        self.logger.warning("Could not access transport for TCP keepalive configuration")
                 elif not self.tcp_keepalive_enabled:
                     self.logger.debug("TCP keepalive disabled by configuration")
             else:
@@ -964,6 +1093,9 @@ class PacketCapture:
             
             if self.meshcore.is_connected:
                 self.connected = True
+                # Reset SDK reconnect exhaustion flag on successful connection
+                if self.connection_type == 'tcp':
+                    self.sdk_reconnect_exhausted = False
                 self.logger.info(f"Connected to: {self.meshcore.self_info}")
                 
                 # Store device information for origin field
@@ -1035,6 +1167,26 @@ class PacketCapture:
             self.logger.error(f"Connection failed: {e}")
             return False
     
+    def cleanup_event_subscriptions(self):
+        """Clean up all event subscriptions before disconnecting to prevent pending tasks"""
+        if not self.meshcore:
+            return
+        
+        try:
+            if hasattr(self.meshcore, "dispatcher") and hasattr(self.meshcore.dispatcher, "subscriptions"):
+                subscription_count = len(self.meshcore.dispatcher.subscriptions)
+                if subscription_count > 0:
+                    self.logger.debug(f"Cleaning up {subscription_count} event subscriptions")
+                    # Create a copy of the list to avoid modification during iteration
+                    for subscription in list(self.meshcore.dispatcher.subscriptions):
+                        try:
+                            subscription.unsubscribe()
+                        except Exception as e:
+                            self.logger.debug(f"Error unsubscribing: {e}")
+                    self.logger.debug(f"Cleared {subscription_count} event subscriptions")
+        except Exception as e:
+            self.logger.debug(f"Error cleaning up subscriptions: {e}")
+
     async def reconnect_meshcore(self) -> bool:
         """Attempt to reconnect to MeshCore device with exponential backoff retry logic"""
         if self.max_connection_retries > 0 and self.connection_retry_count >= self.max_connection_retries:
@@ -1057,6 +1209,8 @@ class PacketCapture:
         # Clean up existing connection
         if self.meshcore:
             try:
+                # Clean up event subscriptions BEFORE disconnecting to prevent pending tasks
+                self.cleanup_event_subscriptions()
                 await self.meshcore.disconnect()
             except Exception as e:
                 self.logger.debug(f"Error disconnecting during reconnect: {e}")
@@ -1088,6 +1242,9 @@ class PacketCapture:
         if self.debug:
             self.logger.debug(f"Starting connection monitoring (health check every {self.health_check_interval} seconds)")
         
+        # Track last MQTT health check time separately
+        last_mqtt_check = 0
+        
         while not self.should_exit:
             try:
                 if await self.wait_with_shutdown(self.health_check_interval):
@@ -1097,6 +1254,27 @@ class PacketCapture:
                 needs_reconnection = not self.connected or not await self.check_connection_health()
                 
                 if needs_reconnection:
+                    # For TCP connections with SDK auto-reconnect, only trigger custom reconnect
+                    # after SDK has exhausted its attempts
+                    if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled:
+                        if not self.sdk_reconnect_exhausted:
+                            # SDK is still trying to reconnect, give it more time
+                            if self.debug:
+                                self.logger.debug("SDK auto-reconnect is still active for TCP - waiting for it to exhaust before custom reconnect")
+                            # Check connection status - if SDK reconnected, update our state
+                            if self.meshcore and self.meshcore.is_connected:
+                                self.connected = True
+                                self.sdk_reconnect_exhausted = False
+                                self.logger.info("SDK auto-reconnect succeeded - connection restored")
+                                # Clean up old subscriptions before re-setting up handlers
+                                # (SDK may have recreated the instance, leaving old subscriptions orphaned)
+                                self.cleanup_event_subscriptions()
+                                # Re-setup event handlers after SDK reconnection
+                                await self.setup_event_handlers()
+                                await self.meshcore.start_auto_message_fetching()
+                            continue  # Skip custom reconnect, let SDK handle it
+                    
+                    # For non-TCP connections, or TCP after SDK has exhausted, use custom reconnect
                     if not self.connected:
                         self.logger.info("Connection is disconnected, attempting reconnection...")
                     else:
@@ -1108,6 +1286,9 @@ class PacketCapture:
                         
                         # Reset consecutive failures on successful reconnection
                         self.reset_consecutive_failures("connection")
+                        # Reset SDK reconnect exhaustion flag on successful reconnect
+                        if self.connection_type == 'tcp':
+                            self.sdk_reconnect_exhausted = False
                         
                         # Re-setup event handlers after reconnection
                         await self.setup_event_handlers()
@@ -1118,6 +1299,21 @@ class PacketCapture:
                         if self.track_consecutive_failure("connection"):
                             return  # Exit if service failure threshold reached
                 
+                # Check MQTT health periodically (separate interval to avoid being too aggressive)
+                import time
+                current_time = time.time()
+                if self.enable_mqtt and (current_time - last_mqtt_check) >= self.mqtt_health_check_interval:
+                    last_mqtt_check = current_time
+                    mqtt_healthy = self.check_mqtt_health()
+                    
+                    if not mqtt_healthy:
+                        # All brokers have been disconnected past grace period - this is a persistent failure
+                        self.logger.warning("MQTT health check failed - all brokers disconnected past grace period")
+                        # Track consecutive failures for more intelligent failure detection
+                        if self.track_consecutive_failure("mqtt"):
+                            return  # Exit if service failure threshold reached
+                    elif self.debug:
+                        self.logger.debug("MQTT health check passed")
                 
                 # JWT token renewal is now handled proactively in safe_publish()
                 # and by the dedicated jwt_renewal_scheduler task
@@ -1143,6 +1339,15 @@ class PacketCapture:
         if rc == 0:
             self.mqtt_connected = True
             self.logger.info(f"Connected to MQTT broker: {broker_name}")
+            
+            # Clear disconnect timestamp if this was a reconnection
+            if broker_num and broker_num in self.mqtt_disconnect_timestamps:
+                import time
+                disconnect_duration = time.time() - self.mqtt_disconnect_timestamps[broker_num]
+                self.logger.info(f"MQTT{broker_num} reconnected after {disconnect_duration:.1f} seconds")
+                del self.mqtt_disconnect_timestamps[broker_num]
+                # Reset consecutive failures on successful reconnection
+                self.reset_consecutive_failures("mqtt")
             
             # JWT renewal is handled by the dedicated JWT renewal scheduler
             # No need to check here as it will be handled proactively
@@ -1215,10 +1420,18 @@ class PacketCapture:
         
         if not connected_brokers:
             self.mqtt_connected = False
+            # Record disconnect timestamp for each disconnected broker (will be tracked in health check)
+            import time
+            for info in self.mqtt_clients:
+                if info['client'] == client and info['broker_num'] not in self.mqtt_disconnect_timestamps:
+                    self.mqtt_disconnect_timestamps[info['broker_num']] = time.time()
+                    self.logger.debug(f"MQTT{info['broker_num']} disconnect recorded - grace period started")
+            
             # Only attempt reconnection if we're not shutting down
             if not self.should_exit:
-                self.logger.warning("All MQTT brokers disconnected. Will attempt reconnection...")
-                # Don't exit immediately - let reconnection logic handle it
+                self.logger.warning("All MQTT brokers disconnected. paho-mqtt will attempt reconnection automatically...")
+                self.logger.info(f"Grace period: {self.mqtt_grace_period}s before counting as persistent failure")
+                # Don't exit immediately - let reconnection logic and health check handle it
             else:
                 self.logger.info("All MQTT brokers disconnected during shutdown")
         else:
@@ -2064,6 +2277,11 @@ class PacketCapture:
             else:
                 self.logger.warning(f"Disconnected for unknown reason: {reason}")
             
+            # For TCP connections with SDK auto-reconnect, this event means SDK has exhausted its attempts
+            if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled:
+                self.sdk_reconnect_exhausted = True
+                self.logger.info("SDK auto-reconnect has exhausted - custom reconnect logic will take over")
+            
             # Update connection status - connection monitor will handle reconnection
             self.connected = False
             self.logger.info("Connection status updated - connection monitor will handle reconnection")
@@ -2073,6 +2291,10 @@ class PacketCapture:
 
     async def setup_event_handlers(self):
         """Setup event handlers for packet capture"""
+        # Clean up any existing subscriptions before setting up new ones
+        # This prevents orphaned EventDispatcher tasks when reconnecting
+        self.cleanup_event_subscriptions()
+        
         # Handle RF log data for SNR/RSSI information
         async def on_rf_data(event):
             if self.debug:
@@ -2222,6 +2444,8 @@ class PacketCapture:
         if self.meshcore and self.get_env('CONNECTION_TYPE', 'ble').lower() == 'ble':
             try:
                 self.logger.info("Disconnecting BLE device...")
+                # Clean up event subscriptions BEFORE disconnecting to prevent pending tasks
+                self.cleanup_event_subscriptions()
                 await asyncio.wait_for(self.meshcore.disconnect(), timeout=10.0)
                 
                 # Additional BLE disconnection using bluetoothctl on Linux
@@ -2243,6 +2467,8 @@ class PacketCapture:
                 self.logger.warning(f"Error during BLE disconnection: {e}")
         elif self.meshcore:
             try:
+                # Clean up event subscriptions BEFORE disconnecting to prevent pending tasks
+                self.cleanup_event_subscriptions()
                 await asyncio.wait_for(self.meshcore.disconnect(), timeout=5.0)
             except asyncio.TimeoutError:
                 self.logger.warning("Timeout disconnecting MeshCore device")

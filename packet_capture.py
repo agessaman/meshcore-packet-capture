@@ -506,6 +506,55 @@ class PacketCapture:
         resolved = resolved.replace('{PUBLIC_KEY}', self.device_public_key if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE')
         return resolved
     
+    def is_letsmesh_broker(self, broker_num=None) -> bool:
+        """Detect if the given broker is a Let's Mesh Analyzer broker by hostname or token audience."""
+        server = None
+        audience = None
+        if broker_num:
+            server = self.get_env(f'MQTT{broker_num}_SERVER', '')
+            audience = self.get_env(f'MQTT{broker_num}_TOKEN_AUDIENCE', '')
+        if not server:
+            server = self.get_env('MQTT1_SERVER', '')
+        if not audience:
+            audience = self.get_env('MQTT1_TOKEN_AUDIENCE', '')
+        host = (server or '').lower()
+        aud = (audience or '').lower()
+        return ('letsmesh.net' in host) or ('letsmesh.net' in aud)
+
+    def has_configured_iata(self, broker_num=None) -> bool:
+        """Return True if a non-default IATA code is configured (not 'LOC')."""
+        iata = self.global_iata or ''
+        if broker_num:
+            broker_iata = self.get_env(f'MQTT{broker_num}_IATA', '')
+            if broker_iata:
+                iata = broker_iata.lower()
+        return bool(iata) and iata.lower() != 'loc'
+
+    def broker_requires_iata(self, broker_num) -> bool:
+        """Check if a broker requires IATA configuration.
+        Returns True if:
+        - It's a Let's Mesh Analyzer broker, OR
+        - It has explicitly configured topics that use IATA placeholders"""
+        # Check if it's a Let's Mesh broker
+        if self.is_letsmesh_broker(broker_num):
+            return True
+        
+        # Check if any configured topics use IATA placeholders
+        topic_types = ['STATUS', 'PACKETS', 'DECODED', 'DEBUG', 'RAW']
+        for topic_type in topic_types:
+            # Check broker-specific topic
+            broker_topic = self.get_env(f'MQTT{broker_num}_TOPIC_{topic_type}', '')
+            if broker_topic and ('{IATA}' in broker_topic or '{IATA_lower}' in broker_topic):
+                return True
+            
+            # Check global topic (only if no broker-specific topic)
+            if not broker_topic:
+                global_topic = self.get_env(f'TOPIC_{topic_type}', '')
+                if global_topic and ('{IATA}' in global_topic or '{IATA_lower}' in global_topic):
+                    return True
+        
+        return False
+
     def get_topic(self, topic_type, broker_num=None):
         """Get topic with template resolution, checking broker-specific override first"""
         topic_type_upper = topic_type.upper()
@@ -527,18 +576,37 @@ class PacketCapture:
                 self.logger.debug(f"No RAW topic configured for broker {broker_num}, skipping RAW publish")
             return None
         
-        # CRITICAL FIX: Always provide a valid default topic for other types
-        default_topics = {
+        # Defaulting policy adjustment:
+        # - Never use classic defaults (meshcore/status, meshcore/packets, etc.) for Let's Mesh Analyzer brokers
+        # - Prefer IATA-based defaults when IATA is configured
+        # - Only on custom brokers without IATA configured, fall back to classic defaults
+
+        is_letsmesh = self.is_letsmesh_broker(broker_num)
+        iata_configured = self.has_configured_iata(broker_num)
+
+        iata_defaults = {
+            'STATUS': 'meshcore/{IATA}/{PUBLIC_KEY}/status',
+            'PACKETS': 'meshcore/{IATA}/{PUBLIC_KEY}/packets',
+            'DECODED': 'meshcore/{IATA}/{PUBLIC_KEY}/decoded',
+            'DEBUG': 'meshcore/{IATA}/{PUBLIC_KEY}/debug'
+        }
+        classic_defaults = {
             'STATUS': 'meshcore/status',
-            'DECODED': 'meshcore/decoded',
             'PACKETS': 'meshcore/packets',
+            'DECODED': 'meshcore/decoded',
             'DEBUG': 'meshcore/debug'
         }
-        
-        default_topic = default_topics.get(topic_type_upper, f'meshcore/{topic_type.lower()}')
-        resolved = self.resolve_topic_template(default_topic, broker_num)
-        
-        # Log if we're using default
+
+        if iata_configured:
+            chosen_default = iata_defaults.get(topic_type_upper, f"meshcore/{{IATA}}/{{PUBLIC_KEY}}/{topic_type.lower()}")
+        else:
+            if is_letsmesh:
+                if self.debug:
+                    self.logger.debug(f"Skipping default '{topic_type}' topic for Let's Mesh broker {broker_num} because IATA is not configured")
+                return None
+            chosen_default = classic_defaults.get(topic_type_upper, f'meshcore/{topic_type.lower()}')
+
+        resolved = self.resolve_topic_template(chosen_default, broker_num)
         if self.debug:
             self.logger.debug(f"Using default topic for {topic_type}: {resolved}")
         return resolved
@@ -1165,6 +1233,20 @@ class PacketCapture:
         # Check if broker is enabled
         if not self.get_env_bool(f'MQTT{broker_num}_ENABLED', False):
             self.logger.debug(f"MQTT broker {broker_num} is disabled, skipping")
+            return None
+
+        # Validate IATA configuration for brokers that require it
+        if self.broker_requires_iata(broker_num) and not self.has_configured_iata(broker_num):
+            server = self.get_env(f'MQTT{broker_num}_SERVER', 'unknown')
+            self.logger.warning(
+                f"WARNING: MQTT broker {broker_num} ({server}) requires IATA configuration but IATA code is not set.\n"
+                f"  This broker will be DISABLED during startup.\n"
+                f"  To fix this issue:\n"
+                f"    1. Set a global IATA code: PACKETCAPTURE_IATA=<airport_code>\n"
+                f"    2. Or set a broker-specific IATA: PACKETCAPTURE_MQTT{broker_num}_IATA=<airport_code>\n"
+                f"    3. Valid IATA codes are 3-letter airport identifiers (e.g., JFK, LAX, SFO)\n"
+                f"    4. Restart the packet capture service after setting the IATA code"
+            )
             return None
 
         try:

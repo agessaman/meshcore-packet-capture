@@ -57,11 +57,14 @@ except ImportError:
 
 
 def get_transport(meshcore_instance):
-    """Get transport from meshcore instance, trying both possible access paths.
+    """Get transport from meshcore instance using the documented API structure.
+    
+    Based on meshcore library structure:
+    - MeshCore.cx is a ConnectionManager
+    - ConnectionManager.connection is the actual connection (TCPConnection, BLEConnection, etc.)
+    - TCPConnection.transport is the asyncio transport object
     
     Returns the transport object or None if not available.
-    Tries direct access first (self.meshcore.transport), then falls back to
-    indirect access (self.meshcore._connection.transport).
     
     Note: This function only returns a reference to the existing transport object
     owned by the meshcore instance. It does not create new objects or store references.
@@ -71,50 +74,78 @@ def get_transport(meshcore_instance):
     if not meshcore_instance:
         return None
     
-    # Try direct access first (public interface)
-    if hasattr(meshcore_instance, 'transport'):
-        try:
-            transport = meshcore_instance.transport
-            if transport is not None:
-                return transport
-        except Exception:
-            pass
-    
-    # Fall back to indirect access (private interface)
-    if hasattr(meshcore_instance, '_connection') and hasattr(meshcore_instance._connection, 'transport'):
-        try:
-            transport = meshcore_instance._connection.transport
-            if transport is not None:
-                return transport
-        except Exception:
-            pass
+    try:
+        # MeshCore.cx is a ConnectionManager
+        if hasattr(meshcore_instance, 'cx'):
+            connection_manager = meshcore_instance.cx
+            # ConnectionManager.connection is the actual connection object
+            if hasattr(connection_manager, 'connection'):
+                connection = connection_manager.connection
+                # TCPConnection has a transport attribute
+                if hasattr(connection, 'transport'):
+                    transport = connection.transport
+                    if transport is not None:
+                        return transport
+    except Exception:
+        pass
     
     return None
 
 
 def enable_tcp_keepalive(transport, idle=10, interval=5, count=3):
-    """Enable TCP keepalive on the transport's socket"""
+    """Enable TCP keepalive on the transport's socket.
+    
+    Supports multiple transport types:
+    - asyncio transport with get_extra_info('socket')
+    - Direct socket objects
+    - Objects with _socket attribute
+    """
     import socket
+    
+    sock = None
+    
+    # Try to get socket from transport using get_extra_info
+    if hasattr(transport, 'get_extra_info'):
+        try:
+            sock = transport.get_extra_info('socket')
+        except Exception:
+            pass
+    
+    # If not found, check if transport is a socket directly
+    if sock is None:
+        if isinstance(transport, socket.socket):
+            sock = transport
+        elif hasattr(transport, '_socket'):
+            try:
+                sock = transport._socket
+            except Exception:
+                pass
+    
+    if sock is None:
+        return False
+    
     try:
-        sock = transport.get_extra_info('socket')
-        if sock:
-            # Enable TCP keepalive
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            
-            # Platform-specific keepalive settings
-            if hasattr(socket, 'TCP_KEEPIDLE'):
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
-            if hasattr(socket, 'TCP_KEEPINTVL'):
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
-            if hasattr(socket, 'TCP_KEEPCNT'):
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
-            
-            return True
+        # Enable TCP keepalive
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        
+        # Platform-specific keepalive settings
+        # Linux and some BSD systems
+        if hasattr(socket, 'TCP_KEEPIDLE'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
+        # macOS uses different constant names
+        elif hasattr(socket, 'TCP_KEEPALIVE'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, idle)
+        
+        if hasattr(socket, 'TCP_KEEPINTVL'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
+        if hasattr(socket, 'TCP_KEEPCNT'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
+        
+        return True
     except Exception as e:
         # Log but don't fail the connection
         print(f"Warning: Could not enable TCP keepalive: {e}")
         return False
-    return False
 
 
 def load_env_files():
@@ -1038,8 +1069,11 @@ class PacketCapture:
                 self.sdk_reconnect_exhausted = False
                 
                 # Enable TCP keepalive if configured
+                # Access transport via: meshcore.cx.connection.transport
+                # (MeshCore.cx is ConnectionManager, connection is TCPConnection)
                 if self.tcp_keepalive_enabled:
                     transport = get_transport(self.meshcore)
+                    
                     if transport:
                         try:
                             if enable_tcp_keepalive(
@@ -1054,7 +1088,12 @@ class PacketCapture:
                         except Exception as e:
                             self.logger.warning(f"Could not enable TCP keepalive: {e}")
                     else:
-                        self.logger.warning("Could not access transport for TCP keepalive configuration")
+                        if self.debug:
+                            # Only log as debug to avoid noise if transport is genuinely not accessible
+                            self.logger.debug("Could not access transport for TCP keepalive configuration (transport may not be exposed by meshcore library)")
+                        else:
+                            # Log as info since this is a known limitation, not a critical error
+                            self.logger.info("TCP keepalive configuration skipped (transport not accessible)")
                 elif not self.tcp_keepalive_enabled:
                     self.logger.debug("TCP keepalive disabled by configuration")
             else:

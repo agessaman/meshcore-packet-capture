@@ -9,7 +9,7 @@ param(
 )
 
 # Script configuration
-$ScriptVersion = "1.1.0"
+$ScriptVersion = "1.1.1"
 $ErrorActionPreference = "Stop"
 
 # Global variables

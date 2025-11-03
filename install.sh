@@ -329,6 +329,30 @@ handle_ble_pairing() {
     # Use the actual ble_pairing_helper.py script instead of embedded code
     local temp_script="$INSTALL_DIR/ble_pairing_helper.py"
     
+    # Check if script exists
+    if [ ! -f "$temp_script" ]; then
+        print_error "BLE pairing helper script not found at $temp_script"
+        print_info "This should have been installed earlier. Continuing without pairing check..."
+        return 1
+    fi
+    
+    # Determine which Python to use (prefer venv if it exists, otherwise system)
+    local python_cmd="python3"
+    if [ -f "$INSTALL_DIR/venv/bin/python3" ]; then
+        python_cmd="$INSTALL_DIR/venv/bin/python3"
+        print_info "Using virtual environment Python"
+    else
+        print_info "Using system Python (venv not yet created)"
+    fi
+    
+    # Check if dependencies are available (meshcore and bleak)
+    if ! "$python_cmd" -c "import meshcore, bleak" 2>/dev/null; then
+        print_warning "BLE dependencies (meshcore/bleak) not yet installed"
+        print_info "The virtual environment will be set up after device configuration."
+        print_info "You may need to pair the device manually, or re-run the installer after dependencies are installed."
+        return 1
+    fi
+    
     # Pre-pairing disconnect to ensure device is available
     if command -v bluetoothctl &> /dev/null; then
         print_info "Ensuring device is disconnected before pairing check..."
@@ -339,7 +363,17 @@ handle_ble_pairing() {
     
     # Check pairing status first (with timeout to prevent hanging)
     local pairing_output
-    if pairing_output=$(timeout 45 python3 "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
+    print_info "Checking pairing status (this may take 30-45 seconds)..."
+    print_info "Device: $device_name ($device_address)"
+    print_info "Python: $python_cmd"
+    
+    # Run with explicit stderr redirection and capture
+    rm -f /tmp/ble_pairing_error
+    print_info "Starting pairing check script..."
+    
+    # Run the pairing check with timeout
+    if pairing_output=$(timeout 45 "$python_cmd" "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
+        print_info "Pairing check completed"
         local pairing_status=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
         
         if [ "$pairing_status" = "paired" ]; then
@@ -377,8 +411,9 @@ handle_ble_pairing() {
             
             # Attempt pairing with PIN (with timeout to prevent hanging)
             echo ""
-            print_info "Attempting to pair with device..."
-            if pairing_output=$(timeout 60 python3 "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error); then
+            print_info "Attempting to pair with device (this may take up to 60 seconds)..."
+            rm -f /tmp/ble_pairing_error
+            if pairing_output=$(timeout 60 "$python_cmd" "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error); then
                 local pairing_result=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
                 
                 if [ "$pairing_result" = "paired" ]; then
@@ -428,21 +463,51 @@ handle_ble_pairing() {
             return 1
         fi
     else
-        # Check if it was a timeout
+        # Check if it was a timeout or other error
+        print_error "Pairing check failed or timed out"
+        
+        # Check for error output
         if [ -f /tmp/ble_pairing_error ]; then
             local error_msg=$(cat /tmp/ble_pairing_error)
-            if [[ "$error_msg" == *"timeout"* ]] || [[ "$error_msg" == *"Terminated"* ]]; then
-                print_error "BLE pairing check timed out"
-                print_info "The device may be busy or not responding. Please try again."
+            local error_size=$(wc -c < /tmp/ble_pairing_error 2>/dev/null || echo "0")
+            
+            if [ "$error_size" -eq 0 ] || [[ -z "$error_msg" ]]; then
+                # Empty error file - script hung silently or was killed before writing
+                print_error "BLE pairing check timed out (45 seconds) - no error output"
+                print_info "The script may have hung during:"
+                print_info "  • BLE device scanning (5 seconds)"
+                print_info "  • Connection attempt (25 seconds)"
+                print_info ""
+                print_info "Troubleshooting:"
+                print_info "  1. Check if the device is still powered on and in range"
+                print_info "  2. Try manually disconnecting: bluetoothctl disconnect $device_address"
+                print_info "  3. Try running the pairing helper directly:"
+                print_info "     $python_cmd $temp_script $device_address $device_name"
+            elif [[ "$error_msg" == *"timeout"* ]] || [[ "$error_msg" == *"Terminated"* ]]; then
+                print_error "BLE pairing check timed out (45 seconds)"
+                print_info "Error output:"
+                echo "$error_msg" | head -20 | while IFS= read -r line; do
+                    print_info "  $line"
+                done
             else
-                print_error "Failed to check BLE pairing status"
-                if [ -n "$error_msg" ]; then
-                    print_info "Error details: $error_msg"
+                print_error "Error details:"
+                echo "$error_msg" | head -30 | while IFS= read -r line; do
+                    print_info "  $line"
+                done
+                if [ $(echo "$error_msg" | wc -l) -gt 30 ]; then
+                    print_info "  ... (output truncated, see /tmp/ble_pairing_error for full output)"
                 fi
             fi
             rm -f /tmp/ble_pairing_error
         else
-            print_error "Failed to check BLE pairing status"
+            print_warning "No error file created - the script may have been killed before starting"
+            print_info "This could indicate:"
+            print_info "  • The timeout command failed"
+            print_info "  • The Python script crashed immediately"
+            print_info "  • Permission issues accessing BLE"
+            print_info ""
+            print_info "Try running manually to see the error:"
+            print_info "  $python_cmd $temp_script $device_address $device_name"
         fi
         return 1
     fi

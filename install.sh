@@ -4,7 +4,7 @@
 # ============================================================================
 set -e
 
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 DEFAULT_REPO="agessaman/meshcore-packet-capture"
 DEFAULT_BRANCH="main"
 
@@ -1656,7 +1656,7 @@ RestartSec=10
 Type=exec
 
 # Resource limits to prevent runaway processes
-MemoryLimit=512M
+MemoryMax=512M
 CPUQuota=50%
 TasksMax=200
 

@@ -361,98 +361,56 @@ handle_ble_pairing() {
         sleep 5  # Increased wait time for device to become available
     fi
     
-    # Check pairing status first (with timeout to prevent hanging)
+    # Quick pairing check first (shorter timeout - if already paired, we're done)
     local pairing_output
-    print_info "Checking pairing status (this may take 30-45 seconds)..."
+    print_info "Checking if device is already paired..."
     print_info "Device: $device_name ($device_address)"
-    print_info "Python: $python_cmd"
     
     # Run with explicit stderr redirection and capture
     rm -f /tmp/ble_pairing_error
-    print_info "Starting pairing check script..."
     
-    # Run the pairing check with timeout
-    if pairing_output=$(timeout 45 "$python_cmd" "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
-        print_info "Pairing check completed"
+    # Quick check with shorter timeout - just to see if already paired
+    if pairing_output=$(timeout 15 "$python_cmd" "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
         local pairing_status=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
         
         if [ "$pairing_status" = "paired" ]; then
-            print_success "Device is paired and ready to use"
+            print_success "Device is already paired and ready to use"
             rm -f /tmp/ble_pairing_error
             return 0
-        elif [ "$pairing_status" = "not_found" ]; then
-            print_warning "Device not found or not in range"
-            print_info "Make sure your MeshCore device is:"
-            print_info "  • Powered on and within range"
-            print_info "  • In pairing mode (if not already paired)"
-            print_info "  • Not connected to another device"
-            rm -f /tmp/ble_pairing_error
-            return 1
-        elif [ "$pairing_status" = "timeout" ]; then
-            print_warning "Connection timed out"
-            print_info "The device may be busy or not responding. Please try again."
-            print_info "If the device shows as connected, try disconnecting it first."
-            rm -f /tmp/ble_pairing_error
-            return 1
-        elif [ "$pairing_status" = "not_paired" ]; then
-            print_info "Device requires pairing. You'll need to enter the PIN displayed on your MeshCore device."
-            echo ""
-            
-            # Get PIN from user
-            local pin
-            while true; do
-                pin=$(prompt_input "Enter the 6-digit PIN displayed on your MeshCore device" "")
-                if [[ "$pin" =~ ^[0-9]{6}$ ]]; then
-                    break
-                else
-                    print_error "Please enter a 6-digit PIN (numbers only)"
-                fi
-            done
-            
-            # Attempt pairing with PIN (with timeout to prevent hanging)
-            echo ""
-            print_info "Attempting to pair with device (this may take up to 60 seconds)..."
-            rm -f /tmp/ble_pairing_error
-            if pairing_output=$(timeout 60 "$python_cmd" "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error); then
-                local pairing_result=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
-                
-                if [ "$pairing_result" = "paired" ]; then
-                    print_success "BLE pairing successful! Device is now ready to use."
-                    rm -f /tmp/ble_pairing_error
-                    return 0
-                else
-                    print_error "BLE pairing failed"
-                    if [ -f /tmp/ble_pairing_error ]; then
-                        local error_msg=$(cat /tmp/ble_pairing_error)
-                        if [ -n "$error_msg" ]; then
-                            print_info "Error details: $error_msg"
-                        fi
-                        rm -f /tmp/ble_pairing_error
-                    fi
-                    return 1
-                fi
-            else
-                # Check if it was a timeout
-                if [ -f /tmp/ble_pairing_error ]; then
-                    local error_msg=$(cat /tmp/ble_pairing_error)
-                    if [[ "$error_msg" == *"timeout"* ]] || [[ "$error_msg" == *"Terminated"* ]]; then
-                        print_error "BLE pairing timed out"
-                        print_info "The pairing process took too long. The device may be busy or not responding."
-                        print_info "Please try again or check if the device is in pairing mode."
-                    else
-                        print_error "Failed to attempt BLE pairing"
-                        if [ -n "$error_msg" ]; then
-                            print_info "Error details: $error_msg"
-                        fi
-                    fi
-                    rm -f /tmp/ble_pairing_error
-                else
-                    print_error "Failed to attempt BLE pairing"
-                fi
-                return 1
-            fi
+        fi
+        # If not paired, fall through to pairing attempt below
+    fi
+    
+    # If check failed or device not paired, proceed directly to pairing with PIN
+    echo ""
+    print_info "Device needs to be paired. You'll need to enter the PIN displayed on your MeshCore device."
+    print_info "Make sure your device is powered on and showing the 6-digit PIN."
+    echo ""
+    
+    # Get PIN from user
+    local pin
+    while true; do
+        pin=$(prompt_input "Enter the 6-digit PIN displayed on your MeshCore device" "")
+        if [[ "$pin" =~ ^[0-9]{6}$ ]]; then
+            break
         else
-            print_error "Failed to check pairing status"
+            print_error "Please enter a 6-digit PIN (numbers only)"
+        fi
+    done
+    
+    # Attempt pairing with PIN
+    echo ""
+    print_info "Attempting to pair with device (this may take up to 60 seconds)..."
+    rm -f /tmp/ble_pairing_error
+    if pairing_output=$(timeout 60 "$python_cmd" "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error); then
+        local pairing_result=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
+        
+        if [ "$pairing_result" = "paired" ]; then
+            print_success "BLE pairing successful! Device is now ready to use."
+            rm -f /tmp/ble_pairing_error
+            return 0
+        else
+            print_error "BLE pairing failed"
             if [ -f /tmp/ble_pairing_error ]; then
                 local error_msg=$(cat /tmp/ble_pairing_error)
                 if [ -n "$error_msg" ]; then
@@ -464,50 +422,31 @@ handle_ble_pairing() {
         fi
     else
         # Check if it was a timeout or other error
-        print_error "Pairing check failed or timed out"
-        
-        # Check for error output
         if [ -f /tmp/ble_pairing_error ]; then
             local error_msg=$(cat /tmp/ble_pairing_error)
-            local error_size=$(wc -c < /tmp/ble_pairing_error 2>/dev/null || echo "0")
-            
-            if [ "$error_size" -eq 0 ] || [[ -z "$error_msg" ]]; then
-                # Empty error file - script hung silently or was killed before writing
-                print_error "BLE pairing check timed out (45 seconds) - no error output"
-                print_info "The script may have hung during:"
-                print_info "  • BLE device scanning (5 seconds)"
-                print_info "  • Connection attempt (25 seconds)"
-                print_info ""
-                print_info "Troubleshooting:"
-                print_info "  1. Check if the device is still powered on and in range"
-                print_info "  2. Try manually disconnecting: bluetoothctl disconnect $device_address"
-                print_info "  3. Try running the pairing helper directly:"
-                print_info "     $python_cmd $temp_script $device_address $device_name"
-            elif [[ "$error_msg" == *"timeout"* ]] || [[ "$error_msg" == *"Terminated"* ]]; then
-                print_error "BLE pairing check timed out (45 seconds)"
-                print_info "Error output:"
-                echo "$error_msg" | head -20 | while IFS= read -r line; do
-                    print_info "  $line"
-                done
+            if [[ "$error_msg" == *"timeout"* ]] || [[ "$error_msg" == *"Terminated"* ]]; then
+                print_error "BLE pairing timed out"
+                print_info "The pairing process took too long. The device may be busy or not responding."
+                print_info "Make sure:"
+                print_info "  • The device is powered on and showing the PIN"
+                print_info "  • The device is in pairing mode"
+                print_info "  • You entered the correct 6-digit PIN"
+                print_info "  • The device is within range"
+            elif [[ "$error_msg" == *"not found"* ]] || [[ "$error_msg" == *"not available"* ]]; then
+                print_error "Device not found or not available"
+                print_info "Make sure your MeshCore device is:"
+                print_info "  • Powered on and within range"
+                print_info "  • In pairing mode"
+                print_info "  • Not connected to another device"
             else
-                print_error "Error details:"
-                echo "$error_msg" | head -30 | while IFS= read -r line; do
-                    print_info "  $line"
-                done
-                if [ $(echo "$error_msg" | wc -l) -gt 30 ]; then
-                    print_info "  ... (output truncated, see /tmp/ble_pairing_error for full output)"
+                print_error "Failed to pair with device"
+                if [ -n "$error_msg" ]; then
+                    print_info "Error details: $error_msg"
                 fi
             fi
             rm -f /tmp/ble_pairing_error
         else
-            print_warning "No error file created - the script may have been killed before starting"
-            print_info "This could indicate:"
-            print_info "  • The timeout command failed"
-            print_info "  • The Python script crashed immediately"
-            print_info "  • Permission issues accessing BLE"
-            print_info ""
-            print_info "Try running manually to see the error:"
-            print_info "  $python_cmd $temp_script $device_address $device_name"
+            print_error "Failed to pair with device - no error details available"
         fi
         return 1
     fi

@@ -793,6 +793,23 @@ class PacketCapture:
             if audience:
                 claims['aud'] = audience
             
+            # Add optional owner public key if configured
+            owner_public_key = os.getenv('PACKETCAPTURE_OWNER_PUBLIC_KEY', '').strip()
+            if owner_public_key:
+                # Validate it's a valid hex string of correct length (64 hex chars = 32 bytes)
+                if len(owner_public_key) == 64 and all(c in '0123456789ABCDEFabcdef' for c in owner_public_key):
+                    claims['owner'] = owner_public_key.upper()
+                else:
+                    self.logger.warning(f"Invalid owner public key format (expected 64 hex characters): {owner_public_key[:16]}...")
+            
+            # Add optional client agent/version if configured, otherwise use default from status message
+            client_agent = os.getenv('PACKETCAPTURE_CLIENT_AGENT', '').strip()
+            if not client_agent:
+                # Default to the same value used in status messages
+                client_agent = self._load_client_version()
+            if client_agent:
+                claims['client'] = client_agent
+            
             jwt_token = create_auth_token(self.device_public_key, private_key, **claims)
             self.logger.info("✓ JWT created using private key from device")
             return jwt_token

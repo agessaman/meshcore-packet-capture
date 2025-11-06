@@ -689,6 +689,56 @@ prompt_input() {
     fi
 }
 
+# Configure JWT token options (owner public key and client agent)
+configure_jwt_options() {
+    ENV_LOCAL="$INSTALL_DIR/.env.local"
+    
+    echo ""
+    print_header "JWT Token Configuration (Optional)"
+    echo ""
+    print_info "You can optionally configure an owner public key for JWT tokens:"
+    echo ""
+    print_info "Owner Public Key: The public key of the owner of the MQTT observer"
+    print_info "  (64 hex characters, same length as repeater public key)"
+    echo ""
+    print_info "Note: Client agent is automatically set to the build string (same as status messages)"
+    echo ""
+    
+    # Prompt for owner public key
+    if prompt_yes_no "Would you like to configure an owner public key for JWT tokens?" "n"; then
+        while true; do
+            owner_key=$(prompt_input "Enter owner public key (64 hex characters)" "")
+            owner_key=$(echo "$owner_key" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+            
+            if [ -z "$owner_key" ]; then
+                print_warning "Owner public key cannot be empty"
+                if ! prompt_yes_no "Skip owner public key configuration?" "y"; then
+                    continue
+                else
+                    break
+                fi
+            elif [ ${#owner_key} -ne 64 ]; then
+                print_error "Owner public key must be exactly 64 hex characters (you entered ${#owner_key})"
+                if ! prompt_yes_no "Try again?" "y"; then
+                    break
+                fi
+            elif ! [[ "$owner_key" =~ ^[0-9A-F]{64}$ ]]; then
+                print_error "Owner public key must contain only hexadecimal characters (0-9, A-F)"
+                if ! prompt_yes_no "Try again?" "y"; then
+                    break
+                fi
+            else
+                echo "PACKETCAPTURE_OWNER_PUBLIC_KEY=$owner_key" >> "$ENV_LOCAL"
+                print_success "Owner public key configured"
+                break
+            fi
+        done
+    fi
+    
+    # Client agent is automatically set to the build string (same as status messages)
+    # No user configuration needed
+}
+
 # Configure MQTT topics for a broker
 configure_mqtt_topics() {
     local BROKER_NUM=$1
@@ -827,6 +877,9 @@ PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
 PACKETCAPTURE_MQTT2_KEEPALIVE=120
 EOF
             print_success "LetsMesh Packet Analyzer enabled with redundancy"
+            
+            # Configure JWT options (owner public key and client agent)
+            configure_jwt_options
             
             # Configure topics for LetsMesh
             configure_mqtt_topics 1
@@ -983,6 +1036,9 @@ PACKETCAPTURE_MQTT2_KEEPALIVE=120
 EOF
             print_success "LetsMesh Packet Analyzer brokers enabled"
             
+            # Configure JWT options (owner public key and client agent)
+            configure_jwt_options
+            
             # Configure topics for LetsMesh
             configure_mqtt_topics 1
             
@@ -1077,7 +1133,7 @@ configure_custom_broker() {
     echo "  3) None (anonymous)"
     AUTH_TYPE=$(prompt_input "Choose authentication method [1-3]" "1")
     
-    if [ "$AUTH_TYPE" = "2" ]; then
+        if [ "$AUTH_TYPE" = "2" ]; then
         if [ "$DECODER_AVAILABLE" = false ]; then
             print_error "meshcore-decoder not available - using username/password instead"
             AUTH_TYPE=1
@@ -1086,6 +1142,11 @@ configure_custom_broker() {
             TOKEN_AUDIENCE=$(prompt_input "Token audience (optional)" "")
             if [ -n "$TOKEN_AUDIENCE" ]; then
                 echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOKEN_AUDIENCE=$TOKEN_AUDIENCE" >> "$ENV_LOCAL"
+            fi
+            
+            # Configure JWT options if not already configured
+            if ! grep -q "^PACKETCAPTURE_OWNER_PUBLIC_KEY=" "$ENV_LOCAL" 2>/dev/null; then
+                configure_jwt_options
             fi
         fi
     fi

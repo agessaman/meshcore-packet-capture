@@ -183,6 +183,61 @@ function Configure-AdditionalMqttBrokers {
     }
 }
 
+# Function to configure JWT token options (owner public key and client agent)
+function Configure-JwtOptions {
+    $envLocal = Join-Path $InstallDir ".env.local"
+    
+    Write-Host ""
+    Write-Host "INFO: JWT Token Configuration (Optional)" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "INFO: You can optionally configure an owner public key for JWT tokens:" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "INFO: Owner Public Key: The public key of the owner of the MQTT observer" -ForegroundColor Blue
+    Write-Host "INFO:   (64 hex characters, same length as repeater public key)" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "INFO: Note: Client agent is automatically set to the build string (same as status messages)" -ForegroundColor Blue
+    Write-Host ""
+    
+    # Prompt for owner public key
+    $configureOwner = Read-Host "Would you like to configure an owner public key for JWT tokens? (y/N)"
+    if ($configureOwner -match '^[yY]') {
+        while ($true) {
+            $ownerKey = Read-Host "Enter owner public key (64 hex characters)" ""
+            $ownerKey = $ownerKey.ToUpper().Replace(" ", "").Replace("-", "")
+            
+            if (-not $ownerKey) {
+                Write-Host "WARNING: Owner public key cannot be empty" -ForegroundColor Yellow
+                $skip = Read-Host "Skip owner public key configuration? (Y/n)"
+                if ($skip -notmatch '^[nN]') {
+                    break
+                }
+            }
+            elseif ($ownerKey.Length -ne 64) {
+                Write-Host "ERROR: Owner public key must be exactly 64 hex characters (you entered $($ownerKey.Length))" -ForegroundColor Red
+                $tryAgain = Read-Host "Try again? (Y/n)"
+                if ($tryAgain -match '^[nN]') {
+                    break
+                }
+            }
+            elseif ($ownerKey -notmatch '^[0-9A-F]{64}$') {
+                Write-Host "ERROR: Owner public key must contain only hexadecimal characters (0-9, A-F)" -ForegroundColor Red
+                $tryAgain = Read-Host "Try again? (Y/n)"
+                if ($tryAgain -match '^[nN]') {
+                    break
+                }
+            }
+            else {
+                Add-Content -Path $envLocal -Value "PACKETCAPTURE_OWNER_PUBLIC_KEY=$ownerKey"
+                Write-Host "SUCCESS: Owner public key configured" -ForegroundColor Green
+                break
+            }
+        }
+    }
+    
+    # Client agent is automatically set to the build string (same as status messages)
+    # No user configuration needed
+}
+
 # Function to configure a single MQTT broker
 function Configure-SingleMqttBroker {
     param([int]$BrokerNum)
@@ -260,6 +315,12 @@ function Configure-SingleMqttBroker {
             $tokenAudience = Read-Host "Token audience (optional)" ""
             if ($tokenAudience) {
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOKEN_AUDIENCE=$tokenAudience"
+            }
+            
+            # Configure JWT options if not already configured
+            $ownerKeyExists = (Get-Content $envLocal -ErrorAction SilentlyContinue) -match "^PACKETCAPTURE_OWNER_PUBLIC_KEY="
+            if (-not $ownerKeyExists) {
+                Configure-JwtOptions
             }
         }
         "3" {
@@ -1017,6 +1078,9 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
 "@
         Add-Content -Path $envLocal -Value $letsMeshConfig
         Write-Host "SUCCESS: LetsMesh Packet Analyzer enabled" -ForegroundColor Green
+        
+        # Configure JWT options (owner public key and client agent)
+        Configure-JwtOptions
         
         # Configure topics for LetsMesh
     Write-Host ""

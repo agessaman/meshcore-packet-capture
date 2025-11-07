@@ -696,16 +696,16 @@ configure_jwt_options() {
     echo ""
     print_header "JWT Token Configuration (Optional)"
     echo ""
-    print_info "You can optionally configure an owner public key for JWT tokens:"
+    print_info "You can optionally configure owner information for Let's Mesh Analyzer:"
     echo ""
-    print_info "Owner Public Key: The public key of the owner of the MQTT observer"
-    print_info "  (64 hex characters, same length as repeater public key)"
+    print_info "1. Owner Public Key: The public key of the owner of the MQTT observer"
+    print_info "   (64 hex characters, same length as repeater public key)"
     echo ""
-    print_info "Note: Client agent is automatically set to the build string (same as status messages)"
+    print_info "2. Owner Email: Email address of the observer owner"
     echo ""
     
     # Prompt for owner public key
-    if prompt_yes_no "Would you like to configure an owner public key for JWT tokens?" "n"; then
+    if prompt_yes_no "Would you like to configure an owner public key?" "n"; then
         while true; do
             owner_key=$(prompt_input "Enter owner public key (64 hex characters)" "")
             owner_key=$(echo "$owner_key" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
@@ -731,6 +731,36 @@ configure_jwt_options() {
                 echo "PACKETCAPTURE_OWNER_PUBLIC_KEY=$owner_key" >> "$ENV_LOCAL"
                 print_success "Owner public key configured"
                 break
+            fi
+        done
+    fi
+    
+    # Prompt for owner email
+    echo ""
+    if prompt_yes_no "Would you like to configure an owner email for Let's Mesh Analyzer?" "n"; then
+        while true; do
+            email=$(prompt_input "Enter owner email address" "")
+            email=$(echo "$email" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+            
+            if [ -z "$email" ]; then
+                print_warning "Email cannot be empty"
+                if ! prompt_yes_no "Skip email configuration?" "y"; then
+                    continue
+                else
+                    break
+                fi
+            else
+                # Validate email format using a simple regex check
+                if echo "$email" | grep -qE '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+                    echo "PACKETCAPTURE_OWNER_EMAIL=$email" >> "$ENV_LOCAL"
+                    print_success "Owner email configured: $email"
+                    break
+                else
+                    print_error "Invalid email format. Please enter a valid email address (e.g., user@example.com)"
+                    if ! prompt_yes_no "Try again?" "y"; then
+                        break
+                    fi
+                fi
             fi
         done
     fi
@@ -1145,7 +1175,7 @@ configure_custom_broker() {
             fi
             
             # Configure JWT options if not already configured
-            if ! grep -q "^PACKETCAPTURE_OWNER_PUBLIC_KEY=" "$ENV_LOCAL" 2>/dev/null; then
+            if ! grep -q "^PACKETCAPTURE_OWNER_PUBLIC_KEY=" "$ENV_LOCAL" 2>/dev/null && ! grep -q "^PACKETCAPTURE_OWNER_EMAIL=" "$ENV_LOCAL" 2>/dev/null; then
                 configure_jwt_options
             fi
         fi

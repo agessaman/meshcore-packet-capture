@@ -802,6 +802,19 @@ class PacketCapture:
                 else:
                     self.logger.warning(f"Invalid owner public key format (expected 64 hex characters): {owner_public_key[:16]}...")
             
+            # Add optional email if configured
+            email = os.getenv('PACKETCAPTURE_OWNER_EMAIL', '').strip()
+            if email:
+                # Normalize to lowercase
+                email = email.lower()
+                # Validate email format using a simple regex
+                import re
+                email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+                if re.match(email_pattern, email):
+                    claims['email'] = email
+                else:
+                    self.logger.warning(f"Invalid email format: {email}")
+            
             # Add optional client agent/version if configured, otherwise use default from status message
             client_agent = os.getenv('PACKETCAPTURE_CLIENT_AGENT', '').strip()
             if not client_agent:

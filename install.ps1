@@ -190,10 +190,12 @@ function Configure-JwtOptions {
     Write-Host ""
     Write-Host "INFO: JWT Token Configuration (Optional)" -ForegroundColor Blue
     Write-Host ""
-    Write-Host "INFO: You can optionally configure an owner public key for JWT tokens:" -ForegroundColor Blue
+    Write-Host "INFO: You can optionally configure owner information for JWT tokens:" -ForegroundColor Blue
     Write-Host ""
-    Write-Host "INFO: Owner Public Key: The public key of the owner of the MQTT observer" -ForegroundColor Blue
-    Write-Host "INFO:   (64 hex characters, same length as repeater public key)" -ForegroundColor Blue
+    Write-Host "INFO: 1. Owner Public Key: The public key of the owner of the MQTT observer" -ForegroundColor Blue
+    Write-Host "INFO:    (64 hex characters, same length as repeater public key)" -ForegroundColor Blue
+    Write-Host ""
+    Write-Host "INFO: 2. Owner Email: Email address of the owner for Let's Mesh Analyzer (optional)" -ForegroundColor Blue
     Write-Host ""
     Write-Host "INFO: Note: Client agent is automatically set to the build string (same as status messages)" -ForegroundColor Blue
     Write-Host ""
@@ -230,6 +232,40 @@ function Configure-JwtOptions {
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_OWNER_PUBLIC_KEY=$ownerKey"
                 Write-Host "SUCCESS: Owner public key configured" -ForegroundColor Green
                 break
+            }
+        }
+    }
+    
+    # Prompt for owner email
+    Write-Host ""
+    $configureEmail = Read-Host "Would you like to configure an owner email for Let's Mesh Analyzer? (y/N)"
+    if ($configureEmail -match '^[yY]') {
+        while ($true) {
+            $email = Read-Host "Enter owner email address" ""
+            $email = $email.ToLower().Replace(" ", "")
+            
+            if (-not $email) {
+                Write-Host "WARNING: Email cannot be empty" -ForegroundColor Yellow
+                $skip = Read-Host "Skip email configuration? (Y/n)"
+                if ($skip -notmatch '^[nN]') {
+                    break
+                }
+            }
+            else {
+                # Validate email format using regex
+                $emailPattern = '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+                if ($email -match $emailPattern) {
+                    Add-Content -Path $envLocal -Value "PACKETCAPTURE_OWNER_EMAIL=$email"
+                    Write-Host "SUCCESS: Owner email configured: $email" -ForegroundColor Green
+                    break
+                }
+                else {
+                    Write-Host "ERROR: Invalid email format. Please enter a valid email address (e.g., user@example.com)" -ForegroundColor Red
+                    $tryAgain = Read-Host "Try again? (Y/n)"
+                    if ($tryAgain -match '^[nN]') {
+                        break
+                    }
+                }
             }
         }
     }
@@ -319,7 +355,8 @@ function Configure-SingleMqttBroker {
             
             # Configure JWT options if not already configured
             $ownerKeyExists = (Get-Content $envLocal -ErrorAction SilentlyContinue) -match "^PACKETCAPTURE_OWNER_PUBLIC_KEY="
-            if (-not $ownerKeyExists) {
+            $ownerEmailExists = (Get-Content $envLocal -ErrorAction SilentlyContinue) -match "^PACKETCAPTURE_OWNER_EMAIL="
+            if (-not $ownerKeyExists -and -not $ownerEmailExists) {
                 Configure-JwtOptions
             }
         }

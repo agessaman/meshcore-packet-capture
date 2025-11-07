@@ -1166,41 +1166,52 @@ PACKETCAPTURE_LOG_LEVEL=INFO
     
     Set-Content -Path $envLocal -Value $configContent
     
-    # Configure IATA code
-                Write-Host ""
+    # Always prompt for IATA (allows changing during reconfiguration)
+    # Get existing IATA from config (including backup files) to use as default
+    $existingIata = Read-EnvValue "PACKETCAPTURE_IATA"
+    if ($existingIata) {
+        $existingIata = $existingIata.Trim()
+    }
+    # Clear default if it's XXX or empty
+    if (-not $existingIata -or $existingIata -eq "XXX") {
+        $existingIata = ""
+    }
+    
+    Write-Host ""
     Write-Host "INFO: IATA code is a 3-letter airport code identifying your geographic region" -ForegroundColor Blue
     Write-Host "INFO: Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)" -ForegroundColor Blue
-                Write-Host ""
-                
-                # Use existing IATA as default if available and not XXX
-                $existingIata = Read-EnvValue "PACKETCAPTURE_IATA"
-                if (-not $existingIata -or $existingIata -eq "XXX") {
-                    $existingIata = ""
-                }
-                
-                $script:Iata = ""
-                while (-not $script:Iata -or $script:Iata -eq "XXX") {
-                        $script:Iata = Read-Host "Enter your IATA code (3 letters)" $existingIata
-                    $script:Iata = $script:Iata.ToUpper().Trim()
-                    
-                    if (-not $script:Iata) {
+    Write-Host ""
+    
+    $script:Iata = ""
+    while (-not $script:Iata -or $script:Iata -eq "XXX") {
+        if ($existingIata) {
+            $script:Iata = Read-Host "Enter your IATA code (3 letters) [$existingIata]"
+            if ([string]::IsNullOrWhiteSpace($script:Iata)) {
+                $script:Iata = $existingIata
+            }
+        } else {
+            $script:Iata = Read-Host "Enter your IATA code (3 letters)"
+        }
+        $script:Iata = $script:Iata.ToUpper().Trim()
+        
+        if (-not $script:Iata) {
             Write-Host "ERROR: IATA code cannot be empty" -ForegroundColor Red
-                    }
-                    elseif ($script:Iata -eq "XXX") {
+        }
+        elseif ($script:Iata -eq "XXX") {
             Write-Host "ERROR: Please enter your actual IATA code, not XXX" -ForegroundColor Red
-                    }
-                    elseif ($script:Iata.Length -ne 3) {
+        }
+        elseif ($script:Iata.Length -ne 3) {
             Write-Host "WARNING: IATA code should be 3 letters, you entered: $script:Iata" -ForegroundColor Yellow
             $response = Read-Host "Use '$script:Iata' anyway? (y/N)"
             if ($response -notmatch '^[yY]') {
                 $script:Iata = "XXX"  # Reset to force re-prompt
-                        }
-                    }
-                }
-                
-                # Update IATA in config
+            }
+        }
+    }
+    
+    # Update IATA in config
     $content = Get-Content $envLocal
-                $content = $content -replace "^PACKETCAPTURE_IATA=.*", "PACKETCAPTURE_IATA=$script:Iata"
+    $content = $content -replace "^PACKETCAPTURE_IATA=.*", "PACKETCAPTURE_IATA=$script:Iata"
     Set-Content -Path $envLocal -Value $content
     Write-Host "SUCCESS: IATA code set to: $script:Iata" -ForegroundColor Green
     

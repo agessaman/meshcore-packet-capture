@@ -731,12 +731,14 @@ prompt_input() {
 # Also checks backup files if the main file doesn't exist, doesn't have the value, or has placeholder values
 read_env_value() {
     local key="$1"
+    local value=""
+    
     # Ensure we use the install directory, not the working directory
     if [ -z "$INSTALL_DIR" ]; then
+        echo ""
         return
     fi
     local env_file="$INSTALL_DIR/.env.local"
-    local value=""
     
     # First try the main .env.local file
     if [ -f "$env_file" ]; then
@@ -925,45 +927,47 @@ configure_mqtt_topics() {
 configure_mqtt_brokers_only() {
     ENV_LOCAL="$INSTALL_DIR/.env.local"
     
-    # Get IATA from existing config (including backup files)
-    IATA=$(read_env_value "PACKETCAPTURE_IATA")
+    # Always prompt for IATA (allows changing during reconfiguration)
+    # Get existing IATA from config (including backup files) to use as default
+    EXISTING_IATA=$(read_env_value "PACKETCAPTURE_IATA")
+    EXISTING_IATA=$(echo "$EXISTING_IATA" | tr -d '[:space:]')
+    # Clear default if it's XXX or empty
+    if [ -z "$EXISTING_IATA" ] || [ "$EXISTING_IATA" = "XXX" ]; then
+        EXISTING_IATA=""
+    fi
     
-    # Always prompt for IATA if it's XXX or empty
-    if [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; then
-        echo ""
-        print_info "IATA code is a 3-letter airport code identifying your geographic region"
-        print_info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
-        echo ""
+    echo ""
+    print_info "IATA code is a 3-letter airport code identifying your geographic region"
+    print_info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
+    echo ""
+    
+    IATA=""
+    while [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; do
+        IATA=$(prompt_input "Enter your IATA code (3 letters)" "$EXISTING_IATA")
+        IATA=$(echo "$IATA" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
         
-        # Use existing IATA as default if available and not XXX
-        EXISTING_IATA=$(read_env_value "PACKETCAPTURE_IATA")
-        if [ -z "$EXISTING_IATA" ] || [ "$EXISTING_IATA" = "XXX" ]; then
-            EXISTING_IATA=""
-        fi
-        
-        while [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; do
-            IATA=$(prompt_input "Enter your IATA code (3 letters)" "$EXISTING_IATA")
-            IATA=$(echo "$IATA" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
-            
-            if [ -z "$IATA" ]; then
-                print_error "IATA code cannot be empty"
-            elif [ "$IATA" = "XXX" ]; then
-                print_error "Please enter your actual IATA code, not XXX"
-            elif [ ${#IATA} -ne 3 ]; then
-                print_warning "IATA code should be 3 letters, you entered: $IATA"
-                if ! prompt_yes_no "Use '$IATA' anyway?" "n"; then
-                    IATA="XXX"  # Reset to force re-prompt
-                fi
+        if [ -z "$IATA" ]; then
+            print_error "IATA code cannot be empty"
+        elif [ "$IATA" = "XXX" ]; then
+            print_error "Please enter your actual IATA code, not XXX"
+        elif [ ${#IATA} -ne 3 ]; then
+            print_warning "IATA code should be 3 letters, you entered: $IATA"
+            if ! prompt_yes_no "Use '$IATA' anyway?" "n"; then
+                IATA="XXX"  # Reset to force re-prompt
             fi
-        done
-        
-        # Update IATA in config
+        fi
+    done
+    
+    # Update IATA in config
+    if grep -q "^PACKETCAPTURE_IATA=" "$ENV_LOCAL" 2>/dev/null; then
         sed -i.bak "s/^PACKETCAPTURE_IATA=.*/PACKETCAPTURE_IATA=$IATA/" "$ENV_LOCAL"
         rm -f "$ENV_LOCAL.bak"
-        echo ""
-        print_success "IATA code set to: $IATA"
-        echo ""
+    else
+        echo "PACKETCAPTURE_IATA=$IATA" >> "$ENV_LOCAL"
     fi
+    echo ""
+    print_success "IATA code set to: $IATA"
+    echo ""
     
     echo ""
     print_header "MQTT Broker Configuration"
@@ -1089,45 +1093,47 @@ PACKETCAPTURE_LOG_LEVEL=INFO
 EOF
     fi
     
-    # Get IATA from existing config (including backup files)
-    IATA=$(read_env_value "PACKETCAPTURE_IATA")
+    # Always prompt for IATA (allows changing during reconfiguration)
+    # Get existing IATA from config (including backup files) to use as default
+    EXISTING_IATA=$(read_env_value "PACKETCAPTURE_IATA")
+    EXISTING_IATA=$(echo "$EXISTING_IATA" | tr -d '[:space:]')
+    # Clear default if it's XXX or empty
+    if [ -z "$EXISTING_IATA" ] || [ "$EXISTING_IATA" = "XXX" ]; then
+        EXISTING_IATA=""
+    fi
     
-    # Always prompt for IATA if it's XXX or empty
-    if [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; then
-        echo ""
-        print_info "IATA code is a 3-letter airport code identifying your geographic region"
-        print_info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
-        echo ""
+    echo ""
+    print_info "IATA code is a 3-letter airport code identifying your geographic region"
+    print_info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
+    echo ""
+    
+    IATA=""
+    while [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; do
+        IATA=$(prompt_input "Enter your IATA code (3 letters)" "$EXISTING_IATA")
+        IATA=$(echo "$IATA" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
         
-        # Use existing IATA as default if available and not XXX
-        EXISTING_IATA=$(read_env_value "PACKETCAPTURE_IATA")
-        if [ -z "$EXISTING_IATA" ] || [ "$EXISTING_IATA" = "XXX" ]; then
-            EXISTING_IATA=""
-        fi
-        
-        while [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; do
-            IATA=$(prompt_input "Enter your IATA code (3 letters)" "$EXISTING_IATA")
-            IATA=$(echo "$IATA" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
-            
-            if [ -z "$IATA" ]; then
-                print_error "IATA code cannot be empty"
-            elif [ "$IATA" = "XXX" ]; then
-                print_error "Please enter your actual IATA code, not XXX"
-            elif [ ${#IATA} -ne 3 ]; then
-                print_warning "IATA code should be 3 letters, you entered: $IATA"
-                if ! prompt_yes_no "Use '$IATA' anyway?" "n"; then
-                    IATA="XXX"  # Reset to force re-prompt
-                fi
+        if [ -z "$IATA" ]; then
+            print_error "IATA code cannot be empty"
+        elif [ "$IATA" = "XXX" ]; then
+            print_error "Please enter your actual IATA code, not XXX"
+        elif [ ${#IATA} -ne 3 ]; then
+            print_warning "IATA code should be 3 letters, you entered: $IATA"
+            if ! prompt_yes_no "Use '$IATA' anyway?" "n"; then
+                IATA="XXX"  # Reset to force re-prompt
             fi
-        done
-        
-        # Update IATA in config
+        fi
+    done
+    
+    # Update IATA in config
+    if grep -q "^PACKETCAPTURE_IATA=" "$ENV_LOCAL" 2>/dev/null; then
         sed -i.bak "s/^PACKETCAPTURE_IATA=.*/PACKETCAPTURE_IATA=$IATA/" "$ENV_LOCAL"
         rm -f "$ENV_LOCAL.bak"
-        echo ""
-        print_success "IATA code set to: $IATA"
-        echo ""
+    else
+        echo "PACKETCAPTURE_IATA=$IATA" >> "$ENV_LOCAL"
     fi
+    echo ""
+    print_success "IATA code set to: $IATA"
+    echo ""
     
     # Configure JWT options (owner public key and email) - global settings
     if ! grep -q "^PACKETCAPTURE_OWNER_PUBLIC_KEY=" "$ENV_LOCAL" 2>/dev/null && ! grep -q "^PACKETCAPTURE_OWNER_EMAIL=" "$ENV_LOCAL" 2>/dev/null; then
@@ -1580,7 +1586,9 @@ main() {
                 echo ""
                 
                 # Use existing IATA as default if available and not XXX
+                # Read again to get value from backup if main file has XXX
                 EXISTING_IATA=$(read_env_value "PACKETCAPTURE_IATA")
+                EXISTING_IATA=$(echo "$EXISTING_IATA" | tr -d '[:space:]')
                 if [ -z "$EXISTING_IATA" ] || [ "$EXISTING_IATA" = "XXX" ]; then
                     EXISTING_IATA=""
                 fi

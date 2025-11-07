@@ -183,9 +183,60 @@ function Configure-AdditionalMqttBrokers {
     }
 }
 
+# Helper function to read a value from .env.local in the install directory
+# Also checks backup files if the main file doesn't exist, doesn't have the value, or has placeholder values
+function Read-EnvValue {
+    param([string]$Key)
+    # Ensure we use the install directory, not the working directory
+    if (-not $InstallDir) {
+        return ""
+    }
+    $envFile = Join-Path $InstallDir ".env.local"
+    $value = ""
+    
+    # First try the main .env.local file
+    if (Test-Path $envFile) {
+        $line = Get-Content $envFile | Where-Object { $_ -match "^${Key}=" }
+        if ($line) {
+            $value = $line -replace "^${Key}=", ""
+            $value = $value.Trim('"', "'")
+            # If we found a value and it's not a placeholder (XXX, empty, etc.), use it
+            if ($value -and $value -ne "XXX") {
+                return $value
+            }
+        }
+    }
+    
+    # If not found or placeholder value, check backup files (most recent first)
+    $backupFiles = Get-ChildItem -Path $InstallDir -Filter ".env.local.backup-*" -ErrorAction SilentlyContinue | 
+        Sort-Object LastWriteTime -Descending | 
+        Select-Object -First 1
+    if ($backupFiles) {
+        foreach ($backupFile in $backupFiles) {
+            $line = Get-Content $backupFile.FullName | Where-Object { $_ -match "^${Key}=" }
+            if ($line) {
+                $backupValue = $line -replace "^${Key}=", ""
+                $backupValue = $backupValue.Trim('"', "'")
+                # Only return if we have a non-placeholder value
+                if ($backupValue -and $backupValue -ne "XXX") {
+                    return $backupValue
+                }
+            }
+        }
+    }
+    
+    # If we got here, return the value from main file (even if XXX) or empty
+    # This preserves the behavior for cases where we want to know if it's XXX
+    return $value
+}
+
 # Function to configure JWT token options (owner public key and client agent)
 function Configure-JwtOptions {
     $envLocal = Join-Path $InstallDir ".env.local"
+    
+    # Read existing values as defaults
+    $existingOwnerKey = Read-EnvValue "PACKETCAPTURE_OWNER_PUBLIC_KEY"
+    $existingOwnerEmail = Read-EnvValue "PACKETCAPTURE_OWNER_EMAIL"
     
     Write-Host ""
     Write-Host "INFO: JWT Token Configuration (Optional)" -ForegroundColor Blue
@@ -204,7 +255,7 @@ function Configure-JwtOptions {
     $configureOwner = Read-Host "Would you like to configure an owner public key for JWT tokens? (y/N)"
     if ($configureOwner -match '^[yY]') {
         while ($true) {
-            $ownerKey = Read-Host "Enter owner public key (64 hex characters)" ""
+            $ownerKey = Read-Host "Enter owner public key (64 hex characters)" $existingOwnerKey
             $ownerKey = $ownerKey.ToUpper().Replace(" ", "").Replace("-", "")
             
             if (-not $ownerKey) {
@@ -241,7 +292,7 @@ function Configure-JwtOptions {
     $configureEmail = Read-Host "Would you like to configure an owner email for Let's Mesh Analyzer? (y/N)"
     if ($configureEmail -match '^[yY]') {
         while ($true) {
-            $email = Read-Host "Enter owner email address" ""
+            $email = Read-Host "Enter owner email address" $existingOwnerEmail
             $email = $email.ToLower().Replace(" ", "")
             
             if (-not $email) {
@@ -284,8 +335,15 @@ function Configure-SingleMqttBroker {
     Write-Host "INFO: Configuring MQTT Broker $BrokerNum" -ForegroundColor Blue
         Write-Host ""
     
+    # Read existing values from install directory's .env.local as defaults
+    $existingServer = Read-EnvValue "PACKETCAPTURE_MQTT${BrokerNum}_SERVER"
+    $existingPort = Read-EnvValue "PACKETCAPTURE_MQTT${BrokerNum}_PORT"
+    $existingTokenAudience = Read-EnvValue "PACKETCAPTURE_MQTT${BrokerNum}_TOKEN_AUDIENCE"
+    $existingUsername = Read-EnvValue "PACKETCAPTURE_MQTT${BrokerNum}_USERNAME"
+    $existingPassword = Read-EnvValue "PACKETCAPTURE_MQTT${BrokerNum}_PASSWORD"
+    
     # Server configuration
-    $server = Read-Host "MQTT Server hostname/IP"
+    $server = Read-Host "MQTT Server hostname/IP" $existingServer
     if (-not $server) {
         Write-Host "WARNING: Server hostname required - skipping broker $BrokerNum" -ForegroundColor Yellow
         return
@@ -297,7 +355,8 @@ function Configure-SingleMqttBroker {
     Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_SERVER=$server"
     
     # Port configuration
-    $port = Read-Host "Port [1883]"
+    $portDefault = if ($existingPort) { $existingPort } else { "1883" }
+    $port = Read-Host "Port" $portDefault
     if (-not $port) {
         $port = "1883"
     }
@@ -337,10 +396,10 @@ function Configure-SingleMqttBroker {
     
     switch ($authChoice) {
         "1" {
-            $username = Read-Host "Username" ""
+            $username = Read-Host "Username" $existingUsername
             if ($username) {
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USERNAME=$username"
-                $password = Read-Host "Password" ""
+                $password = Read-Host "Password" $existingPassword
                 if ($password) {
                     Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PASSWORD=$password"
                 }
@@ -348,16 +407,9 @@ function Configure-SingleMqttBroker {
         }
         "2" {
             Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USE_AUTH_TOKEN=true"
-            $tokenAudience = Read-Host "Token audience (optional)" ""
+            $tokenAudience = Read-Host "Token audience (optional)" $existingTokenAudience
             if ($tokenAudience) {
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_TOKEN_AUDIENCE=$tokenAudience"
-            }
-            
-            # Configure JWT options if not already configured
-            $ownerKeyExists = (Get-Content $envLocal -ErrorAction SilentlyContinue) -match "^PACKETCAPTURE_OWNER_PUBLIC_KEY="
-            $ownerEmailExists = (Get-Content $envLocal -ErrorAction SilentlyContinue) -match "^PACKETCAPTURE_OWNER_EMAIL="
-            if (-not $ownerKeyExists -and -not $ownerEmailExists) {
-                Configure-JwtOptions
             }
         }
         "3" {
@@ -365,10 +417,10 @@ function Configure-SingleMqttBroker {
         }
         default {
             Write-Host "WARNING: Invalid choice, using username/password" -ForegroundColor Yellow
-            $username = Read-Host "Username" ""
+            $username = Read-Host "Username" $existingUsername
             if ($username) {
                 Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_USERNAME=$username"
-                $password = Read-Host "Password" ""
+                $password = Read-Host "Password" $existingPassword
                 if ($password) {
                     Add-Content -Path $envLocal -Value "PACKETCAPTURE_MQTT${BrokerNum}_PASSWORD=$password"
                 }
@@ -415,8 +467,15 @@ function Configure-SingleMqttBroker {
             Write-Host "INFO: You can also manually edit the .env.local file after installation to customize topics" -ForegroundColor Blue
             Write-Host ""
             
-            $statusTopic = Read-Host "Status topic" "meshcore/{IATA}/{PUBLIC_KEY}/status"
-            $packetsTopic = Read-Host "Packets topic" "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+            # Read existing topic values from install directory's .env.local as defaults
+            $existingStatusTopic = Read-EnvValue "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_STATUS"
+            $existingPacketsTopic = Read-EnvValue "PACKETCAPTURE_MQTT${BrokerNum}_TOPIC_PACKETS"
+            
+            $statusTopicDefault = if ($existingStatusTopic) { $existingStatusTopic } else { "meshcore/{IATA}/{PUBLIC_KEY}/status" }
+            $packetsTopicDefault = if ($existingPacketsTopic) { $existingPacketsTopic } else { "meshcore/{IATA}/{PUBLIC_KEY}/packets" }
+            
+            $statusTopic = Read-Host "Status topic" $statusTopicDefault
+            $packetsTopic = Read-Host "Packets topic" $packetsTopicDefault
             
             Add-Content -Path $envLocal -Value ""
             Add-Content -Path $envLocal -Value "# MQTT Topics for Broker $BrokerNum - Custom"
@@ -581,9 +640,28 @@ function Start-Installation {
     Write-Host "     - Works with ser2net or other TCP-to-serial bridges" -ForegroundColor Blue
     Write-Host ""
     
+    # Read existing connection type and map to default choice number
+    # Note: PowerShell version has different numbering: 1=serial, 2=ble, 3=tcp
+    $existingConnectionType = Read-EnvValue "PACKETCAPTURE_CONNECTION_TYPE"
+    $defaultChoice = "1"  # Default to Serial
+    if ($existingConnectionType) {
+        switch ($existingConnectionType.ToLower()) {
+            "serial" { $defaultChoice = "1" }
+            "ble" { $defaultChoice = "2" }
+            "tcp" { $defaultChoice = "3" }
+        }
+    }
+    
     $connectionChoice = ""
     while ($connectionChoice -notmatch '^[1-3]$') {
-        $connectionChoice = Read-Host "Select connection type [1-3]"
+        if ($defaultChoice) {
+            $connectionChoice = Read-Host "Select connection type [1-3] [$defaultChoice]"
+            if ([string]::IsNullOrWhiteSpace($connectionChoice)) {
+                $connectionChoice = $defaultChoice
+            }
+        } else {
+            $connectionChoice = Read-Host "Select connection type [1-3]"
+        }
         if ($connectionChoice -notmatch '^[1-3]$') {
             Write-Host "ERROR: Invalid choice. Please enter 1, 2, or 3" -ForegroundColor Red
         }
@@ -640,7 +718,10 @@ function Start-Installation {
             
             if ($devices.Count -eq 0) {
                 Write-Host "WARNING: No serial devices detected" -ForegroundColor Yellow
-                $script:SelectedSerialDevice = Read-Host "Enter serial device path" "COM1"
+                # Read existing serial device from install directory's .env.local as default
+                $existingSerialDevice = Read-EnvValue "PACKETCAPTURE_SERIAL_PORTS"
+                $serialDeviceDefault = if ($existingSerialDevice) { $existingSerialDevice } else { "COM1" }
+                $script:SelectedSerialDevice = Read-Host "Enter serial device path" $serialDeviceDefault
             }
             elseif ($devices.Count -eq 1) {
                 Write-Host "INFO: Found 1 serial device: $($devices[0])" -ForegroundColor Blue
@@ -658,7 +739,10 @@ function Start-Installation {
                     $choice = Read-Host "Select device [1-$($devices.Count + 1)]"
                     if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($devices.Count + 1)) {
                         if ([int]$choice -eq ($devices.Count + 1)) {
-                            $script:SelectedSerialDevice = Read-Host "Enter serial device path" "COM1"
+                            # Manual entry - use existing value as default
+                            $existingSerialDevice = Read-EnvValue "PACKETCAPTURE_SERIAL_PORTS"
+                            $serialDeviceDefault = if ($existingSerialDevice) { $existingSerialDevice } else { "COM1" }
+                            $script:SelectedSerialDevice = Read-Host "Enter serial device path" $serialDeviceDefault
                         }
                         else {
                             $script:SelectedSerialDevice = $devices[([int]$choice - 1)]
@@ -686,8 +770,11 @@ function Start-Installation {
                 $bluetoothAdapter = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "OK" }
                 if (-not $bluetoothAdapter) {
                     Write-Host "WARNING: No Bluetooth adapter found or Bluetooth is disabled" -ForegroundColor Yellow
-                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                    # Read existing values from install directory's .env.local as defaults
+                    $existingBleDevice = Read-EnvValue "PACKETCAPTURE_BLE_DEVICE"
+                    $existingBleName = Read-EnvValue "PACKETCAPTURE_BLE_NAME"
+                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" $existingBleDevice
+                    $script:SelectedBleName = Read-Host "Enter device name (optional)" $existingBleName
                     return
                 }
                 
@@ -719,8 +806,11 @@ function Start-Installation {
                         $choice = Read-Host "Select device [1-$($pairedMeshCoreDevices.Count + 1)]"
                         if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($pairedMeshCoreDevices.Count + 1)) {
                             if ([int]$choice -eq ($pairedMeshCoreDevices.Count + 1)) {
-                                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                                $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                                # Manual entry - use existing values as defaults
+                                $existingBleDevice = Read-EnvValue "PACKETCAPTURE_BLE_DEVICE"
+                                $existingBleName = Read-EnvValue "PACKETCAPTURE_BLE_NAME"
+                                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" $existingBleDevice
+                                $script:SelectedBleName = Read-Host "Enter device name (optional)" $existingBleName
                             }
                             else {
                                 $selectedDevice = $pairedMeshCoreDevices[([int]$choice - 1)]
@@ -826,9 +916,12 @@ function Start-Installation {
                         while ($true) {
                             $choice = Read-Host "Select device [1-$($meshcoreDevices.Count + 1)]"
                             if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le ($meshcoreDevices.Count + 1)) {
-                                if ([int]$choice -eq ($meshcoreDevices.Count + 1)) {
-                                    $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                                    $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                            if ([int]$choice -eq ($meshcoreDevices.Count + 1)) {
+                                # Manual entry - use existing values as defaults
+                                $existingBleDevice = Read-EnvValue "PACKETCAPTURE_BLE_DEVICE"
+                                $existingBleName = Read-EnvValue "PACKETCAPTURE_BLE_NAME"
+                                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" $existingBleDevice
+                                $script:SelectedBleName = Read-Host "Enter device name (optional)" $existingBleName
     }
     else {
                                     $selectedDevice = $meshcoreDevices[([int]$choice - 1)]
@@ -859,16 +952,22 @@ function Start-Installation {
                         Write-Host "  - In pairing mode (if not already paired)" -ForegroundColor Blue
                         Write-Host "  - Not connected to another device" -ForegroundColor Blue
     Write-Host ""
-                        $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                        $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                        # Fallback to manual entry - use existing values as defaults
+                        $existingBleDevice = Read-EnvValue "PACKETCAPTURE_BLE_DEVICE"
+                        $existingBleName = Read-EnvValue "PACKETCAPTURE_BLE_NAME"
+                        $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" $existingBleDevice
+                        $script:SelectedBleName = Read-Host "Enter device name (optional)" $existingBleName
                     }
                 }
             }
             catch {
                 Write-Host "WARNING: BLE scanning failed: $($_.Exception.Message)" -ForegroundColor Yellow
                 Write-Host "INFO: Falling back to manual device entry" -ForegroundColor Blue
-                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" ""
-                $script:SelectedBleName = Read-Host "Enter device name (optional)" ""
+                # Use existing values as defaults
+                $existingBleDevice = Read-EnvValue "PACKETCAPTURE_BLE_DEVICE"
+                $existingBleName = Read-EnvValue "PACKETCAPTURE_BLE_NAME"
+                $script:SelectedBleDevice = Read-Host "Enter BLE device MAC address" $existingBleDevice
+                $script:SelectedBleName = Read-Host "Enter device name (optional)" $existingBleName
             }
             
             if ($script:SelectedBleDevice) {
@@ -999,8 +1098,17 @@ function Start-Installation {
         "3" {
             $script:ConnectionType = "tcp"
             Write-Host "SUCCESS: Selected TCP Connection" -ForegroundColor Green
-            $script:TcpHost = Read-Host "TCP host/address" "localhost"
-            $script:TcpPort = Read-Host "TCP port" "5000"
+            
+            # Read existing values from install directory's .env.local as defaults
+            $existingTcpHost = Read-EnvValue "PACKETCAPTURE_TCP_HOST"
+            $existingTcpPort = Read-EnvValue "PACKETCAPTURE_TCP_PORT"
+            
+            # Use existing values as defaults, or fall back to standard defaults
+            $tcpHostDefault = if ($existingTcpHost) { $existingTcpHost } else { "localhost" }
+            $tcpPortDefault = if ($existingTcpPort) { $existingTcpPort } else { "5000" }
+            
+            $script:TcpHost = Read-Host "TCP host/address" $tcpHostDefault
+            $script:TcpPort = Read-Host "TCP port" $tcpPortDefault
             
             # Validate port number
             if (-not ($script:TcpPort -match '^\d+$') -or [int]$script:TcpPort -lt 1 -or [int]$script:TcpPort -gt 65535) {
@@ -1064,9 +1172,15 @@ PACKETCAPTURE_LOG_LEVEL=INFO
     Write-Host "INFO: Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)" -ForegroundColor Blue
                 Write-Host ""
                 
+                # Use existing IATA as default if available and not XXX
+                $existingIata = Read-EnvValue "PACKETCAPTURE_IATA"
+                if (-not $existingIata -or $existingIata -eq "XXX") {
+                    $existingIata = ""
+                }
+                
                 $script:Iata = ""
                 while (-not $script:Iata -or $script:Iata -eq "XXX") {
-                        $script:Iata = Read-Host "Enter your IATA code (3 letters)"
+                        $script:Iata = Read-Host "Enter your IATA code (3 letters)" $existingIata
                     $script:Iata = $script:Iata.ToUpper().Trim()
                     
                     if (-not $script:Iata) {
@@ -1089,6 +1203,13 @@ PACKETCAPTURE_LOG_LEVEL=INFO
                 $content = $content -replace "^PACKETCAPTURE_IATA=.*", "PACKETCAPTURE_IATA=$script:Iata"
     Set-Content -Path $envLocal -Value $content
     Write-Host "SUCCESS: IATA code set to: $script:Iata" -ForegroundColor Green
+    
+    # Configure JWT options (owner public key and email) - global settings
+    $ownerKeyExists = (Get-Content $envLocal -ErrorAction SilentlyContinue) -match "^PACKETCAPTURE_OWNER_PUBLIC_KEY="
+    $ownerEmailExists = (Get-Content $envLocal -ErrorAction SilentlyContinue) -match "^PACKETCAPTURE_OWNER_EMAIL="
+    if (-not $ownerKeyExists -and -not $ownerEmailExists) {
+        Configure-JwtOptions
+    }
     
     # Configure MQTT brokers
                 Write-Host ""
@@ -1115,9 +1236,6 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
 "@
         Add-Content -Path $envLocal -Value $letsMeshConfig
         Write-Host "SUCCESS: LetsMesh Packet Analyzer enabled" -ForegroundColor Green
-        
-        # Configure JWT options (owner public key and client agent)
-        Configure-JwtOptions
         
         # Configure topics for LetsMesh
     Write-Host ""
@@ -1158,8 +1276,15 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
                 Write-Host "INFO: You can also manually edit the .env.local file after installation to customize topics" -ForegroundColor Blue
                 Write-Host ""
                 
-                $statusTopic = Read-Host "Status topic" "meshcore/{IATA}/{PUBLIC_KEY}/status"
-                $packetsTopic = Read-Host "Packets topic" "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+                # Read existing topic values from install directory's .env.local as defaults
+                $existingStatusTopic = Read-EnvValue "PACKETCAPTURE_MQTT1_TOPIC_STATUS"
+                $existingPacketsTopic = Read-EnvValue "PACKETCAPTURE_MQTT1_TOPIC_PACKETS"
+                
+                $statusTopicDefault = if ($existingStatusTopic) { $existingStatusTopic } else { "meshcore/{IATA}/{PUBLIC_KEY}/status" }
+                $packetsTopicDefault = if ($existingPacketsTopic) { $existingPacketsTopic } else { "meshcore/{IATA}/{PUBLIC_KEY}/packets" }
+                
+                $statusTopic = Read-Host "Status topic" $statusTopicDefault
+                $packetsTopic = Read-Host "Packets topic" $packetsTopicDefault
                 
                 Add-Content -Path $envLocal -Value ""
                 Add-Content -Path $envLocal -Value "# MQTT Topics for Broker 1 - Custom"

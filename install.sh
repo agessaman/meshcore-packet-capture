@@ -279,9 +279,11 @@ EOF
                     print_info "Rescanning for BLE devices..."
                     return 2  # Special return code to indicate rescan requested
                 elif [ "$choice" -eq $((device_count + 1)) ]; then
-                    # Manual entry
-                    local manual_mac=$(prompt_input "Enter BLE device MAC address" "")
-                    local manual_name=$(prompt_input "Enter device name (optional)" "")
+                    # Manual entry - use existing values as defaults
+                    EXISTING_BLE_DEVICE=$(read_env_value "PACKETCAPTURE_BLE_DEVICE")
+                    EXISTING_BLE_NAME=$(read_env_value "PACKETCAPTURE_BLE_NAME")
+                    local manual_mac=$(prompt_input "Enter BLE device MAC address" "$EXISTING_BLE_DEVICE")
+                    local manual_name=$(prompt_input "Enter device name (optional)" "$EXISTING_BLE_NAME")
                     if [ -n "$manual_mac" ]; then
                         SELECTED_BLE_DEVICE="$manual_mac"
                         SELECTED_BLE_NAME="$manual_name"
@@ -472,8 +474,25 @@ select_connection_type() {
     echo "     • Works with ser2net or other TCP-to-serial bridges"
     echo ""
     
+    # Read existing connection type and map to default choice number
+    EXISTING_CONNECTION_TYPE=$(read_env_value "PACKETCAPTURE_CONNECTION_TYPE")
+    DEFAULT_CHOICE="1"  # Default to BLE
+    if [ -n "$EXISTING_CONNECTION_TYPE" ]; then
+        case "$EXISTING_CONNECTION_TYPE" in
+            "ble")
+                DEFAULT_CHOICE="1"
+                ;;
+            "serial")
+                DEFAULT_CHOICE="2"
+                ;;
+            "tcp")
+                DEFAULT_CHOICE="3"
+                ;;
+        esac
+    fi
+    
     while true; do
-        local choice=$(prompt_input "Select connection type [1-3]" "1")
+        local choice=$(prompt_input "Select connection type [1-3]" "$DEFAULT_CHOICE")
         case $choice in
             1)
                 CONNECTION_TYPE="ble"
@@ -495,10 +514,12 @@ select_connection_type() {
                             # Rescan requested, continue the loop
                             continue
                         else
-                            # Fallback to manual entry
+                            # Fallback to manual entry - use existing values as defaults
                             print_info "BLE scanning failed or no devices found. Please enter device details manually."
-                            SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
-                            SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
+                            EXISTING_BLE_DEVICE=$(read_env_value "PACKETCAPTURE_BLE_DEVICE")
+                            EXISTING_BLE_NAME=$(read_env_value "PACKETCAPTURE_BLE_NAME")
+                            SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "$EXISTING_BLE_DEVICE")
+                            SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "$EXISTING_BLE_NAME")
                             if [ -n "$SELECTED_BLE_DEVICE" ]; then
                                 # Handle pairing for manually entered device
                                 if handle_ble_pairing "$SELECTED_BLE_DEVICE" "$SELECTED_BLE_NAME"; then
@@ -515,9 +536,11 @@ select_connection_type() {
                         fi
                     done
                 else
-                    # Manual entry without scanning
-                    SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "")
-                    SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "")
+                    # Manual entry without scanning - use existing values as defaults
+                    EXISTING_BLE_DEVICE=$(read_env_value "PACKETCAPTURE_BLE_DEVICE")
+                    EXISTING_BLE_NAME=$(read_env_value "PACKETCAPTURE_BLE_NAME")
+                    SELECTED_BLE_DEVICE=$(prompt_input "Enter BLE device MAC address" "$EXISTING_BLE_DEVICE")
+                    SELECTED_BLE_NAME=$(prompt_input "Enter device name (optional)" "$EXISTING_BLE_NAME")
                     if [ -n "$SELECTED_BLE_DEVICE" ]; then
                         # Handle pairing for manually entered device
                         if handle_ble_pairing "$SELECTED_BLE_DEVICE" "$SELECTED_BLE_NAME"; then
@@ -578,7 +601,12 @@ select_serial_device() {
         echo "  1) Enter path manually"
         echo ""
         local choice=$(prompt_input "Select option [1]" "1")
-        SELECTED_SERIAL_DEVICE=$(prompt_input "Enter serial device path" "/dev/ttyACM0")
+        
+        # Read existing serial device from install directory's .env.local as default
+        EXISTING_SERIAL_DEVICE=$(read_env_value "PACKETCAPTURE_SERIAL_PORTS")
+        SERIAL_DEVICE_DEFAULT="${EXISTING_SERIAL_DEVICE:-/dev/ttyACM0}"
+        
+        SELECTED_SERIAL_DEVICE=$(prompt_input "Enter serial device path" "$SERIAL_DEVICE_DEFAULT")
         return
     fi
     
@@ -617,8 +645,10 @@ select_serial_device() {
         
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le $i ]; then
             if [ "$choice" -eq $i ]; then
-                # Manual entry
-                SELECTED_SERIAL_DEVICE=$(prompt_input "Enter serial device path" "/dev/ttyACM0")
+                # Manual entry - use existing value as default
+                EXISTING_SERIAL_DEVICE=$(read_env_value "PACKETCAPTURE_SERIAL_PORTS")
+                SERIAL_DEVICE_DEFAULT="${EXISTING_SERIAL_DEVICE:-/dev/ttyACM0}"
+                SELECTED_SERIAL_DEVICE=$(prompt_input "Enter serial device path" "$SERIAL_DEVICE_DEFAULT")
                 return
             else
                 # Selected from list
@@ -640,8 +670,16 @@ configure_tcp_connection() {
     print_info "This allows you to access serial devices over the network"
     echo ""
     
-    TCP_HOST=$(prompt_input "TCP host/address" "localhost")
-    TCP_PORT=$(prompt_input "TCP port" "5000")
+    # Read existing values from install directory's .env.local as defaults
+    EXISTING_TCP_HOST=$(read_env_value "PACKETCAPTURE_TCP_HOST")
+    EXISTING_TCP_PORT=$(read_env_value "PACKETCAPTURE_TCP_PORT")
+    
+    # Use existing values as defaults, or fall back to standard defaults
+    TCP_HOST_DEFAULT="${EXISTING_TCP_HOST:-localhost}"
+    TCP_PORT_DEFAULT="${EXISTING_TCP_PORT:-5000}"
+    
+    TCP_HOST=$(prompt_input "TCP host/address" "$TCP_HOST_DEFAULT")
+    TCP_PORT=$(prompt_input "TCP port" "$TCP_PORT_DEFAULT")
     
     # Validate port number
     if ! [[ "$TCP_PORT" =~ ^[0-9]+$ ]] || [ "$TCP_PORT" -lt 1 ] || [ "$TCP_PORT" -gt 65535 ]; then
@@ -689,9 +727,51 @@ prompt_input() {
     fi
 }
 
+# Helper function to read a value from .env.local in the install directory
+# Also checks backup files if the main file doesn't exist, doesn't have the value, or has placeholder values
+read_env_value() {
+    local key="$1"
+    # Ensure we use the install directory, not the working directory
+    if [ -z "$INSTALL_DIR" ]; then
+        return
+    fi
+    local env_file="$INSTALL_DIR/.env.local"
+    local value=""
+    
+    # First try the main .env.local file
+    if [ -f "$env_file" ]; then
+        value=$(grep "^${key}=" "$env_file" 2>/dev/null | cut -d'=' -f2- | sed 's/^"//;s/"$//')
+        # If we found a value and it's not a placeholder (XXX, empty, etc.), use it
+        if [ -n "$value" ] && [ "$value" != "XXX" ]; then
+            echo "$value"
+            return
+        fi
+    fi
+    
+    # If not found or placeholder value, check backup files (most recent first)
+    # Backup files are named .env.local.backup-YYYYMMDD-HHMMSS
+    local backup_file=$(ls -t "$INSTALL_DIR"/.env.local.backup-* 2>/dev/null | head -1)
+    if [ -n "$backup_file" ] && [ -f "$backup_file" ]; then
+        value=$(grep "^${key}=" "$backup_file" 2>/dev/null | cut -d'=' -f2- | sed 's/^"//;s/"$//')
+        # Only return if we have a non-placeholder value
+        if [ -n "$value" ] && [ "$value" != "XXX" ]; then
+            echo "$value"
+            return
+        fi
+    fi
+    
+    # If we got here, return the value from main file (even if XXX) or empty
+    # This preserves the behavior for cases where we want to know if it's XXX
+    echo "$value"
+}
+
 # Configure JWT token options (owner public key and client agent)
 configure_jwt_options() {
     ENV_LOCAL="$INSTALL_DIR/.env.local"
+    
+    # Read existing values as defaults
+    EXISTING_OWNER_KEY=$(read_env_value "PACKETCAPTURE_OWNER_PUBLIC_KEY")
+    EXISTING_OWNER_EMAIL=$(read_env_value "PACKETCAPTURE_OWNER_EMAIL")
     
     echo ""
     print_header "JWT Token Configuration (Optional)"
@@ -707,7 +787,7 @@ configure_jwt_options() {
     # Prompt for owner public key
     if prompt_yes_no "Would you like to configure an owner public key?" "n"; then
         while true; do
-            owner_key=$(prompt_input "Enter owner public key (64 hex characters)" "")
+            owner_key=$(prompt_input "Enter owner public key (64 hex characters)" "$EXISTING_OWNER_KEY")
             owner_key=$(echo "$owner_key" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
             
             if [ -z "$owner_key" ]; then
@@ -739,7 +819,7 @@ configure_jwt_options() {
     echo ""
     if prompt_yes_no "Would you like to configure an owner email for Let's Mesh Analyzer?" "n"; then
         while true; do
-            email=$(prompt_input "Enter owner email address" "")
+            email=$(prompt_input "Enter owner email address" "$EXISTING_OWNER_EMAIL")
             email=$(echo "$email" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
             
             if [ -z "$email" ]; then
@@ -815,8 +895,15 @@ configure_mqtt_topics() {
             print_info "You can also manually edit the .env.local file after installation to customize topics"
             echo ""
             
-            local status_topic=$(prompt_input "Status topic" "meshcore/{IATA}/{PUBLIC_KEY}/status")
-            local packets_topic=$(prompt_input "Packets topic" "meshcore/{IATA}/{PUBLIC_KEY}/packets")
+            # Read existing topic values from install directory's .env.local as defaults
+            EXISTING_STATUS_TOPIC=$(read_env_value "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_STATUS")
+            EXISTING_PACKETS_TOPIC=$(read_env_value "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_PACKETS")
+            
+            STATUS_TOPIC_DEFAULT="${EXISTING_STATUS_TOPIC:-meshcore/{IATA}/{PUBLIC_KEY}/status}"
+            PACKETS_TOPIC_DEFAULT="${EXISTING_PACKETS_TOPIC:-meshcore/{IATA}/{PUBLIC_KEY}/packets}"
+            
+            local status_topic=$(prompt_input "Status topic" "$STATUS_TOPIC_DEFAULT")
+            local packets_topic=$(prompt_input "Packets topic" "$PACKETS_TOPIC_DEFAULT")
             
             echo "" >> "$ENV_LOCAL"
             echo "# MQTT Topics for Broker $BROKER_NUM - Custom" >> "$ENV_LOCAL"
@@ -838,8 +925,8 @@ configure_mqtt_topics() {
 configure_mqtt_brokers_only() {
     ENV_LOCAL="$INSTALL_DIR/.env.local"
     
-    # Get IATA from existing config
-    IATA=$(grep "^PACKETCAPTURE_IATA=" "$ENV_LOCAL" 2>/dev/null | cut -d'=' -f2)
+    # Get IATA from existing config (including backup files)
+    IATA=$(read_env_value "PACKETCAPTURE_IATA")
     
     # Always prompt for IATA if it's XXX or empty
     if [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; then
@@ -848,8 +935,14 @@ configure_mqtt_brokers_only() {
         print_info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
         echo ""
         
+        # Use existing IATA as default if available and not XXX
+        EXISTING_IATA=$(read_env_value "PACKETCAPTURE_IATA")
+        if [ -z "$EXISTING_IATA" ] || [ "$EXISTING_IATA" = "XXX" ]; then
+            EXISTING_IATA=""
+        fi
+        
         while [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; do
-            IATA=$(prompt_input "Enter your IATA code (3 letters)" "")
+            IATA=$(prompt_input "Enter your IATA code (3 letters)" "$EXISTING_IATA")
             IATA=$(echo "$IATA" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
             
             if [ -z "$IATA" ]; then
@@ -996,8 +1089,8 @@ PACKETCAPTURE_LOG_LEVEL=INFO
 EOF
     fi
     
-    # Get IATA from existing config
-    IATA=$(grep "^PACKETCAPTURE_IATA=" "$ENV_LOCAL" 2>/dev/null | cut -d'=' -f2)
+    # Get IATA from existing config (including backup files)
+    IATA=$(read_env_value "PACKETCAPTURE_IATA")
     
     # Always prompt for IATA if it's XXX or empty
     if [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; then
@@ -1006,8 +1099,14 @@ EOF
         print_info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
         echo ""
         
+        # Use existing IATA as default if available and not XXX
+        EXISTING_IATA=$(read_env_value "PACKETCAPTURE_IATA")
+        if [ -z "$EXISTING_IATA" ] || [ "$EXISTING_IATA" = "XXX" ]; then
+            EXISTING_IATA=""
+        fi
+        
         while [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; do
-            IATA=$(prompt_input "Enter your IATA code (3 letters)" "")
+            IATA=$(prompt_input "Enter your IATA code (3 letters)" "$EXISTING_IATA")
             IATA=$(echo "$IATA" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
             
             if [ -z "$IATA" ]; then
@@ -1028,6 +1127,11 @@ EOF
         echo ""
         print_success "IATA code set to: $IATA"
         echo ""
+    fi
+    
+    # Configure JWT options (owner public key and email) - global settings
+    if ! grep -q "^PACKETCAPTURE_OWNER_PUBLIC_KEY=" "$ENV_LOCAL" 2>/dev/null && ! grep -q "^PACKETCAPTURE_OWNER_EMAIL=" "$ENV_LOCAL" 2>/dev/null; then
+        configure_jwt_options
     fi
     
     echo ""
@@ -1065,9 +1169,6 @@ PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
 PACKETCAPTURE_MQTT2_KEEPALIVE=120
 EOF
             print_success "LetsMesh Packet Analyzer brokers enabled"
-            
-            # Configure JWT options (owner public key and client agent)
-            configure_jwt_options
             
             # Configure topics for LetsMesh
             configure_mqtt_topics 1
@@ -1127,7 +1228,14 @@ configure_custom_broker() {
     echo ""
     print_header "Configuring MQTT Broker $BROKER_NUM"
     
-    SERVER=$(prompt_input "Server hostname/IP")
+    # Read existing values from install directory's .env.local as defaults
+    EXISTING_SERVER=$(read_env_value "PACKETCAPTURE_MQTT${BROKER_NUM}_SERVER")
+    EXISTING_PORT=$(read_env_value "PACKETCAPTURE_MQTT${BROKER_NUM}_PORT")
+    EXISTING_TOKEN_AUDIENCE=$(read_env_value "PACKETCAPTURE_MQTT${BROKER_NUM}_TOKEN_AUDIENCE")
+    EXISTING_USERNAME=$(read_env_value "PACKETCAPTURE_MQTT${BROKER_NUM}_USERNAME")
+    EXISTING_PASSWORD=$(read_env_value "PACKETCAPTURE_MQTT${BROKER_NUM}_PASSWORD")
+    
+    SERVER=$(prompt_input "Server hostname/IP" "$EXISTING_SERVER")
     if [ -z "$SERVER" ]; then
         print_warning "Server hostname required - skipping broker $BROKER_NUM"
         return
@@ -1138,7 +1246,8 @@ configure_custom_broker() {
     echo "PACKETCAPTURE_MQTT${BROKER_NUM}_ENABLED=true" >> "$ENV_LOCAL"
     echo "PACKETCAPTURE_MQTT${BROKER_NUM}_SERVER=$SERVER" >> "$ENV_LOCAL"
     
-    PORT=$(prompt_input "Port" "1883")
+    PORT_DEFAULT="${EXISTING_PORT:-1883}"
+    PORT=$(prompt_input "Port" "$PORT_DEFAULT")
     echo "PACKETCAPTURE_MQTT${BROKER_NUM}_PORT=$PORT" >> "$ENV_LOCAL"
     
     # Transport
@@ -1169,23 +1278,18 @@ configure_custom_broker() {
             AUTH_TYPE=1
         else
             echo "PACKETCAPTURE_MQTT${BROKER_NUM}_USE_AUTH_TOKEN=true" >> "$ENV_LOCAL"
-            TOKEN_AUDIENCE=$(prompt_input "Token audience (optional)" "")
+            TOKEN_AUDIENCE=$(prompt_input "Token audience (optional)" "$EXISTING_TOKEN_AUDIENCE")
             if [ -n "$TOKEN_AUDIENCE" ]; then
                 echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOKEN_AUDIENCE=$TOKEN_AUDIENCE" >> "$ENV_LOCAL"
-            fi
-            
-            # Configure JWT options if not already configured
-            if ! grep -q "^PACKETCAPTURE_OWNER_PUBLIC_KEY=" "$ENV_LOCAL" 2>/dev/null && ! grep -q "^PACKETCAPTURE_OWNER_EMAIL=" "$ENV_LOCAL" 2>/dev/null; then
-                configure_jwt_options
             fi
         fi
     fi
     
     if [ "$AUTH_TYPE" = "1" ]; then
-        USERNAME=$(prompt_input "Username" "")
+        USERNAME=$(prompt_input "Username" "$EXISTING_USERNAME")
         if [ -n "$USERNAME" ]; then
             echo "PACKETCAPTURE_MQTT${BROKER_NUM}_USERNAME=$USERNAME" >> "$ENV_LOCAL"
-            PASSWORD=$(prompt_input "Password" "")
+            PASSWORD=$(prompt_input "Password" "$EXISTING_PASSWORD")
             if [ -n "$PASSWORD" ]; then
                 echo "PACKETCAPTURE_MQTT${BROKER_NUM}_PASSWORD=$PASSWORD" >> "$ENV_LOCAL"
             fi
@@ -1475,16 +1579,15 @@ main() {
                 print_info "Example: SEA (Seattle), LAX (Los Angeles), NYC (New York), LON (London)"
                 echo ""
                 
-                # Try to extract existing IATA from config
-                EXISTING_IATA=$(grep "^PACKETCAPTURE_IATA=" "$INSTALL_DIR/.env.local" 2>/dev/null | cut -d'=' -f2)
+                # Use existing IATA as default if available and not XXX
+                EXISTING_IATA=$(read_env_value "PACKETCAPTURE_IATA")
+                if [ -z "$EXISTING_IATA" ] || [ "$EXISTING_IATA" = "XXX" ]; then
+                    EXISTING_IATA=""
+                fi
                 
                 IATA=""
                 while [ -z "$IATA" ] || [ "$IATA" = "XXX" ]; do
-                    if [ -n "$EXISTING_IATA" ] && [ "$EXISTING_IATA" != "XXX" ]; then
-                        IATA=$(prompt_input "Enter your IATA code" "$EXISTING_IATA")
-                    else
-                        IATA=$(prompt_input "Enter your IATA code (3 letters)" "")
-                    fi
+                    IATA=$(prompt_input "Enter your IATA code (3 letters)" "$EXISTING_IATA")
                     IATA=$(echo "$IATA" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
                     
                     if [ -z "$IATA" ]; then

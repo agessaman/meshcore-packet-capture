@@ -69,8 +69,9 @@ Add this to your `/etc/nixos/configuration.nix`:
     # };
     
     # Device private key for Let'sMesh authentication
-    # Required for auth token authentication
-    privateKeyFile = "/path/to/your/private/key/file";
+    # The script automatically fetches the private key from the device if it supports
+    # ENABLE_PRIVATE_KEY_EXPORT. Only provide these if automatic fetching fails:
+    # privateKeyFile = "/path/to/your/private/key/file";
     # OR
     # privateKey = "your_private_key_hex_string";
     
@@ -163,7 +164,10 @@ If you're using Nix Flakes, add this to your `flake.nix`:
               keepalive = 120;
             };
             
-            privateKeyFile = "/path/to/your/private/key/file";
+            # Device private key is automatically fetched from the device
+            # Only set these if automatic fetching fails:
+            # privateKeyFile = "/path/to/your/private/key/file";
+            # privateKey = "your_private_key_hex_string";
             
             # Optional: Owner information for Let'sMesh Analyzer
             # ownerPublicKey = "YOUR_64_CHAR_HEX_PUBLIC_KEY";
@@ -271,9 +275,11 @@ services.meshcore-packet-capture = {
     useAuthToken = true;
     tokenAudience = "mqtt.example.com";
   };
-  privateKey = "your_private_key_hex_string";
+  # Private key is automatically fetched from the device if it supports ENABLE_PRIVATE_KEY_EXPORT
+  # Only provide these if automatic fetching fails:
+  # privateKey = "your_private_key_hex_string";
   # OR
-  privateKeyFile = "/path/to/private/key/file";
+  # privateKeyFile = "/path/to/private/key/file";
 };
 ```
 
@@ -294,7 +300,8 @@ services.meshcore-packet-capture = {
   uploadPacketTypes = [ 0 1 2 ];  # Filter packet types, null = all
   rfDataTimeout = 15.0;
   outputFile = null;  # Optional output file path
-  privateKeyFile = "/path/to/private/key/file";  # Required for auth token auth
+  # privateKeyFile = "/path/to/private/key/file";  # Only if auto-fetch fails
+  # privateKey = "hex_string";  # Only if auto-fetch fails
   ownerPublicKey = null;  # Optional: 64 hex character owner public key
   ownerEmail = null;  # Optional: Owner email for Let'sMesh Analyzer
   dataDir = "/var/lib/meshcore-packet-capture";

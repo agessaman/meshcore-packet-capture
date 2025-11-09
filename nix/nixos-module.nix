@@ -7,7 +7,8 @@
       options = {
         enabled = lib.mkEnableOption "Enable MQTT broker ${toString num}";
         server = lib.mkOption {
-          type = lib.types.str;
+          type = lib.types.nullOr lib.types.str;
+          default = null;
           description = "MQTT broker address";
         };
         port = lib.mkOption {
@@ -100,26 +101,32 @@
 
     # Build environment variables from configuration
     buildEnvVars = let
-      mqttEnvVars = lib.flatten (lib.imap1 (num: broker: [
-        "PACKETCAPTURE_MQTT${toString num}_ENABLED=${if broker.enabled then "true" else "false"}"
-        "PACKETCAPTURE_MQTT${toString num}_SERVER=${broker.server}"
-        "PACKETCAPTURE_MQTT${toString num}_PORT=${toString broker.port}"
-      ] ++ lib.optional (broker.username != null) "PACKETCAPTURE_MQTT${toString num}_USERNAME=${broker.username}"
-      ++ lib.optional (broker.password != null) "PACKETCAPTURE_MQTT${toString num}_PASSWORD=${broker.password}"
-      ++ ["PACKETCAPTURE_MQTT${toString num}_TRANSPORT=${broker.transport}"]
-      ++ ["PACKETCAPTURE_MQTT${toString num}_USE_TLS=${if broker.useTLS then "true" else "false"}"]
-      ++ ["PACKETCAPTURE_MQTT${toString num}_TLS_VERIFY=${if broker.tlsVerify then "true" else "false"}"]
-      ++ ["PACKETCAPTURE_MQTT${toString num}_USE_AUTH_TOKEN=${if broker.useAuthToken then "true" else "false"}"]
-      ++ lib.optional (broker.tokenAudience != null) "PACKETCAPTURE_MQTT${toString num}_TOKEN_AUDIENCE=${broker.tokenAudience}"
-      ++ lib.optional (broker.clientIdPrefix != null) "PACKETCAPTURE_MQTT${toString num}_CLIENT_ID_PREFIX=${broker.clientIdPrefix}"
-      ++ ["PACKETCAPTURE_MQTT${toString num}_QOS=${toString broker.qos}"]
-      ++ ["PACKETCAPTURE_MQTT${toString num}_RETAIN=${if broker.retain then "true" else "false"}"]
-      ++ ["PACKETCAPTURE_MQTT${toString num}_KEEPALIVE=${toString broker.keepalive}"]
-      ++ lib.optional (broker.topicStatus != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_STATUS=${broker.topicStatus}"
-      ++ lib.optional (broker.topicPackets != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_PACKETS=${broker.topicPackets}"
-      ++ lib.optional (broker.topicRaw != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_RAW=${broker.topicRaw}"
-      ++ lib.optional (broker.topicDecoded != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_DECODED=${broker.topicDecoded}"
-      ++ lib.optional (broker.topicDebug != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_DEBUG=${broker.topicDebug}") [
+      mqttEnvVars = lib.flatten (lib.imap1 (num: broker: 
+        # Only generate env vars if broker is enabled and has a server configured
+        if broker.enabled && broker.server != null then
+          [
+            "PACKETCAPTURE_MQTT${toString num}_ENABLED=true"
+            "PACKETCAPTURE_MQTT${toString num}_SERVER=${broker.server}"
+            "PACKETCAPTURE_MQTT${toString num}_PORT=${toString broker.port}"
+          ] ++ lib.optional (broker.username != null) "PACKETCAPTURE_MQTT${toString num}_USERNAME=${broker.username}"
+          ++ lib.optional (broker.password != null) "PACKETCAPTURE_MQTT${toString num}_PASSWORD=${broker.password}"
+          ++ ["PACKETCAPTURE_MQTT${toString num}_TRANSPORT=${broker.transport}"]
+          ++ ["PACKETCAPTURE_MQTT${toString num}_USE_TLS=${if broker.useTLS then "true" else "false"}"]
+          ++ ["PACKETCAPTURE_MQTT${toString num}_TLS_VERIFY=${if broker.tlsVerify then "true" else "false"}"]
+          ++ ["PACKETCAPTURE_MQTT${toString num}_USE_AUTH_TOKEN=${if broker.useAuthToken then "true" else "false"}"]
+          ++ lib.optional (broker.tokenAudience != null) "PACKETCAPTURE_MQTT${toString num}_TOKEN_AUDIENCE=${broker.tokenAudience}"
+          ++ lib.optional (broker.clientIdPrefix != null) "PACKETCAPTURE_MQTT${toString num}_CLIENT_ID_PREFIX=${broker.clientIdPrefix}"
+          ++ ["PACKETCAPTURE_MQTT${toString num}_QOS=${toString broker.qos}"]
+          ++ ["PACKETCAPTURE_MQTT${toString num}_RETAIN=${if broker.retain then "true" else "false"}"]
+          ++ ["PACKETCAPTURE_MQTT${toString num}_KEEPALIVE=${toString broker.keepalive}"]
+          ++ lib.optional (broker.topicStatus != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_STATUS=${broker.topicStatus}"
+          ++ lib.optional (broker.topicPackets != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_PACKETS=${broker.topicPackets}"
+          ++ lib.optional (broker.topicRaw != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_RAW=${broker.topicRaw}"
+          ++ lib.optional (broker.topicDecoded != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_DECODED=${broker.topicDecoded}"
+          ++ lib.optional (broker.topicDebug != null) "PACKETCAPTURE_MQTT${toString num}_TOPIC_DEBUG=${broker.topicDebug}"
+        else [
+          "PACKETCAPTURE_MQTT${toString num}_ENABLED=false"
+        ]) [
         cfg.mqtt1
         cfg.mqtt2
         cfg.mqtt3

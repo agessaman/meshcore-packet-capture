@@ -276,6 +276,13 @@ class PacketCapture:
         self.last_advert_time = 0
         self.advert_task = None
         
+        # Packet type filtering for uploads
+        upload_types_str = self.get_env('UPLOAD_PACKET_TYPES', '').strip()
+        if upload_types_str:
+            self.allowed_upload_types = set(t.strip() for t in upload_types_str.split(','))
+            self.logger.info(f"Packet type upload filter enabled: {sorted(self.allowed_upload_types)}")
+        else:
+            self.allowed_upload_types = None  # None means upload all (default)
         
         # JWT renewal task
         self.jwt_renewal_task = None
@@ -2365,6 +2372,16 @@ class PacketCapture:
         if self.output_handle:
             self.output_handle.write(json_data + "\n")
             self.output_handle.flush()
+        
+        # Filter by packet type if configured (only affects MQTT upload, not file/console output)
+        if self.allowed_upload_types is not None:
+            packet_type = packet_data.get('packet_type')
+            if packet_type not in self.allowed_upload_types:
+                # Skip MQTT upload but already wrote to file/console above
+                if self.debug:
+                    self.logger.debug(f"Filtered out packet type {packet_type} from upload (not in allowed types: {sorted(self.allowed_upload_types)})")
+                # Return zero metrics since we didn't upload
+                return {"attempted": 0, "succeeded": 0}
         
         # Publish to MQTT if enabled
         publish_metrics = {"attempted": 0, "succeeded": 0}

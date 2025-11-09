@@ -203,6 +203,40 @@ PACKETCAPTURE_MAX_MQTT_RETRIES=0
 #### Advert Settings
 - `PACKETCAPTURE_ADVERT_INTERVAL_HOURS`: Send flood adverts at this interval (0 = disabled, default = 11 hours)
 
+#### Packet Type Filtering
+- `PACKETCAPTURE_UPLOAD_PACKET_TYPES`: Comma-separated list of packet type numbers to upload to MQTT (default: upload all types)
+
+This setting allows you to filter which packet types are uploaded to MQTT brokers. Packets are still captured and written to files/console, but only specified packet types will be uploaded to MQTT.
+
+**Available Packet Types:**
+- `0` = REQ (Request)
+- `1` = RESPONSE
+- `2` = TXT_MSG (Text Message)
+- `3` = ACK (Acknowledgment)
+- `4` = ADVERT (Advertisement)
+- `5` = GRP_TXT (Group Text)
+- `6` = GRP_DATA (Group Data)
+- `7` = ANON_REQ (Anonymous Request)
+- `8` = PATH
+- `9` = TRACE
+- `10` = MULTIPART
+- `11-14` = Reserved
+- `15` = RAW_CUSTOM
+
+**Examples:**
+```bash
+# Upload only text messages and advertisements
+PACKETCAPTURE_UPLOAD_PACKET_TYPES=2,4
+
+# Upload only requests, responses, and text messages
+PACKETCAPTURE_UPLOAD_PACKET_TYPES=0,1,2
+
+# Upload all types (default behavior - leave unset or empty)
+# PACKETCAPTURE_UPLOAD_PACKET_TYPES=
+```
+
+**Note:** If this setting is not configured or is empty, all packet types will be uploaded.
+
 ## Usage
 
 ### Local Usage

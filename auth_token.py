@@ -46,7 +46,7 @@ def create_auth_token(public_key_hex: str, private_key_hex: str, expiry_seconds:
     """
     Create a JWT-style auth token for MeshCore MQTT authentication
     
-    Uses the meshcore-decoder CLI tool if available, otherwise falls back to pure Python implementation.
+    Requires the meshcore-decoder CLI tool to be installed and available in PATH.
     
     Args:
         public_key_hex: 32-byte public key in hex format
@@ -56,14 +56,21 @@ def create_auth_token(public_key_hex: str, private_key_hex: str, expiry_seconds:
     
     Returns:
         JWT-style token string
+    
+    Raises:
+        FileNotFoundError: If meshcore-decoder is not found in PATH
+        Exception: If token generation fails
     """
-    # Try meshcore-decoder CLI first
+    # Find the meshcore-decoder executable with proper platform handling
+    decoder_cmd = _find_meshcore_decoder()
+    if not decoder_cmd:
+        raise FileNotFoundError(
+            "meshcore-decoder not found in PATH. "
+            "Please install meshcore-decoder to generate JWTs for sign-in. "
+            "The meshcore-decoder tool is required for JWT token generation."
+        )
+    
     try:
-        # Find the meshcore-decoder executable with proper platform handling
-        decoder_cmd = _find_meshcore_decoder()
-        if not decoder_cmd:
-            raise FileNotFoundError("meshcore-decoder not found in PATH")
-        
         cmd = [decoder_cmd, 'auth-token', public_key_hex, private_key_hex, '-e', str(expiry_seconds)]
         
         if claims:
@@ -78,7 +85,10 @@ def create_auth_token(public_key_hex: str, private_key_hex: str, expiry_seconds:
         )
         
         if result.returncode != 0:
-            raise Exception(f"meshcore-decoder error (exit code {result.returncode}): {result.stderr}")
+            raise Exception(
+                f"meshcore-decoder error (exit code {result.returncode}): {result.stderr}. "
+                "Please ensure meshcore-decoder is properly installed and configured."
+            )
         
         token = result.stdout.strip()
         if not token or token.count('.') != 2:
@@ -87,73 +97,15 @@ def create_auth_token(public_key_hex: str, private_key_hex: str, expiry_seconds:
         return token
         
     except subprocess.TimeoutExpired:
-        raise Exception("Token generation timed out")
-    except FileNotFoundError:
-        # Fallback to pure Python implementation
-        return _create_auth_token_python(public_key_hex, private_key_hex, expiry_seconds, **claims)
+        raise Exception(
+            "Token generation timed out. "
+            "Please ensure meshcore-decoder is working correctly."
+        )
     except Exception as e:
-        raise Exception(f"Failed to generate auth token: {str(e)}")
-
-
-def _create_auth_token_python(public_key_hex: str, private_key_hex: str, expiry_seconds: int = 86400, **claims) -> str:
-    """
-    Fallback pure Python JWT token generation
-    
-    Args:
-        public_key_hex: 32-byte public key in hex format
-        private_key_hex: 64-byte private key in hex format (MeshCore format)
-        expiry_seconds: Token expiry time in seconds (default 24 hours)
-        **claims: Additional JWT claims
-    
-    Returns:
-        JWT-style token string
-    """
-    # Convert hex strings to bytes
-    try:
-        pub_key_bytes = bytes.fromhex(public_key_hex)
-        priv_key_bytes = bytes.fromhex(private_key_hex)
-    except ValueError as e:
-        raise ValueError(f"Invalid hex key format: {e}")
-    
-    # Create JWT header
-    header = {
-        "alg": "HS256",
-        "typ": "JWT"
-    }
-    
-    # Create JWT payload
-    now = int(time.time())
-    payload = {
-        "iss": f"v1_{public_key_hex.upper()}",  # Issuer: v1_<PUBLIC_KEY>
-        "iat": now,  # Issued at
-        "exp": now + expiry_seconds,  # Expires in specified seconds
-        "sub": public_key_hex.upper()  # Subject: public key
-    }
-    
-    # Add any additional claims
-    payload.update(claims)
-    
-    # Encode header and payload
-    header_encoded = base64url_encode(
-        json.dumps(header, separators=(',', ':')).encode('utf-8')
-    )
-    
-    payload_encoded = base64url_encode(
-        json.dumps(payload, separators=(',', ':')).encode('utf-8')
-    )
-    
-    # Create signature
-    message = f"{header_encoded}.{payload_encoded}"
-    signature = hmac.new(
-        priv_key_bytes,
-        message.encode('utf-8'),
-        hashlib.sha256
-    ).digest()
-    
-    signature_encoded = base64url_encode(signature)
-    
-    # Return complete JWT
-    return f"{message}.{signature_encoded}"
+        raise Exception(
+            f"Failed to generate auth token: {str(e)}. "
+            "Please ensure meshcore-decoder is installed and available in PATH."
+        )
 
 
 def read_private_key_file(filepath: str) -> str:

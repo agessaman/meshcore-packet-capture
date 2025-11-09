@@ -4,6 +4,10 @@ This project includes a NixOS service module that allows you to run MeshCore Pac
 
 ## Quick Start
 
+### Recommended Configuration (Let'sMesh Analyzer)
+
+This configuration uploads packets to both Let's Mesh Analyzer servers (US and EU) for redundancy, plus an optional third MQTT broker for your own infrastructure:
+
 Add this to your `/etc/nixos/configuration.nix`:
 
 ```nix
@@ -14,15 +18,68 @@ Add this to your `/etc/nixos/configuration.nix`:
 
   services.meshcore-packet-capture = {
     enable = true;
-    connectionType = "ble";
+    connectionType = "ble";  # or "serial" or "tcp"
     
+    # Connection settings (choose one based on connectionType)
+    # For BLE:
+    # bleAddress = "AA:BB:CC:DD:EE:FF";  # optional: specific device address
+    # bleDeviceName = "MeshCore Device";  # optional: device name to scan for
+    
+    # For Serial:
+    # serialPorts = [ "/dev/ttyUSB0" "/dev/ttyUSB1" ];  # list of ports to try
+    
+    # For TCP:
+    # tcpHost = "localhost";  # TCP server hostname
+    # tcpPort = 5000;  # TCP server port
+    
+    # Let'sMesh Analyzer - US Server
     mqtt1 = {
       enabled = true;
-      server = "mqtt.example.com";
-      port = 1883;
-      username = "your_username";
-      password = "your_password";
+      server = "mqtt-us-v1.letsmesh.net";
+      port = 443;
+      transport = "websockets";
+      useTLS = true;
+      useAuthToken = true;
+      tokenAudience = "mqtt-us-v1.letsmesh.net";
+      keepalive = 120;
     };
+    
+    # Let'sMesh Analyzer - EU Server
+    mqtt2 = {
+      enabled = true;
+      server = "mqtt-eu-v1.letsmesh.net";
+      port = 443;
+      transport = "websockets";
+      useTLS = true;
+      useAuthToken = true;
+      tokenAudience = "mqtt-eu-v1.letsmesh.net";
+      keepalive = 120;
+    };
+    
+    # Optional: Your own MQTT broker (uncomment and configure as needed)
+    # mqtt3 = {
+    #   enabled = true;
+    #   server = "mqtt.example.com";
+    #   port = 1883;
+    #   username = "your_username";
+    #   password = "your_password";
+    #   # or use TLS:
+    #   # port = 8883;
+    #   # useTLS = true;
+    # };
+    
+    # Device private key for Let'sMesh authentication
+    # Required for auth token authentication
+    privateKeyFile = "/path/to/your/private/key/file";
+    # OR
+    # privateKey = "your_private_key_hex_string";
+    
+    # Optional: Owner information for Let'sMesh Analyzer
+    # ownerPublicKey = "YOUR_64_CHAR_HEX_PUBLIC_KEY";  # 64 hex characters
+    # ownerEmail = "your.email@example.com";  # Email for Let'sMesh Analyzer
+    
+    # Optional: IATA code for topic templates
+    iata = "SEA";  # Replace with your IATA code
   };
 }
 ```
@@ -31,6 +88,30 @@ Then rebuild your system:
 
 ```bash
 sudo nixos-rebuild switch
+```
+
+**Note:** For Let'sMesh Analyzer authentication, you need your device's private key. See the [Authentication](#authentication) section below for details.
+
+### Custom MQTT Broker Configuration
+
+If you prefer to use your own MQTT broker instead of (or in addition to) Let'sMesh Analyzer:
+
+```nix
+services.meshcore-packet-capture = {
+  enable = true;
+  connectionType = "ble";
+  
+  mqtt1 = {
+    enabled = true;
+    server = "mqtt.example.com";
+    port = 1883;  # or 8883 for TLS
+    username = "your_username";
+    password = "your_password";
+    # Optional: Enable TLS
+    # useTLS = true;
+    # tlsVerify = true;
+  };
+};
 ```
 
 ## Using with Flakes
@@ -56,7 +137,39 @@ If you're using Nix Flakes, add this to your `flake.nix`:
           services.meshcore-packet-capture = {
             enable = true;
             package = meshcore-packet-capture.packages.${system}.default;
-            # ... your configuration
+            connectionType = "ble";
+            
+            # Let'sMesh Analyzer - US Server
+            mqtt1 = {
+              enabled = true;
+              server = "mqtt-us-v1.letsmesh.net";
+              port = 443;
+              transport = "websockets";
+              useTLS = true;
+              useAuthToken = true;
+              tokenAudience = "mqtt-us-v1.letsmesh.net";
+              keepalive = 120;
+            };
+            
+            # Let'sMesh Analyzer - EU Server
+            mqtt2 = {
+              enabled = true;
+              server = "mqtt-eu-v1.letsmesh.net";
+              port = 443;
+              transport = "websockets";
+              useTLS = true;
+              useAuthToken = true;
+              tokenAudience = "mqtt-eu-v1.letsmesh.net";
+              keepalive = 120;
+            };
+            
+            privateKeyFile = "/path/to/your/private/key/file";
+            
+            # Optional: Owner information for Let'sMesh Analyzer
+            # ownerPublicKey = "YOUR_64_CHAR_HEX_PUBLIC_KEY";
+            # ownerEmail = "your.email@example.com";
+            
+            iata = "SEA";
           };
         }
       ];
@@ -86,33 +199,54 @@ services.meshcore-packet-capture = {
 
 ### MQTT Brokers
 
-You can configure up to 4 MQTT brokers:
+You can configure up to 4 MQTT brokers. Here's an example with Let'sMesh Analyzer (recommended) plus a custom broker:
 
 ```nix
 services.meshcore-packet-capture = {
+  # Let'sMesh Analyzer - US Server
   mqtt1 = {
     enabled = true;
+    server = "mqtt-us-v1.letsmesh.net";
+    port = 443;
+    transport = "websockets";
+    useTLS = true;
+    useAuthToken = true;
+    tokenAudience = "mqtt-us-v1.letsmesh.net";
+    keepalive = 120;
+  };
+  
+  # Let'sMesh Analyzer - EU Server (for redundancy)
+  mqtt2 = {
+    enabled = true;
+    server = "mqtt-eu-v1.letsmesh.net";
+    port = 443;
+    transport = "websockets";
+    useTLS = true;
+    useAuthToken = true;
+    tokenAudience = "mqtt-eu-v1.letsmesh.net";
+    keepalive = 120;
+  };
+  
+  # Your own MQTT broker (optional)
+  mqtt3 = {
+    enabled = true;
     server = "mqtt.example.com";
-    port = 1883;
+    port = 1883;  # or 8883 for TLS
     username = "user";
     password = "pass";
     transport = "tcp";  # or "websockets"
-    useTLS = true;
+    useTLS = false;  # set to true for TLS
     tlsVerify = true;
-    useAuthToken = false;
-    tokenAudience = null;
-    clientIdPrefix = null;
     qos = 0;
     retain = false;
     keepalive = 60;
+    # Optional topic overrides
     topicStatus = "meshcore/status";
     topicPackets = "meshcore/packets";
     topicRaw = "meshcore/raw";
-    topicDecoded = "meshcore/decoded";
-    topicDebug = "meshcore/debug";
   };
   
-  # Similar configuration for mqtt2, mqtt3, mqtt4
+  # mqtt4 can be configured similarly
 };
 ```
 
@@ -160,6 +294,9 @@ services.meshcore-packet-capture = {
   uploadPacketTypes = [ 0 1 2 ];  # Filter packet types, null = all
   rfDataTimeout = 15.0;
   outputFile = null;  # Optional output file path
+  privateKeyFile = "/path/to/private/key/file";  # Required for auth token auth
+  ownerPublicKey = null;  # Optional: 64 hex character owner public key
+  ownerEmail = null;  # Optional: Owner email for Let'sMesh Analyzer
   dataDir = "/var/lib/meshcore-packet-capture";
   user = "meshcore";
   group = "meshcore";

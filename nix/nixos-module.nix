@@ -147,6 +147,8 @@
       ++ lib.optional (cfg.exitOnReconnectFail != null) "PACKETCAPTURE_EXIT_ON_RECONNECT_FAIL=${if cfg.exitOnReconnectFail then "true" else "false"}"
       ++ lib.optional (cfg.privateKey != null) "PACKETCAPTURE_PRIVATE_KEY=${cfg.privateKey}"
       ++ lib.optional (cfg.privateKeyFile != null) "PACKETCAPTURE_PRIVATE_KEY_FILE=${cfg.privateKeyFile}"
+      ++ lib.optional (cfg.ownerPublicKey != null) "PACKETCAPTURE_OWNER_PUBLIC_KEY=${cfg.ownerPublicKey}"
+      ++ lib.optional (cfg.ownerEmail != null) "PACKETCAPTURE_OWNER_EMAIL=${cfg.ownerEmail}"
       ++ lib.optional (cfg.advertIntervalHours != null) "PACKETCAPTURE_ADVERT_INTERVAL_HOURS=${toString cfg.advertIntervalHours}"
       ++ lib.optional (cfg.uploadPacketTypes != null) "PACKETCAPTURE_UPLOAD_PACKET_TYPES=${lib.concatStringsSep "," (map toString cfg.uploadPacketTypes)}"
       ++ lib.optional (cfg.rfDataTimeout != null) "PACKETCAPTURE_RF_DATA_TIMEOUT=${toString cfg.rfDataTimeout}"
@@ -334,6 +336,18 @@
         type = lib.types.nullOr lib.types.path;
         default = null;
         description = "Path to file containing device private key";
+      };
+
+      ownerPublicKey = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Owner public key for JWT tokens (64 hex characters)";
+      };
+
+      ownerEmail = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Owner email address for Let's Mesh Analyzer";
       };
 
       # Other settings

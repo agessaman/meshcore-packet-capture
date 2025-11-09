@@ -258,5 +258,10 @@ jobs:
       - name: Check formatting
         run: |
           # Only check if treefmt is configured, don't fail if not
-          nix run .#treefmt -- --check . || echo "⚠️  Format check skipped (treefmt may not be configured)"
+          if nix flake show 2>/dev/null | grep -q "treefmt"; then
+            nix run .#treefmt -- --check . || exit 1
+          else
+            echo "⚠️  Format check skipped (treefmt not configured in flake)"
+          fi
+        continue-on-error: true
 

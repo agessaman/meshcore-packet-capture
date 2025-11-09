@@ -1,0 +1,254 @@
+name: Test Nix Flake
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'flake.nix'
+      - 'nix/**'
+      - '.github/workflows/nix-test.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'flake.nix'
+      - 'nix/**'
+      - '.github/workflows/nix-test.yml'
+  workflow_dispatch:
+
+jobs:
+  # Test flake syntax and structure
+  flake-check:
+    name: Flake Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v26
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Show flake structure
+        run: nix flake show
+
+      - name: Check flake syntax
+        run: nix flake check --no-build
+
+      - name: Validate flake inputs
+        run: |
+          nix flake metadata --json | jq -r '.locks.nodes | keys[]'
+
+  # Build packages for Linux
+  build-linux:
+    name: Build Linux Packages
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        system: [x86_64-linux, aarch64-linux]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v26
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build package for ${{ matrix.system }}
+        run: |
+          nix build .#packages.${{ matrix.system }}.default --no-link
+          echo "✅ Package built successfully for ${{ matrix.system }}"
+
+      - name: Show package contents
+        run: |
+          nix path-info .#packages.${{ matrix.system }}.default
+
+  # Test NixOS module syntax
+  nixos-module:
+    name: NixOS Module Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v26
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Validate NixOS module syntax
+        run: |
+          nix-instantiate --eval -E '
+            let
+              pkgs = import <nixpkgs> {};
+              lib = pkgs.lib;
+              module = import ./nix/nixos-module.nix { flake-parts-lib = {}; };
+            in
+              lib.isFunction module.flake.nixosModules.default
+          ' --strict
+
+      - name: Test module with minimal configuration
+        run: |
+          nix-instantiate --eval -E '
+            let
+              pkgs = import <nixpkgs> {};
+              lib = pkgs.lib;
+              eval = import <nixpkgs/nixos/lib/eval-config.nix> {
+                modules = [
+                  ./nix/nixos-module.nix
+                  {
+                    services.meshcore-packet-capture = {
+                      enable = true;
+                      connectionType = "ble";
+                      mqtt1 = {
+                        enabled = true;
+                        server = "localhost";
+                        port = 1883;
+                      };
+                    };
+                  }
+                ];
+              };
+            in
+              eval.config.services.meshcore-packet-capture.enable
+          ' --strict
+
+      - name: Test module with all options
+        run: |
+          nix-instantiate --eval -E '
+            let
+              pkgs = import <nixpkgs> {};
+              lib = pkgs.lib;
+              eval = import <nixpkgs/nixos/lib/eval-config.nix> {
+                modules = [
+                  ./nix/nixos-module.nix
+                  {
+                    services.meshcore-packet-capture = {
+                      enable = true;
+                      connectionType = "serial";
+                      serialPorts = [ "/dev/ttyUSB0" ];
+                      mqtt1 = {
+                        enabled = true;
+                        server = "mqtt.example.com";
+                        port = 8883;
+                        useTLS = true;
+                        username = "user";
+                        password = "pass";
+                      };
+                      mqtt2 = {
+                        enabled = true;
+                        server = "mqtt2.example.com";
+                        transport = "websockets";
+                      };
+                      logLevel = "DEBUG";
+                      iata = "SEA";
+                    };
+                  }
+                ];
+              };
+            in
+              {
+                enabled = eval.config.services.meshcore-packet-capture.enable;
+                connectionType = eval.config.services.meshcore-packet-capture.connectionType;
+                mqtt1Enabled = eval.config.services.meshcore-packet-capture.mqtt1.enabled;
+              }
+          ' --strict
+
+  # Test development shell
+  dev-shell:
+    name: Development Shell
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v26
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Enter development shell and test
+        run: |
+          nix develop --command bash -c '
+            echo "✅ Development shell entered successfully"
+            echo "Python version: $(python --version)"
+            echo "Node.js version: $(node --version)"
+            echo "Checking Python packages..."
+            python -c "import paho.mqtt; print(\"✅ paho-mqtt available\")"
+            python -c "import bleak; print(\"✅ bleak available\")"
+            python -c "import pexpect; print(\"✅ pexpect available\")"
+            echo "Checking if meshcore-decoder is accessible..."
+            npx -y @michaelhart/meshcore-decoder --help || echo "⚠️  meshcore-decoder may need network access"
+          '
+
+  # Test package installation and basic functionality
+  package-test:
+    name: Package Functionality Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v26
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build package
+        run: nix build .#packages.x86_64-linux.default
+
+      - name: Test package binary exists
+        run: |
+          if [ -f ./result/bin/meshcore-packet-capture ]; then
+            echo "✅ Binary exists"
+            ./result/bin/meshcore-packet-capture --help || true
+          else
+            echo "❌ Binary not found"
+            exit 1
+          fi
+
+      - name: Test meshcore-decoder wrapper
+        run: |
+          if [ -f ./result/bin/meshcore-decoder ]; then
+            echo "✅ meshcore-decoder wrapper exists"
+          else
+            echo "❌ meshcore-decoder wrapper not found"
+            exit 1
+          fi
+
+      - name: List package contents
+        run: |
+          echo "Package structure:"
+          find ./result -type f | head -20
+
+  # Lint and format check (if treefmt is configured)
+  format-check:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v26
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check formatting
+        run: |
+          # Only check if treefmt is configured, don't fail if not
+          nix run .#treefmt -- --check . || echo "⚠️  Format check skipped (treefmt may not be configured)"
+

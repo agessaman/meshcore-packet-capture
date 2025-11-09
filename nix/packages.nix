@@ -10,8 +10,7 @@
         
         src = pkgs.python3Packages.fetchPypi {
           inherit pname version;
-          # Hash will be computed automatically on first build
-          sha256 = pkgs.lib.fakeSha256;
+          sha256 = "sha256-mnr5WqH/uKzONI8lcm1GQCSlnhx6WQyqsAr12gsMKEI=";
         };
         
         propagatedBuildInputs = with pkgs.python3Packages; [

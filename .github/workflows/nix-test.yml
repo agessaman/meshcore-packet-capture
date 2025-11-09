@@ -47,7 +47,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        system: [x86_64-linux, aarch64-linux]
+        system: [x86_64-linux]
+        # Note: aarch64-linux builds require cross-compilation or QEMU emulation
+        # which is slower. Uncomment if you want to test ARM builds:
+        # system: [x86_64-linux, aarch64-linux]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

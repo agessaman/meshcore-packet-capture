@@ -37,40 +37,28 @@
       meshcore-packet-capture = pkgs.stdenv.mkDerivation {
         pname = "meshcore-packet-capture";
         version = "1.0.0";
-        src = pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter = path: type:
-            let
-              baseName = baseNameOf path;
-              isPythonFile = baseName == "packet_capture.py" ||
-                             baseName == "enums.py" ||
-                             baseName == "auth_token.py" ||
-                             baseName == "ble_pairing_helper.py" ||
-                             baseName == "ble_scan_helper.py" ||
-                             baseName == "scan_meshcore_network.py" ||
-                             baseName == "debug_ble_connection.py" ||
-                             baseName == "migrate_config.py";
-            in
-              type == "directory" || isPythonFile;
-        };
+        src = ./.;
 
         nativeBuildInputs = [pkgs.makeWrapper];
 
         buildInputs = [pythonEnv pkgs.nodejs_20];
 
+        # Don't use the default unpackPhase - we'll handle it in installPhase
+        dontUnpack = true;
+
         installPhase = ''
           mkdir -p $out/bin
           mkdir -p $out/lib/meshcore-packet-capture
 
-          # Copy Python scripts from source root
-          cp packet_capture.py $out/lib/meshcore-packet-capture/
-          cp enums.py $out/lib/meshcore-packet-capture/
-          cp auth_token.py $out/lib/meshcore-packet-capture/
-          cp ble_pairing_helper.py $out/lib/meshcore-packet-capture/
-          cp ble_scan_helper.py $out/lib/meshcore-packet-capture/
-          cp scan_meshcore_network.py $out/lib/meshcore-packet-capture/
-          cp debug_ble_connection.py $out/lib/meshcore-packet-capture/
-          cp migrate_config.py $out/lib/meshcore-packet-capture/
+          # Copy Python scripts directly from source
+          cp ${./packet_capture.py} $out/lib/meshcore-packet-capture/packet_capture.py
+          cp ${./enums.py} $out/lib/meshcore-packet-capture/enums.py
+          cp ${./auth_token.py} $out/lib/meshcore-packet-capture/auth_token.py
+          cp ${./ble_pairing_helper.py} $out/lib/meshcore-packet-capture/ble_pairing_helper.py
+          cp ${./ble_scan_helper.py} $out/lib/meshcore-packet-capture/ble_scan_helper.py
+          cp ${./scan_meshcore_network.py} $out/lib/meshcore-packet-capture/scan_meshcore_network.py
+          cp ${./debug_ble_connection.py} $out/lib/meshcore-packet-capture/debug_ble_connection.py
+          cp ${./migrate_config.py} $out/lib/meshcore-packet-capture/migrate_config.py
 
           # Create wrapper script for the main application
           makeWrapper ${pythonEnv}/bin/python $out/bin/meshcore-packet-capture \

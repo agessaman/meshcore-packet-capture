@@ -92,9 +92,10 @@ jobs:
             let
               pkgs = import <nixpkgs> {};
               lib = pkgs.lib;
-              module = import ./nix/nixos-module.nix { flake-parts-lib = {}; };
+              flakeModule = import ./nix/nixos-module.nix { flake-parts-lib = {}; };
+              nixosModule = flakeModule.flake.nixosModules.default;
             in
-              lib.isFunction module.flake.nixosModules.default
+              lib.isFunction nixosModule
           ' --strict
 
       - name: Test module with minimal configuration
@@ -103,9 +104,11 @@ jobs:
             let
               pkgs = import <nixpkgs> {};
               lib = pkgs.lib;
+              flakeModule = import ./nix/nixos-module.nix { flake-parts-lib = {}; };
+              nixosModule = flakeModule.flake.nixosModules.default;
               eval = import <nixpkgs/nixos/lib/eval-config.nix> {
                 modules = [
-                  ./nix/nixos-module.nix
+                  nixosModule
                   {
                     services.meshcore-packet-capture = {
                       enable = true;
@@ -129,9 +132,11 @@ jobs:
             let
               pkgs = import <nixpkgs> {};
               lib = pkgs.lib;
+              flakeModule = import ./nix/nixos-module.nix { flake-parts-lib = {}; };
+              nixosModule = flakeModule.flake.nixosModules.default;
               eval = import <nixpkgs/nixos/lib/eval-config.nix> {
                 modules = [
-                  ./nix/nixos-module.nix
+                  nixosModule
                   {
                     services.meshcore-packet-capture = {
                       enable = true;

@@ -13,6 +13,10 @@
           sha256 = "sha256-mnr5WqH/uKzONI8lcm1GQCSlnhx6WQyqsAr12gsMKEI=";
         };
         
+        nativeBuildInputs = with pkgs.python3Packages; [
+          hatchling
+        ];
+        
         propagatedBuildInputs = with pkgs.python3Packages; [
           bleak
           pyserial-asyncio

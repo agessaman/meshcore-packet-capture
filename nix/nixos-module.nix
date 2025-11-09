@@ -167,17 +167,12 @@
         description = ''
           The meshcore-packet-capture package to use.
           
-          When using this module from a flake, you should pass the package via specialArgs:
+          When using this module from a flake, you should override this option directly:
           
-          ```nix
-          {
-            specialArgs = {
-              meshcore-packet-capture = self.packages.${system}.default;
-            };
-          }
-          ```
+          Example:
+          services.meshcore-packet-capture.package = self.packages.x86_64-linux.default;
           
-          Or override this option directly in your configuration.
+          (Replace x86_64-linux with your system architecture if different)
         '';
       };
 

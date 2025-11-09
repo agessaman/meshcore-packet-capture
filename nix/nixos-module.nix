@@ -171,12 +171,24 @@
 
       package = lib.mkOption {
         type = lib.types.package;
-        default = pkgs.meshcore-packet-capture;
+        default = 
+          if pkgs ? meshcore-packet-capture
+          then pkgs.meshcore-packet-capture
+          else throw ''
+            The meshcore-packet-capture package is not available in pkgs.
+            
+            When using this module from a flake, you must set the package option:
+            
+            Example:
+            services.meshcore-packet-capture.package = self.packages.x86_64-linux.default;
+            
+            (Replace x86_64-linux with your system architecture if different)
+          '';
         defaultText = "pkgs.meshcore-packet-capture";
         description = ''
           The meshcore-packet-capture package to use.
           
-          When using this module from a flake, you should override this option directly:
+          When using this module from a flake, you must override this option:
           
           Example:
           services.meshcore-packet-capture.package = self.packages.x86_64-linux.default;

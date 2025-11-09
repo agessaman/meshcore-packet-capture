@@ -1160,6 +1160,11 @@ PACKETCAPTURE_IATA=XXX
 # Advert Settings
 PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11
 
+# Packet Type Filtering (comma-separated list of packet type numbers to upload to MQTT)
+# Leave commented out to upload all packet types
+# Example: PACKETCAPTURE_UPLOAD_PACKET_TYPES=2,4  (upload only TXT_MSG and ADVERT)
+#PACKETCAPTURE_UPLOAD_PACKET_TYPES=
+
 # Logging Settings
 PACKETCAPTURE_LOG_LEVEL=INFO
 "@

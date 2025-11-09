@@ -37,7 +37,22 @@
       meshcore-packet-capture = pkgs.stdenv.mkDerivation {
         pname = "meshcore-packet-capture";
         version = "1.0.0";
-        src = ./.;
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            let
+              baseName = baseNameOf path;
+              isPythonFile = baseName == "packet_capture.py" ||
+                             baseName == "enums.py" ||
+                             baseName == "auth_token.py" ||
+                             baseName == "ble_pairing_helper.py" ||
+                             baseName == "ble_scan_helper.py" ||
+                             baseName == "scan_meshcore_network.py" ||
+                             baseName == "debug_ble_connection.py" ||
+                             baseName == "migrate_config.py";
+            in
+              type == "directory" || isPythonFile;
+        };
 
         nativeBuildInputs = [pkgs.makeWrapper];
 
@@ -47,7 +62,7 @@
           mkdir -p $out/bin
           mkdir -p $out/lib/meshcore-packet-capture
 
-          # Copy Python scripts
+          # Copy Python scripts from source root
           cp packet_capture.py $out/lib/meshcore-packet-capture/
           cp enums.py $out/lib/meshcore-packet-capture/
           cp auth_token.py $out/lib/meshcore-packet-capture/

@@ -8,8 +8,13 @@ RUN apt-get update && apt-get install -y \
     sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Nix
-RUN curl -L https://nixos.org/nix/install | sh
+# Create nixbld group and user for Nix installation
+RUN groupadd -r nixbld && \
+    for i in $(seq 1 32); do useradd -r -g nixbld -G nixbld -d /var/empty -s /sbin/nologin -c "Nix build user $i" nixbld$i 2>/dev/null || true; done
+
+# Install Nix (single-user mode for Docker)
+RUN mkdir -m 0755 -p /nix && \
+    curl -L https://nixos.org/nix/install | sh -s -- --no-daemon
 
 # Enable flakes
 RUN mkdir -p /root/.config/nix && \

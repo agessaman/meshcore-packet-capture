@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Nix
-RUN sh <(curl -L https://nixos.org/nix/install) --daemon --no-daemon
+RUN curl -L https://nixos.org/nix/install | sh
 
 # Enable flakes
 RUN mkdir -p /root/.config/nix && \

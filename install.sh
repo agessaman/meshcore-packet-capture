@@ -1935,12 +1935,81 @@ install_launchd_service() {
     local plist_file="$HOME/Library/LaunchAgents/com.meshcore.packet-capture.plist"
     mkdir -p "$HOME/Library/LaunchAgents"
     
-    # Build PATH with meshcore-decoder if available
-    local service_path="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    # Build comprehensive PATH that includes Node.js and meshcore-decoder
+    # LaunchAgents don't inherit shell PATH, so we must explicitly set it
+    local service_path=""
+    
+    # Add nvm Node.js paths if nvm is installed
+    if [ -d "$HOME/.nvm" ]; then
+        # Find the active Node.js version (check for default alias or latest LTS)
+        local nvm_node_path=""
+        if [ -d "$HOME/.nvm/versions/node" ]; then
+            # Try to find the default alias first
+            if [ -f "$HOME/.nvm/alias/default" ]; then
+                local default_version=$(cat "$HOME/.nvm/alias/default" 2>/dev/null)
+                if [ -d "$HOME/.nvm/versions/node/$default_version" ]; then
+                    nvm_node_path="$HOME/.nvm/versions/node/$default_version/bin"
+                fi
+            fi
+            # If no default, try to find the latest LTS or latest version
+            if [ -z "$nvm_node_path" ]; then
+                local latest_node=$(ls -t "$HOME/.nvm/versions/node" 2>/dev/null | head -1)
+                if [ -n "$latest_node" ]; then
+                    nvm_node_path="$HOME/.nvm/versions/node/$latest_node/bin"
+                fi
+            fi
+        fi
+        if [ -n "$nvm_node_path" ] && [ -d "$nvm_node_path" ]; then
+            service_path="${nvm_node_path}:"
+            print_info "Including nvm Node.js path: $nvm_node_path"
+        fi
+    fi
+    
+    # Add Homebrew paths (for Apple Silicon and Intel Macs)
+    if [ -d "/opt/homebrew/bin" ]; then
+        service_path="${service_path}/opt/homebrew/bin:"
+    fi
+    if [ -d "/usr/local/bin" ]; then
+        service_path="${service_path}/usr/local/bin:"
+    fi
+    
+    # Add npm global bin directory (common locations)
+    if [ -d "$HOME/.npm-global/bin" ]; then
+        service_path="${service_path}$HOME/.npm-global/bin:"
+    fi
+    # npm config get prefix can tell us where global packages are installed
+    if command -v npm &> /dev/null; then
+        local npm_prefix=$(npm config get prefix 2>/dev/null)
+        if [ -n "$npm_prefix" ] && [ -d "$npm_prefix/bin" ] && [ "$npm_prefix" != "/usr" ]; then
+            service_path="${service_path}$npm_prefix/bin:"
+        fi
+    fi
+    
+    # Add Node.js directory if node is available (covers various installation methods)
+    if command -v node &> /dev/null; then
+        local node_dir=$(dirname "$(which node)")
+        if [ -n "$node_dir" ] && [ "$node_dir" != "." ] && [[ "$service_path" != *"$node_dir"* ]]; then
+            service_path="${service_path}${node_dir}:"
+            print_info "Including Node.js path: $node_dir"
+        fi
+    fi
+    
+    # Add meshcore-decoder directory if found
     if command -v meshcore-decoder &> /dev/null; then
         local decoder_dir=$(dirname "$(which meshcore-decoder)")
-        service_path="${decoder_dir}:${service_path}"
+        if [ -n "$decoder_dir" ] && [ "$decoder_dir" != "." ] && [[ "$service_path" != *"$decoder_dir"* ]]; then
+            service_path="${service_path}${decoder_dir}:"
+            print_info "Including meshcore-decoder path: $decoder_dir"
+        fi
     fi
+    
+    # Add standard system paths
+    service_path="${service_path}/usr/bin:/bin:/usr/sbin:/sbin"
+    
+    # Clean up any double colons
+    service_path=$(echo "$service_path" | sed 's/::*/:/g' | sed 's/^://' | sed 's/:$//')
+    
+    print_info "Service PATH will include: $service_path"
     
     cat > "$plist_file" << EOF
 <?xml version="1.0" encoding="UTF-8"?>

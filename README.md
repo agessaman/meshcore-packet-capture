@@ -39,6 +39,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 - **Connection Types**: Supports BLE, serial, and TCP connections to Companion radios
 - **Packet Analysis**: Parses packet headers, routes, payloads, and metadata
 - **RF Data**: Captures signal quality metrics (SNR, RSSI)
+- **Status Telemetry Stats**:  MQTT status messages optionally contain battery/uptime/radio metrics
 - **Multi-Broker MQTT**: Supports up to 4 MQTT brokers simultaneously
 - **Auth Token Authentication**: JWT-based authentication using device private key
 - **TLS/WebSocket Support**: Secure connections with TLS/SSL and WebSocket transport
@@ -48,7 +49,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 ## Requirements
 
 - Python 3.7+
-- `meshcore` package (official MeshCore Python library)
+- `meshcore` package (official MeshCore Python library). **Note:** Until the next PyPI release ships, this project pins to commit `3220c419` from [`meshcore_py`](https://github.com/meshcore-dev/meshcore_py) so we can consume the new stats APIs.
 - `paho-mqtt` package (for MQTT functionality)
 
 **Note**: For Docker deployment, this application is best deployed on Linux systems due to Bluetooth Low Energy (BLE) and serial device access requirements. While Docker containers can run on macOS and Windows, BLE functionality may be limited or require additional configuration.
@@ -115,6 +116,12 @@ Configuration is handled via environment variables and `.env` files. The install
 #### Logging Settings
 - `PACKETCAPTURE_LOG_LEVEL`: Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) - default: `INFO`
   - Command line arguments (`--debug`, `--verbose`) override this setting
+
+#### Status Telemetry / Stats
+- `PACKETCAPTURE_STATS_IN_STATUS_ENABLED`: Toggle stat collection in status payloads (default: `true`)
+- `PACKETCAPTURE_STATS_REFRESH_INTERVAL`: Seconds between stat refreshes/status republishes (default: `300`, i.e. 5 minutes)
+
+When enabled, status messages published to MQTT include a `stats` object with battery, uptime, queue depth, and radio runtime metrics refreshed at the configured cadence.
 
 #### MQTT Settings
 The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4). Each broker can be configured independently:

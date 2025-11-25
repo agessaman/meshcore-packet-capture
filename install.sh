@@ -4,7 +4,7 @@
 # ============================================================================
 set -e
 
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 DEFAULT_REPO="agessaman/meshcore-packet-capture"
 DEFAULT_BRANCH="main"
 

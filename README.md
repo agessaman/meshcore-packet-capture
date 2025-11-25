@@ -49,7 +49,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 ## Requirements
 
 - Python 3.7+
-- `meshcore` package (official MeshCore Python library). **Note:** Until the next PyPI release ships, this project pins to commit `3220c419` from [`meshcore_py`](https://github.com/meshcore-dev/meshcore_py) so we can consume the new stats APIs.
+- `meshcore` package (official MeshCore Python library) version 2.2.2 or later (required for stats support)
 - `paho-mqtt` package (for MQTT functionality)
 
 **Note**: For Docker deployment, this application is best deployed on Linux systems due to Bluetooth Low Energy (BLE) and serial device access requirements. While Docker containers can run on macOS and Windows, BLE functionality may be limited or require additional configuration.

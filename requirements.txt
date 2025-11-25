@@ -1,8 +1,8 @@
 # Core dependencies for MeshCore packet capture
 paho-mqtt>=1.6.0
 
-# MeshCore package - temporarily pinned to unreleased commit with stats APIs
-meshcore @ git+https://github.com/meshcore-dev/meshcore_py@3220c4196df8f5ddf179e9a852b27d3a6fafc769
+# MeshCore package - requires 2.2.2+ for stats command support
+meshcore>=2.2.2
 
 # MeshCore package dependencies (installed automatically with meshcore)
 bleak>=0.21.0

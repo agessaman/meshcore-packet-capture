@@ -1509,8 +1509,8 @@ main() {
     print_info "Installing Python dependencies..."
     source "$INSTALL_DIR/venv/bin/activate"
     pip install --quiet --upgrade pip
-    pip install --quiet -r "$INSTALL_DIR/requirements.txt"
-    # meshcore is now installed from PyPI via requirements.txt
+    pip install --quiet --upgrade -r "$INSTALL_DIR/requirements.txt"
+    # meshcore is now installed from PyPI via requirements.txt and will be upgraded on reinstall
     print_success "Python dependencies installed"
     
     # Check for meshcore-decoder (optional)
@@ -2101,8 +2101,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the entire project
 COPY . .
 
-# Install the local meshcore package in development mode
-RUN pip install -e ./meshcore_py
+# meshcore is now installed from PyPI via requirements.txt (no local package needed)
 
 # Create non-root user for security
 RUN useradd -m -u 1000 meshcore && chown -R meshcore:meshcore /app

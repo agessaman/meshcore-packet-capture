@@ -1816,9 +1816,74 @@ install_system_service() {
     esac
 }
 
+# Check and add user to dialout group for serial port access (Linux only)
+check_dialout_group() {
+    # Only check on Linux systems
+    if [ "$(uname)" != "Linux" ]; then
+        return 0
+    fi
+    
+    # Only needed for serial connections
+    local connection_type=$(read_env_value "PACKETCAPTURE_CONNECTION_TYPE")
+    if [ "$connection_type" != "serial" ]; then
+        return 0
+    fi
+    
+    local current_user=$(whoami)
+    
+    # Check if user is already in dialout group
+    if groups "$current_user" | grep -q "\bdialout\b"; then
+        return 0
+    fi
+    
+    # Check if dialout group exists
+    if ! getent group dialout >/dev/null 2>&1; then
+        print_warning "dialout group not found on this system"
+        print_info "Serial port access may require manual configuration"
+        return 0
+    fi
+    
+    # Prompt user with clear disclosure
+    echo ""
+    print_header "Serial Port Access Configuration"
+    echo ""
+    print_info "To access serial ports (like /dev/ttyUSB0), your user account needs"
+    print_info "to be a member of the 'dialout' group."
+    echo ""
+    print_info "This will allow the packet capture service to communicate with"
+    print_info "your MeshCore device via serial connection."
+    echo ""
+    print_warning "Action required: Adding user '$current_user' to dialout group"
+    print_info "This requires administrator privileges (sudo)."
+    echo ""
+    
+    if prompt_yes_no "Add user to dialout group now?" "y"; then
+        if sudo usermod -a -G dialout "$current_user"; then
+            print_success "User added to dialout group"
+            print_warning "IMPORTANT: You will need to log out and log back in for this change to take effect"
+            print_info "Alternatively, you can run 'newgrp dialout' in a new terminal after installation"
+            print_info "The service will work correctly after you log out/in or restart your session"
+        else
+            print_error "Failed to add user to dialout group"
+            print_info "You can add yourself manually with: sudo usermod -a -G dialout $current_user"
+            print_info "Then log out and log back in, or run: newgrp dialout"
+        fi
+    else
+        print_warning "Skipping dialout group addition"
+        print_info "If you encounter permission errors accessing serial ports, you can add"
+        print_info "yourself to the dialout group later with:"
+        print_info "  sudo usermod -a -G dialout $current_user"
+        print_info "Then log out and log back in, or run: newgrp dialout"
+    fi
+    echo ""
+}
+
 # Install systemd service (Linux)
 install_systemd_service() {
     print_info "Installing systemd service..."
+    
+    # Check and add user to dialout group if needed (before service installation)
+    check_dialout_group
     
     local service_file="/tmp/meshcore-capture.service"
     local current_user=$(whoami)

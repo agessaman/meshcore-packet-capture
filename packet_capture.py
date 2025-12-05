@@ -1215,8 +1215,43 @@ class PacketCapture:
                     self.sdk_reconnect_exhausted = False
                 self.logger.info(f"Connected to: {self.meshcore.self_info}")
                 
+                # Wait for self_info to be populated (it may be empty initially, especially for serial)
+                # Check if self_info has actual content (not just empty dict)
+                max_wait_attempts = 10
+                wait_interval = 0.5
+                self_info_populated = False
+                
+                for attempt in range(max_wait_attempts):
+                    if self.meshcore.self_info and (
+                        self.meshcore.self_info.get('name') or 
+                        self.meshcore.self_info.get('public_key')
+                    ):
+                        self_info_populated = True
+                        break
+                    if attempt < max_wait_attempts - 1:
+                        self.logger.debug(f"Waiting for device info to populate (attempt {attempt + 1}/{max_wait_attempts})...")
+                        await asyncio.sleep(wait_interval)
+                
+                # Try to trigger device info by sending a query (for serial connections especially)
+                if not self_info_populated and hasattr(self.meshcore, 'commands'):
+                    try:
+                        self.logger.debug("Attempting to query device info...")
+                        await asyncio.wait_for(
+                            self.meshcore.commands.send_device_query(),
+                            timeout=3.0
+                        )
+                        # Wait a bit more after query
+                        await asyncio.sleep(0.5)
+                        if self.meshcore.self_info and (
+                            self.meshcore.self_info.get('name') or 
+                            self.meshcore.self_info.get('public_key')
+                        ):
+                            self_info_populated = True
+                    except Exception as e:
+                        self.logger.debug(f"Device query failed (non-critical): {e}")
+                
                 # Store device information for origin field
-                if self.meshcore.self_info:
+                if self_info_populated and self.meshcore.self_info:
                     self.device_name = self.meshcore.self_info.get('name', 'Unknown')
                     self.device_public_key = self.meshcore.self_info.get('public_key', 'Unknown')
                     # Normalize public key to uppercase
@@ -1233,47 +1268,55 @@ class PacketCapture:
                     self.logger.info(f"Device name: {self.device_name}")
                     self.logger.info(f"Device public key: {self.device_public_key}")
                     self.logger.info(f"Radio info: {self.radio_info}")
-                    
-                    # Set radio clock to current system time
-                    await self.set_radio_clock()
-                    
-                    # Don't publish status here - wait for MQTT connections
-                    # Status will be published after MQTT connections are established
-                    
-                    # Setup JWT authentication using private key from device
-                    self.logger.info("Setting up JWT authentication...")
-                    
-                    # Try to fetch private key from device first
-                    private_key_fetch_success = await self.fetch_private_key_from_device()
-                    
-                    # Fallback: Try to get private key from environment variable
-                    if not private_key_fetch_success:
-                        env_private_key = self.get_env('PRIVATE_KEY', '')
-                        if env_private_key:
-                            self.device_private_key = env_private_key
-                            self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from environment)")
-                        # Try to read from private key file
-                        elif read_private_key_file:
-                            private_key_file = self.get_env('PRIVATE_KEY_FILE', '')
-                            if private_key_file and Path(private_key_file).exists():
-                                try:
-                                    self.device_private_key = read_private_key_file(private_key_file)
-                                    self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from file: {private_key_file})")
-                                except Exception as e:
-                                    self.logger.warning(f"Failed to read private key from file {private_key_file}: {e}")
-                    
-                    # Log authentication method status
-                    if private_key_fetch_success:
-                        self.logger.info("✓ JWT authentication: Private key from device")
-                    elif self.device_private_key:
-                        self.logger.info("✓ JWT authentication: Private key from environment/file")
-                    else:
-                        self.logger.info("❌ JWT authentication: Not available")
-                        self.logger.info("To enable JWT authentication:")
-                        self.logger.info("  1. Ensure device supports private key export (ENABLE_PRIVATE_KEY_EXPORT=1), or")
-                        self.logger.info("  2. Set PACKETCAPTURE_PRIVATE_KEY environment variable, or")
-                        self.logger.info("  3. Set PACKETCAPTURE_PRIVATE_KEY_FILE to point to a private key file, or")
-                        self.logger.info("  4. Create a .env.local file with PACKETCAPTURE_PRIVATE_KEY=your_private_key_here")
+                else:
+                    # Fallback: Use configured origin or default
+                    self.logger.warning("Device info not available from connection, using fallback")
+                    self.device_name = self.get_env('ORIGIN', 'MeshCore Device')
+                    self.device_public_key = 'Unknown'
+                    self.radio_info = "0,0,0,0"
+                    self.logger.info(f"Using fallback device name: {self.device_name}")
+                    self.logger.info("You can set PACKETCAPTURE_ORIGIN in .env.local to customize the device name")
+                
+                # Set radio clock to current system time
+                await self.set_radio_clock()
+                
+                # Don't publish status here - wait for MQTT connections
+                # Status will be published after MQTT connections are established
+                
+                # Setup JWT authentication using private key from device
+                self.logger.info("Setting up JWT authentication...")
+                
+                # Try to fetch private key from device first
+                private_key_fetch_success = await self.fetch_private_key_from_device()
+                
+                # Fallback: Try to get private key from environment variable
+                if not private_key_fetch_success:
+                    env_private_key = self.get_env('PRIVATE_KEY', '')
+                    if env_private_key:
+                        self.device_private_key = env_private_key
+                        self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from environment)")
+                    # Try to read from private key file
+                    elif read_private_key_file:
+                        private_key_file = self.get_env('PRIVATE_KEY_FILE', '')
+                        if private_key_file and Path(private_key_file).exists():
+                            try:
+                                self.device_private_key = read_private_key_file(private_key_file)
+                                self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from file: {private_key_file})")
+                            except Exception as e:
+                                self.logger.warning(f"Failed to read private key from file {private_key_file}: {e}")
+                
+                # Log authentication method status
+                if private_key_fetch_success:
+                    self.logger.info("✓ JWT authentication: Private key from device")
+                elif self.device_private_key:
+                    self.logger.info("✓ JWT authentication: Private key from environment/file")
+                else:
+                    self.logger.info("❌ JWT authentication: Not available")
+                    self.logger.info("To enable JWT authentication:")
+                    self.logger.info("  1. Ensure device supports private key export (ENABLE_PRIVATE_KEY_EXPORT=1), or")
+                    self.logger.info("  2. Set PACKETCAPTURE_PRIVATE_KEY environment variable, or")
+                    self.logger.info("  3. Set PACKETCAPTURE_PRIVATE_KEY_FILE to point to a private key file, or")
+                    self.logger.info("  4. Create a .env.local file with PACKETCAPTURE_PRIVATE_KEY=your_private_key_here")
                 
                 return True
             else:

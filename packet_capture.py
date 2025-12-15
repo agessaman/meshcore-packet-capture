@@ -1387,6 +1387,20 @@ class PacketCapture:
         self.logger.info(f"Attempting MeshCore reconnection (attempt {self.connection_retry_count}/{self.max_connection_retries if self.max_connection_retries > 0 else '∞'}) with {delay:.1f}s delay...")
         
         # Clean up existing connection
+        # Capture BLE address before disconnecting (needed for bluetoothctl cleanup)
+        ble_device = None
+        if self.meshcore and self.connection_type == 'ble':
+            # Try to get BLE address from meshcore object before disconnecting
+            try:
+                # Check if meshcore has address attribute (BLE connections often do)
+                if hasattr(self.meshcore, 'address') and self.meshcore.address:
+                    ble_device = self.meshcore.address
+            except Exception:
+                pass
+            # Fallback to environment variables
+            if not ble_device:
+                ble_device = self.get_env('BLE_DEVICE', '') or self.get_env('BLE_ADDRESS', '')
+        
         if self.meshcore:
             try:
                 # Clean up event subscriptions BEFORE stopping/disconnecting to prevent pending tasks
@@ -1401,9 +1415,23 @@ class PacketCapture:
             except Exception as e:
                 self.logger.debug(f"Error disconnecting during reconnect: {e}")
             self.meshcore = None
-            # For BLE connections, wait a bit longer to ensure full cleanup
+            # For BLE connections, ensure full cleanup including OS-level disconnect
             if self.connection_type == 'ble':
-                await asyncio.sleep(0.5)
+                # On Linux, force disconnect via bluetoothctl to ensure clean state
+                import platform
+                if platform.system() == 'Linux':
+                    try:
+                        import subprocess
+                        if ble_device and ble_device != 'Unknown':
+                            self.logger.debug(f"Force disconnecting BLE device {ble_device} via bluetoothctl...")
+                            subprocess.run(['bluetoothctl', 'disconnect', ble_device], 
+                                         capture_output=True, timeout=10)
+                            await asyncio.sleep(1)  # Give time for disconnection
+                    except Exception as e:
+                        self.logger.debug(f"Could not force BLE disconnect via bluetoothctl: {e}")
+                else:
+                    # On non-Linux systems, add a short delay to ensure BLE cleanup completes
+                    await asyncio.sleep(0.5)
         
         # Wait before retrying with exponential backoff
         if delay > 0:

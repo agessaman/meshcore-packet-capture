@@ -1017,7 +1017,20 @@ class PacketCapture:
                 self.logger.warning("Health check timed out")
                 return False
             except Exception as e:
-                self.logger.warning(f"Health check command failed: {e}")
+                # Log detailed error information for debugging
+                error_type = type(e).__name__
+                error_msg = str(e)
+                # Check if it's an errno error (common on macOS/Linux)
+                errno_value = getattr(e, 'errno', None)
+                if errno_value is not None:
+                    import errno
+                    try:
+                        errno_name = errno.errorcode.get(errno_value, f"UNKNOWN({errno_value})")
+                        self.logger.warning(f"Health check command failed: {error_type} [{errno_name}]: {error_msg}")
+                    except (AttributeError, KeyError):
+                        self.logger.warning(f"Health check command failed: {error_type} [errno={errno_value}]: {error_msg}")
+                else:
+                    self.logger.warning(f"Health check command failed: {error_type}: {error_msg}")
                 return False
         
         except Exception as e:

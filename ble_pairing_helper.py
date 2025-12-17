@@ -9,11 +9,24 @@ import sys
 import json
 import platform
 import subprocess
-from meshcore import MeshCore
+
+# Wrap imports in try-except to handle import errors gracefully
+try:
+    from meshcore import MeshCore
+except ImportError as e:
+    print(json.dumps({
+        "status": "error",
+        "message": f"Failed to import meshcore: {str(e)}"
+    }), flush=True)
+    sys.exit(1)
 
 def is_linux():
     """Check if running on Linux"""
     return platform.system().lower() == 'linux'
+
+def is_macos():
+    """Check if running on macOS"""
+    return platform.system().lower() == 'darwin'
 
 async def check_pairing_and_connect(address, name, pin=None):
     """Check if device is paired and handle pairing if needed"""
@@ -38,19 +51,78 @@ async def check_pairing_and_connect(address, name, pin=None):
             print(f"Could not scan for device availability: {e}", file=sys.stderr, flush=True)
         
         # Try to connect without PIN first (with timeout)
+        # On macOS, use a longer timeout to allow pairing dialog to appear
         try:
             print(f"Attempting to connect to {name} ({address}) without PIN...", file=sys.stderr, flush=True)
-            print(f"Connection timeout set to 25 seconds...", file=sys.stderr, flush=True)
+            # On macOS, use longer timeout to allow system pairing dialog to appear and be completed
+            connection_timeout = 30.0 if is_macos() else 25.0
+            print(f"Connection timeout set to {connection_timeout} seconds...", file=sys.stderr, flush=True)
+            if is_macos():
+                print("If a pairing dialog appears, please enter the PIN from your device.", file=sys.stderr, flush=True)
             
             # Create the connection with a reasonable timeout
+            # On macOS, longer timeout allows time for user to complete pairing dialog
             meshcore = await asyncio.wait_for(
-                MeshCore.create_ble(address=address, debug=True), 
-                timeout=25.0
+                MeshCore.create_ble(address=address, debug=False),  # Disable debug to reduce output
+                timeout=connection_timeout
             )
             
-            print("BLE connection established successfully", file=sys.stderr, flush=True)
+            # Wait a moment for connection to fully establish (especially important on macOS)
+            await asyncio.sleep(1.5)
             
-            # Connection succeeded - device is paired
+            # Verify connection is actually established and working
+            # On macOS, the connection object might be created but not actually connected if pairing is needed
+            if not hasattr(meshcore, 'is_connected') or not meshcore.is_connected:
+                print("Connection created but not actually connected - pairing may be required", file=sys.stderr, flush=True)
+                try:
+                    await meshcore.disconnect()
+                except:
+                    pass
+                print(json.dumps({
+                    "status": "not_paired", 
+                    "message": "Device requires pairing"
+                }), flush=True)
+                return False
+            
+            print("BLE connection established successfully", file=sys.stderr, flush=True)
+            print(f"Connection verified: is_connected={meshcore.is_connected}", file=sys.stderr, flush=True)
+            
+            # Try to verify connection works by attempting a simple operation
+            # This helps ensure the connection is actually functional, not just created
+            # On macOS, sometimes the connection appears successful but isn't actually working
+            try:
+                # Wait a bit more to ensure connection is stable
+                await asyncio.sleep(0.5)
+                
+                # Check if we can access device properties (indicates connection is functional)
+                if hasattr(meshcore, 'self_info'):
+                    device_info = meshcore.self_info
+                    if device_info:
+                        print(f"Device info retrieved successfully - connection is functional", file=sys.stderr, flush=True)
+                    else:
+                        print("Device info not available yet, but connection appears valid", file=sys.stderr, flush=True)
+            except Exception as e:
+                # If we can't access device info, the connection might not be fully established
+                error_msg = str(e)
+                print(f"Could not verify connection functionality: {error_msg}", file=sys.stderr, flush=True)
+                
+                # Check if this is a pairing-related error
+                if any(keyword in error_msg.lower() for keyword in 
+                       ['pair', 'auth', 'permission', 'not permitted', 'not authorized', 'eof']):
+                    print("Connection verification suggests pairing is required", file=sys.stderr, flush=True)
+                    try:
+                        await meshcore.disconnect()
+                    except:
+                        pass
+                    print(json.dumps({
+                        "status": "not_paired", 
+                        "message": "Device requires pairing"
+                    }), flush=True)
+                    return False
+                # Otherwise, assume connection is valid even if we can't verify
+                print("Assuming connection is valid despite verification failure", file=sys.stderr, flush=True)
+            
+            # Connection succeeded and is functional - device is paired
             await meshcore.disconnect()
             
             # Additional safety: Force disconnect on Linux using bluetoothctl if available
@@ -73,7 +145,35 @@ async def check_pairing_and_connect(address, name, pin=None):
         except EOFError as e:
             # This is the key indicator that pairing is required
             # Device connected but immediately disconnected - needs pairing
+            # On macOS, this often means the device is not paired
             print("Device connected but immediately disconnected - pairing required", file=sys.stderr, flush=True)
+            print(f"EOFError details: {e}", file=sys.stderr, flush=True)
+            
+            # On macOS, if we get EOFError, try one more time with a longer wait
+            # This gives macOS time to show the pairing dialog
+            if is_macos():
+                print("On macOS: Waiting a moment and retrying connection to allow pairing dialog...", file=sys.stderr, flush=True)
+                await asyncio.sleep(3)  # Give time for pairing dialog to appear
+                try:
+                    print("Retrying connection after pairing dialog may have appeared...", file=sys.stderr, flush=True)
+                    meshcore_retry = await asyncio.wait_for(
+                        MeshCore.create_ble(address=address, debug=False),
+                        timeout=30.0
+                    )
+                    # If retry succeeds, device was paired via dialog
+                    await asyncio.sleep(1.5)
+                    if hasattr(meshcore_retry, 'is_connected') and meshcore_retry.is_connected:
+                        print("Connection successful after pairing dialog!", file=sys.stderr, flush=True)
+                        await meshcore_retry.disconnect()
+                        print(json.dumps({
+                            "status": "paired",
+                            "message": "Device paired successfully via system dialog"
+                        }), flush=True)
+                        return True
+                    await meshcore_retry.disconnect()
+                except Exception as retry_e:
+                    print(f"Retry connection failed: {retry_e}", file=sys.stderr, flush=True)
+            
             print(json.dumps({
                 "status": "not_paired", 
                 "message": "Device requires pairing"
@@ -519,35 +619,74 @@ async def verify_paired_connection(address, name):
 
 def main():
     """Main function to handle BLE pairing"""
-    if len(sys.argv) < 3:
-        print(json.dumps({"status": "error", "message": "Usage: script.py <address> <name> [pin]"}))
-        sys.exit(1)
-    
-    address = sys.argv[1]
-    name = sys.argv[2]
-    pin = sys.argv[3] if len(sys.argv) > 3 else None
-    
     try:
-        if pin:
-            # Attempt pairing with PIN
-            success = asyncio.run(attempt_pairing(address, name, pin))
-        else:
-            # Check pairing status
-            success = asyncio.run(check_pairing_and_connect(address, name))
-        
-        # Don't exit with error code for not_paired status - let shell script handle it
-        if not success and pin is None:
-            # This is a pairing check that failed, but we want to return the status
-            sys.exit(0)
-        elif not success:
-            # This is a pairing attempt that failed
+        if len(sys.argv) < 3:
+            print(json.dumps({"status": "error", "message": "Usage: script.py <address> <name> [pin]"}))
             sys.exit(1)
+        
+        address = sys.argv[1]
+        name = sys.argv[2]
+        pin = sys.argv[3] if len(sys.argv) > 3 else None
+        
+        # On macOS, just attempt to connect - the system will show pairing dialog if needed
+        # On Linux/Windows, check pairing status first, then attempt PIN-based pairing if needed
+        if is_macos():
+            # macOS: Just attempt connection - system handles pairing dialog
+            print("Attempting to connect to device (macOS will show pairing dialog if needed)...", file=sys.stderr, flush=True)
+            pairing_check = asyncio.run(check_pairing_and_connect(address, name))
+            
+            if pairing_check:
+                # Connection successful - device is paired
+                sys.exit(0)
+            else:
+                # Connection failed - may need pairing via system dialog
+                # Exit with 1 to indicate pairing needed
+                sys.exit(1)
+        else:
+            # Linux/Windows: Check pairing status first
+            if not pin:
+                # Only check pairing status if no PIN is provided
+                print("Checking if device is already paired...", file=sys.stderr, flush=True)
+                pairing_check = asyncio.run(check_pairing_and_connect(address, name))
+                
+                if pairing_check:
+                    # Device is already paired - check_pairing_and_connect already printed JSON
+                    # Just exit with success
+                    sys.exit(0)
+            
+            # Device is not paired (or PIN provided) - attempt PIN-based pairing
+            if pin:
+                # Attempt pairing with PIN
+                print("Device not paired. Attempting to pair with provided PIN...", file=sys.stderr, flush=True)
+                success = asyncio.run(attempt_pairing(address, name, pin))
+                if success:
+                    # attempt_pairing already printed JSON on success
+                    sys.exit(0)
+                else:
+                    # attempt_pairing already printed JSON on failure
+                    sys.exit(1)
+            else:
+                # No PIN provided and device not paired
+                # check_pairing_and_connect already printed JSON with status
+                # Exit with 0 so installer can prompt for PIN
+                sys.exit(0)
             
     except KeyboardInterrupt:
         print("Operation interrupted by user", file=sys.stderr, flush=True)
+        print(json.dumps({
+            "status": "error",
+            "message": "Operation interrupted by user"
+        }), flush=True)
         sys.exit(1)
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         print(f"Unexpected error: {e}", file=sys.stderr, flush=True)
+        print(f"Traceback: {error_trace}", file=sys.stderr, flush=True)
+        print(json.dumps({
+            "status": "error",
+            "message": f"Unexpected error: {str(e)}"
+        }), flush=True)
         sys.exit(1)
 
 if __name__ == "__main__":

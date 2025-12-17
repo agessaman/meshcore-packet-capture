@@ -50,6 +50,27 @@ print_header() {
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}\n"
 }
 
+# Cross-platform timeout function
+run_with_timeout() {
+    local timeout_seconds=$1
+    shift
+    local cmd=("$@")
+    
+    if command -v timeout &> /dev/null; then
+        # Linux: use timeout command
+        timeout "$timeout_seconds" "${cmd[@]}"
+    elif command -v perl &> /dev/null; then
+        # macOS: use perl alarm
+        perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" "${cmd[@]}"
+    elif command -v gtimeout &> /dev/null; then
+        # macOS with coreutils: use gtimeout
+        gtimeout "$timeout_seconds" "${cmd[@]}"
+    else
+        # Fallback: run without timeout (not ideal but better than failing)
+        "${cmd[@]}"
+    fi
+}
+
 # Create version info file with installer version and git hash
 create_version_info() {
     local git_hash="unknown"
@@ -372,7 +393,7 @@ handle_ble_pairing() {
     rm -f /tmp/ble_pairing_error
     
     # Quick check with shorter timeout - just to see if already paired
-    if pairing_output=$(timeout 15 "$python_cmd" "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
+    if pairing_output=$(run_with_timeout 15 "$python_cmd" "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
         local pairing_status=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
         
         if [ "$pairing_status" = "paired" ]; then
@@ -383,72 +404,205 @@ handle_ble_pairing() {
         # If not paired, fall through to pairing attempt below
     fi
     
-    # If check failed or device not paired, proceed directly to pairing with PIN
-    echo ""
-    print_info "Device needs to be paired. You'll need to enter the PIN displayed on your MeshCore device."
-    print_info "Make sure your device is powered on and showing the 6-digit PIN."
-    echo ""
+    # If check failed or device not paired, handle pairing based on OS
+    if [ "$(uname)" = "Darwin" ]; then
+        # On macOS, just attempt connection - system will show pairing dialog if needed
+        echo ""
+        print_info "Attempting to connect to device..."
+        print_info "If a pairing dialog appears, enter the PIN displayed on your MeshCore device."
+        echo ""
+        
+        rm -f /tmp/ble_pairing_error
+        local exit_code=0
+        pairing_output=$(run_with_timeout 60 "$python_cmd" "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error) || exit_code=$?
+    else
+        # On Linux/Windows, prompt for PIN and attempt PIN-based pairing
+        echo ""
+        print_info "Device needs to be paired. You'll need to enter the PIN displayed on your MeshCore device."
+        print_info "Make sure your device is powered on and showing the 6-digit PIN."
+        echo ""
+        
+        # Get PIN from user
+        local pin
+        while true; do
+            pin=$(prompt_input "Enter the 6-digit PIN displayed on your MeshCore device" "")
+            if [[ "$pin" =~ ^[0-9]{6}$ ]]; then
+                break
+            else
+                print_error "Please enter a 6-digit PIN (numbers only)"
+            fi
+        done
+        
+        # Attempt pairing with PIN
+        echo ""
+        print_info "Attempting to pair with device (this may take up to 60 seconds)..."
+        rm -f /tmp/ble_pairing_error
+        local exit_code=0
+        pairing_output=$(run_with_timeout 60 "$python_cmd" "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error) || exit_code=$?
+    fi
     
-    # Get PIN from user
-    local pin
-    while true; do
-        pin=$(prompt_input "Enter the 6-digit PIN displayed on your MeshCore device" "")
-        if [[ "$pin" =~ ^[0-9]{6}$ ]]; then
-            break
-        else
-            print_error "Please enter a 6-digit PIN (numbers only)"
+    # Check if we got JSON output (script ran and produced output)
+    if [ -n "$pairing_output" ]; then
+        # Try to parse JSON from the output (may be mixed with other output)
+        local pairing_result=$(echo "$pairing_output" | grep -o '{"status"[^}]*}' | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('status', 'unknown'))" 2>/dev/null)
+        local pairing_message=$(echo "$pairing_output" | grep -o '{"status"[^}]*}' | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('message', ''))" 2>/dev/null)
+        
+        # If JSON parsing failed, try parsing the whole output as JSON
+        if [ -z "$pairing_result" ] || [ "$pairing_result" = "unknown" ]; then
+            pairing_result=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('status', 'unknown'))" 2>/dev/null)
+            pairing_message=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('message', ''))" 2>/dev/null)
         fi
-    done
-    
-    # Attempt pairing with PIN
-    echo ""
-    print_info "Attempting to pair with device (this may take up to 60 seconds)..."
-    rm -f /tmp/ble_pairing_error
-    if pairing_output=$(timeout 60 "$python_cmd" "$temp_script" "$device_address" "$device_name" "$pin" 2>/tmp/ble_pairing_error); then
-        local pairing_result=$(echo "$pairing_output" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['status'])" 2>/dev/null)
         
         if [ "$pairing_result" = "paired" ]; then
             print_success "BLE pairing successful! Device is now ready to use."
             rm -f /tmp/ble_pairing_error
             return 0
-        else
-            print_error "BLE pairing failed"
+        elif [ "$pairing_result" = "pairing_failed" ] || [ "$pairing_result" = "error" ] || [ "$pairing_result" = "not_paired" ]; then
+            # Script ran but pairing failed or device not paired
+            if [ "$(uname)" = "Darwin" ] && [ "$pairing_result" = "not_paired" ]; then
+                # On macOS, if not paired, the system dialog should have appeared
+                # Try one more time to see if user completed pairing via dialog
+                print_info "Checking if pairing was completed via system dialog..."
+                sleep 2
+                rm -f /tmp/ble_pairing_error
+                if retry_output=$(run_with_timeout 15 "$python_cmd" "$temp_script" "$device_address" "$device_name" 2>/tmp/ble_pairing_error); then
+                    local retry_status=$(echo "$retry_output" | grep -o '{"status"[^}]*}' | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('status', 'unknown'))" 2>/dev/null)
+                    if [ "$retry_status" = "paired" ]; then
+                        print_success "BLE pairing successful! Device is now ready to use."
+                        rm -f /tmp/ble_pairing_error
+                        return 0
+                    fi
+                fi
+                print_error "BLE pairing failed or not completed"
+                print_info "Please ensure you completed the pairing dialog if it appeared, or try again."
+            else
+                # Linux/Windows or other error - show the actual error message from JSON
+                print_error "BLE pairing failed"
+                if [ -n "$pairing_message" ] && [ "$pairing_message" != "None" ]; then
+                    print_info "Error: $pairing_message"
+                fi
+            fi
             if [ -f /tmp/ble_pairing_error ]; then
-                local error_msg=$(cat /tmp/ble_pairing_error)
+                local error_msg=$(cat /tmp/ble_pairing_error | tail -20)  # Last 20 lines to avoid too much output
                 if [ -n "$error_msg" ]; then
-                    print_info "Error details: $error_msg"
+                    print_info "Details: $error_msg"
+                fi
+                rm -f /tmp/ble_pairing_error
+            fi
+            return 1
+        else
+            # JSON parsed but status is unknown or unexpected
+            print_error "BLE pairing failed"
+            if [ -n "$pairing_message" ] && [ "$pairing_message" != "None" ]; then
+                print_info "Error: $pairing_message"
+            fi
+            if [ -f /tmp/ble_pairing_error ]; then
+                local error_msg=$(cat /tmp/ble_pairing_error | tail -20)
+                if [ -n "$error_msg" ]; then
+                    print_info "Details: $error_msg"
                 fi
                 rm -f /tmp/ble_pairing_error
             fi
             return 1
         fi
     else
-        # Check if it was a timeout or other error
-        if [ -f /tmp/ble_pairing_error ]; then
-            local error_msg=$(cat /tmp/ble_pairing_error)
-            if [[ "$error_msg" == *"timeout"* ]] || [[ "$error_msg" == *"Terminated"* ]]; then
-                print_error "BLE pairing timed out"
-                print_info "The pairing process took too long. The device may be busy or not responding."
-                print_info "Make sure:"
-                print_info "  • The device is powered on and showing the PIN"
-                print_info "  • The device is in pairing mode"
-                print_info "  • You entered the correct 6-digit PIN"
-                print_info "  • The device is within range"
-            elif [[ "$error_msg" == *"not found"* ]] || [[ "$error_msg" == *"not available"* ]]; then
-                print_error "Device not found or not available"
-                print_info "Make sure your MeshCore device is:"
-                print_info "  • Powered on and within range"
-                print_info "  • In pairing mode"
-                print_info "  • Not connected to another device"
-            else
-                print_error "Failed to pair with device"
-                if [ -n "$error_msg" ]; then
-                    print_info "Error details: $error_msg"
+        # No output - script may have failed immediately or timed out
+        # Check exit code to determine if it was a timeout
+        if [ "$exit_code" -eq 124 ]; then
+            # Exit code 124 means timeout command killed the process
+            print_error "BLE pairing timed out"
+            print_info "The pairing process took too long. The device may be busy or not responding."
+            print_info "Make sure:"
+            print_info "  • The device is powered on and showing the PIN"
+            print_info "  • The device is in pairing mode"
+            print_info "  • You entered the correct 6-digit PIN"
+            print_info "  • The device is within range"
+        else
+            # Script failed immediately or with an error
+            # Check if we can extract JSON from stderr (script might have output JSON to stderr)
+            local json_from_stderr=""
+            if [ -f /tmp/ble_pairing_error ]; then
+                # Try to extract JSON from stderr
+                json_from_stderr=$(cat /tmp/ble_pairing_error | grep -o '{"status"[^}]*}' | head -1)
+            fi
+            
+            if [ -n "$json_from_stderr" ]; then
+                # Found JSON in stderr - parse it
+                local pairing_result=$(echo "$json_from_stderr" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('status', 'unknown'))" 2>/dev/null)
+                local pairing_message=$(echo "$json_from_stderr" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('message', ''))" 2>/dev/null)
+                
+                if [ "$pairing_result" = "pairing_failed" ] || [ "$pairing_result" = "error" ]; then
+                    print_error "BLE pairing failed"
+                    if [ -n "$pairing_message" ] && [ "$pairing_message" != "None" ]; then
+                        print_info "Error: $pairing_message"
+                    fi
+                    rm -f /tmp/ble_pairing_error
+                    return 1
+                elif [ "$pairing_result" = "timeout" ]; then
+                    print_error "BLE pairing timed out"
+                    if [ -n "$pairing_message" ] && [ "$pairing_message" != "None" ]; then
+                        print_info "Error: $pairing_message"
+                    fi
+                    rm -f /tmp/ble_pairing_error
+                    return 1
                 fi
             fi
-            rm -f /tmp/ble_pairing_error
-        else
-            print_error "Failed to pair with device - no error details available"
+            
+            # No JSON found - check error message for specific patterns
+            if [ -f /tmp/ble_pairing_error ]; then
+                local error_msg=$(cat /tmp/ble_pairing_error | tail -30)  # Last 30 lines
+                
+                # Check for actual timeout errors (not just the word "timeout" in debug messages)
+                if [[ "$error_msg" == *"Connection timed out"* ]] || \
+                   [[ "$error_msg" == *"Pairing connection timed out"* ]] || \
+                   [[ "$error_msg" == *"timed out"* ]] && [[ "$error_msg" != *"timeout set to"* ]] && \
+                   [[ "$error_msg" != *"Connection timeout set"* ]]; then
+                    print_error "BLE pairing timed out"
+                    print_info "The pairing process took too long. The device may be busy or not responding."
+                    print_info "Make sure:"
+                    print_info "  • The device is powered on and showing the PIN"
+                    print_info "  • The device is in pairing mode"
+                    print_info "  • You entered the correct 6-digit PIN"
+                    print_info "  • The device is within range"
+                elif [[ "$error_msg" == *"Terminated"* ]] && [ "$exit_code" -eq 124 ]; then
+                    # Only show timeout if exit code is 124 (actual timeout)
+                    print_error "BLE pairing timed out"
+                    print_info "The pairing process took too long. The device may be busy or not responding."
+                    print_info "Make sure:"
+                    print_info "  • The device is powered on and showing the PIN"
+                    print_info "  • The device is in pairing mode"
+                    print_info "  • You entered the correct 6-digit PIN"
+                    print_info "  • The device is within range"
+                elif [[ "$error_msg" == *"Device not found"* ]] || \
+                     [[ "$error_msg" == *"Device not available"* ]] || \
+                     [[ "$error_msg" == *"not found or not in range"* ]] || \
+                     [[ "$error_msg" == *"not available or not in pairing mode"* ]] || \
+                     ([[ "$error_msg" == *"not available"* ]] && [[ "$error_msg" != *"Device info not available yet"* ]]); then
+                    print_error "Device not found or not available"
+                    print_info "Make sure your MeshCore device is:"
+                    print_info "  • Powered on and within range"
+                    print_info "  • In pairing mode"
+                    print_info "  • Not connected to another device"
+                elif [[ "$error_msg" == *"Pairing failed"* ]] || [[ "$error_msg" == *"pairing_failed"* ]] || \
+                     [[ "$error_msg" == *"Authentication failed"* ]] || [[ "$error_msg" == *"PIN may be incorrect"* ]]; then
+                    print_error "BLE pairing failed"
+                    print_info "Error details:"
+                    echo "$error_msg" | grep -iE "pairing|failed|error|incorrect|expired" | head -5 | while read line; do
+                        print_info "  $line"
+                    done
+                else
+                    print_error "Failed to pair with device"
+                    if [ -n "$error_msg" ]; then
+                        print_info "Error details:"
+                        echo "$error_msg" | tail -10 | while read line; do
+                            print_info "  $line"
+                        done
+                    fi
+                fi
+                rm -f /tmp/ble_pairing_error
+            else
+                print_error "Failed to pair with device - no error details available (exit code: $exit_code)"
+            fi
         fi
         return 1
     fi
@@ -854,6 +1008,7 @@ configure_jwt_options() {
 # Configure MQTT topics for a broker
 configure_mqtt_topics() {
     local BROKER_NUM=$1
+    local USE_DEFAULT_ONLY=${2:-false}  # Optional second parameter: if true, skip prompt and use default
     ENV_LOCAL="$INSTALL_DIR/.env.local"
     
     echo ""
@@ -862,6 +1017,16 @@ configure_mqtt_topics() {
     print_info "MQTT topics define where different types of data are published."
     print_info "You can use template variables: {IATA}, {IATA_lower}, {PUBLIC_KEY}"
     echo ""
+    
+    # If USE_DEFAULT_ONLY is true (e.g., for LetsMesh), skip prompt and use default pattern
+    if [ "$USE_DEFAULT_ONLY" = "true" ]; then
+        echo "" >> "$ENV_LOCAL"
+        echo "# MQTT Topics for Broker $BROKER_NUM - Default Pattern" >> "$ENV_LOCAL"
+        echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status" >> "$ENV_LOCAL"
+        echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets" >> "$ENV_LOCAL"
+        print_success "Default pattern topics configured"
+        return 0
+    fi
     
     # Topic options
     echo "Choose topic configuration:"
@@ -1007,8 +1172,9 @@ EOF
         # Configure JWT options (owner public key and client agent)
         configure_jwt_options
         
-        # Configure topics for LetsMesh
-        configure_mqtt_topics 1
+        # Configure topics for LetsMesh (use default pattern only)
+        configure_mqtt_topics 1 true
+        configure_mqtt_topics 2 true
         
         if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
             configure_additional_brokers
@@ -1165,8 +1331,9 @@ PACKETCAPTURE_MQTT2_KEEPALIVE=120
 EOF
         print_success "LetsMesh Packet Analyzer brokers enabled"
         
-        # Configure topics for LetsMesh
-        configure_mqtt_topics 1
+        # Configure topics for LetsMesh (use default pattern only)
+        configure_mqtt_topics 1 true
+        configure_mqtt_topics 2 true
         
         if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
             configure_additional_brokers

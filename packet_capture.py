@@ -841,15 +841,19 @@ class PacketCapture:
                 self.meshcore and 
                 self.meshcore.is_connected and
                 os.getenv('AUTH_TOKEN_METHOD', '').lower().strip() not in ('python', 'meshcore-decoder')):
-                # Use on-device signing (no private key needed)
-                # Don't pass private_key_hex so auth_token.py will fail fast if device signing fails
-                jwt_token = await create_auth_token_async(
-                    self.device_public_key,
-                    meshcore_instance=self.meshcore,
-                    **claims
-                )
-                self.logger.info("✓ JWT created using on-device signing")
-                return jwt_token
+                try:
+                    # Use on-device signing (no private key needed)
+                    # Don't pass private_key_hex so auth_token.py will fail fast if device signing fails
+                    jwt_token = await create_auth_token_async(
+                        self.device_public_key,
+                        meshcore_instance=self.meshcore,
+                        **claims
+                    )
+                    self.logger.info("✓ JWT created using on-device signing")
+                    return jwt_token
+                except Exception as e:
+                    # Device signing failed - fall back to private key if available
+                    self.logger.debug(f"On-device signing failed: {e}, attempting private key fallback...")
             
             # Fallback to private key signing (skip if device-only mode is enabled)
             device_only = os.getenv('AUTH_TOKEN_DEVICE_ONLY', '').lower().strip() == 'true'
@@ -857,10 +861,30 @@ class PacketCapture:
                 self.logger.error("Device-only signing mode enabled but device signing failed or not available")
                 return None
             
-            # Fallback to private key signing
+            # Fallback to private key signing - load from env/file first, then try device if needed
             if not self.device_private_key:
-                self.logger.warning("Cannot create JWT: no device private key and device signing not available")
-                return None
+                # Try to load from environment variable first
+                env_private_key = self.get_env('PRIVATE_KEY', '')
+                if env_private_key:
+                    self.device_private_key = env_private_key
+                    self.logger.info("Device signing failed, using private key from environment")
+                # Try to read from private key file
+                elif read_private_key_file:
+                    private_key_file = self.get_env('PRIVATE_KEY_FILE', '')
+                    if private_key_file and Path(private_key_file).exists():
+                        try:
+                            self.device_private_key = read_private_key_file(private_key_file)
+                            self.logger.info(f"Device signing failed, using private key from file: {private_key_file}")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to read private key from file {private_key_file}: {e}")
+                
+                # If still no private key, try fetching from device
+                if not self.device_private_key:
+                    self.logger.info("Device signing not available, fetching private key from device for fallback...")
+                    private_key_fetch_success = await self.fetch_private_key_from_device()
+                    if not private_key_fetch_success:
+                        self.logger.warning("Cannot create JWT: device signing failed and private key not available from device or environment")
+                        return None
             
             # Convert bytearray to hex string if needed
             private_key = self.device_private_key
@@ -1332,40 +1356,10 @@ class PacketCapture:
                 # Don't publish status here - wait for MQTT connections
                 # Status will be published after MQTT connections are established
                 
-                # Setup JWT authentication using private key from device
+                # Setup JWT authentication - will use on-device signing (preferred)
+                # Private key fallback will be loaded lazily only if device signing fails
                 self.logger.info("Setting up JWT authentication...")
-                
-                # Try to fetch private key from device first
-                private_key_fetch_success = await self.fetch_private_key_from_device()
-                
-                # Fallback: Try to get private key from environment variable
-                if not private_key_fetch_success:
-                    env_private_key = self.get_env('PRIVATE_KEY', '')
-                    if env_private_key:
-                        self.device_private_key = env_private_key
-                        self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from environment)")
-                    # Try to read from private key file
-                    elif read_private_key_file:
-                        private_key_file = self.get_env('PRIVATE_KEY_FILE', '')
-                        if private_key_file and Path(private_key_file).exists():
-                            try:
-                                self.device_private_key = read_private_key_file(private_key_file)
-                                self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from file: {private_key_file})")
-                            except Exception as e:
-                                self.logger.warning(f"Failed to read private key from file {private_key_file}: {e}")
-                
-                # Log authentication method status
-                if private_key_fetch_success:
-                    self.logger.info("✓ JWT authentication: Private key from device")
-                elif self.device_private_key:
-                    self.logger.info("✓ JWT authentication: Private key from environment/file")
-                else:
-                    self.logger.info("❌ JWT authentication: Not available")
-                    self.logger.info("To enable JWT authentication:")
-                    self.logger.info("  1. Ensure device supports private key export (ENABLE_PRIVATE_KEY_EXPORT=1), or")
-                    self.logger.info("  2. Set PACKETCAPTURE_PRIVATE_KEY environment variable, or")
-                    self.logger.info("  3. Set PACKETCAPTURE_PRIVATE_KEY_FILE to point to a private key file, or")
-                    self.logger.info("  4. Create a .env.local file with PACKETCAPTURE_PRIVATE_KEY=your_private_key_here")
+                self.logger.info("✓ JWT authentication: Will use on-device signing")
                 
                 return True
             else:
@@ -1760,11 +1754,6 @@ class PacketCapture:
             use_auth_token = self.get_env_bool(f'MQTT{broker_num}_USE_AUTH_TOKEN', False)
             
             if use_auth_token:
-                # Check if we have any JWT authentication method available
-                if not self.private_key_export_available and not self.device_private_key:
-                    self.logger.error(f"MQTT{broker_num}: No JWT authentication method available (private key from device or environment)")
-                    return None
-                
                 try:
                     username = f"v1_{self.device_public_key.upper()}"
                     audience = self.get_env(f'MQTT{broker_num}_TOKEN_AUDIENCE', "")

@@ -47,10 +47,11 @@ except ImportError:
 
 # Import auth token module
 try:
-    from auth_token import create_auth_token, read_private_key_file
+    from auth_token import create_auth_token, create_auth_token_async, read_private_key_file
 except ImportError:
     print("Warning: auth_token.py not found - auth token authentication will not be available")
     create_auth_token = None
+    create_auth_token_async = None
     read_private_key_file = None
 
 # Private key functionality using meshcore_py library
@@ -795,17 +796,12 @@ class PacketCapture:
     
     
     async def create_jwt_with_private_key(self, audience: str = None) -> Optional[str]:
-        """Create JWT using private key from device"""
+        """Create JWT using on-device signing (preferred) or private key from device"""
         try:
-            if not self.device_private_key or not create_auth_token:
+            if not create_auth_token_async and not create_auth_token:
                 return None
             
-            # Convert bytearray to hex string if needed
-            private_key = self.device_private_key
-            if isinstance(private_key, (bytes, bytearray)):
-                private_key = private_key.hex()
-            
-            # Use the existing auth_token method
+            # Build claims
             claims = {}
             if audience:
                 claims['aud'] = audience
@@ -840,24 +836,64 @@ class PacketCapture:
             if client_agent:
                 claims['client'] = client_agent
             
-            jwt_token = create_auth_token(self.device_public_key, private_key, **claims)
+            # Prefer on-device signing if meshcore instance is available and connected
+            if (create_auth_token_async and 
+                self.meshcore and 
+                self.meshcore.is_connected and
+                os.getenv('AUTH_TOKEN_METHOD', '').lower().strip() not in ('python', 'meshcore-decoder')):
+                # Use on-device signing (no private key needed)
+                # Don't pass private_key_hex so auth_token.py will fail fast if device signing fails
+                jwt_token = await create_auth_token_async(
+                    self.device_public_key,
+                    meshcore_instance=self.meshcore,
+                    **claims
+                )
+                self.logger.info("✓ JWT created using on-device signing")
+                return jwt_token
+            
+            # Fallback to private key signing (skip if device-only mode is enabled)
+            device_only = os.getenv('AUTH_TOKEN_DEVICE_ONLY', '').lower().strip() == 'true'
+            if device_only:
+                self.logger.error("Device-only signing mode enabled but device signing failed or not available")
+                return None
+            
+            # Fallback to private key signing
+            if not self.device_private_key:
+                self.logger.warning("Cannot create JWT: no device private key and device signing not available")
+                return None
+            
+            # Convert bytearray to hex string if needed
+            private_key = self.device_private_key
+            if isinstance(private_key, (bytes, bytearray)):
+                private_key = private_key.hex()
+            
+            # Use async version if available (for consistency), otherwise sync version
+            if create_auth_token_async:
+                jwt_token = await create_auth_token_async(
+                    self.device_public_key,
+                    private_key_hex=private_key,
+                    **claims
+                )
+            else:
+                jwt_token = create_auth_token(self.device_public_key, private_key, **claims)
+            
             self.logger.info("✓ JWT created using private key from device")
             return jwt_token
             
         except Exception as e:
-            self.logger.error(f"Error creating JWT with private key: {e}")
+            device_only = os.getenv('AUTH_TOKEN_DEVICE_ONLY', '').lower().strip() == 'true'
+            if device_only:
+                self.logger.error(f"Device-only signing mode: JWT creation failed: {e}")
+            else:
+                self.logger.error(f"Error creating JWT: {e}", exc_info=True)
             return None
     
     async def create_auth_token_jwt(self, audience: str = None, broker_num: int = None) -> Optional[str]:
-        """Create JWT token using private key from device"""
-        # Use private key method (fetched from device)
+        """Create JWT token using on-device signing or private key from device"""
+        # Use on-device signing (preferred) or private key method (fallback)
+        # The create_jwt_with_private_key() method already logs which method was used
         jwt_token = await self.create_jwt_with_private_key(audience)
         if jwt_token:
-            if audience and ('mqtt' in audience.lower() or 'letsmesh' in audience.lower()):
-                self.logger.info("✓ JWT created using private key from device for MQTT authentication")
-            else:
-                self.logger.info("✓ JWT created using private key from device")
-            
             # Store token with expiry time if broker_num is provided
             if broker_num is not None:
                 import time

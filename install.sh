@@ -976,12 +976,11 @@ configure_mqtt_brokers_only() {
     echo "  • Real-time packet analysis and visualization"
     echo "  • Network health monitoring"
     echo "  • Redundant servers: mqtt-us-v1.letsmesh.net + mqtt-eu-v1.letsmesh.net"
-    echo "  • Requires meshcore-decoder for authentication"
+    echo "  • Uses device signing (Python signing as fallback)"
     echo ""
     
-    if [ "$DECODER_AVAILABLE" = true ]; then
-        if prompt_yes_no "Enable LetsMesh Packet Analyzer with redundancy?" "y"; then
-            cat >> "$ENV_LOCAL" << EOF
+    if prompt_yes_no "Enable LetsMesh Packet Analyzer with redundancy?" "y"; then
+        cat >> "$ENV_LOCAL" << EOF
 
 # MQTT Broker 1 - LetsMesh.net Packet Analyzer (US)
 PACKETCAPTURE_MQTT1_ENABLED=true
@@ -1003,34 +1002,20 @@ PACKETCAPTURE_MQTT2_USE_AUTH_TOKEN=true
 PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
 PACKETCAPTURE_MQTT2_KEEPALIVE=120
 EOF
-            print_success "LetsMesh Packet Analyzer enabled with redundancy"
-            
-            # Configure JWT options (owner public key and client agent)
-            configure_jwt_options
-            
-            # Configure topics for LetsMesh
-            configure_mqtt_topics 1
-            
-            if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
-                configure_additional_brokers
-            fi
-        else
-            # User declined LetsMesh, ask if they want to configure a custom broker
-            if prompt_yes_no "Would you like to configure a custom MQTT broker?" "y"; then
-                configure_custom_broker 1
-                
-                if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
-                    configure_additional_brokers
-                fi
-            else
-                print_warning "No MQTT brokers configured - you'll need to edit .env.local manually"
-            fi
+        print_success "LetsMesh Packet Analyzer enabled with redundancy"
+        
+        # Configure JWT options (owner public key and client agent)
+        configure_jwt_options
+        
+        # Configure topics for LetsMesh
+        configure_mqtt_topics 1
+        
+        if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
+            configure_additional_brokers
         fi
     else
-        # No decoder available, can't use LetsMesh
-        print_warning "meshcore-decoder not available - cannot use LetsMesh auth token authentication"
-        
-        if prompt_yes_no "Would you like to configure a custom MQTT broker with username/password?" "y"; then
+        # User declined LetsMesh, ask if they want to configure a custom broker
+        if prompt_yes_no "Would you like to configure a custom MQTT broker?" "y"; then
             configure_custom_broker 1
             
             if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
@@ -1152,12 +1137,11 @@ EOF
     echo "  • Real-time packet analysis and visualization"
     echo "  • Network health monitoring"
     echo "  • Redundant servers: mqtt-us-v1.letsmesh.net + mqtt-eu-v1.letsmesh.net"
-    echo "  • Requires meshcore-decoder for authentication"
+    echo "  • Uses device signing (Python signing as fallback)"
     echo ""
     
-    if [ "$DECODER_AVAILABLE" = true ]; then
-        if prompt_yes_no "Enable LetsMesh Packet Analyzer with redundancy?" "y"; then
-            cat >> "$ENV_LOCAL" << EOF
+    if prompt_yes_no "Enable LetsMesh Packet Analyzer with redundancy?" "y"; then
+        cat >> "$ENV_LOCAL" << EOF
 
 # MQTT Broker 1 - LetsMesh.net Packet Analyzer (US)
 PACKETCAPTURE_MQTT1_ENABLED=true
@@ -1179,31 +1163,17 @@ PACKETCAPTURE_MQTT2_USE_AUTH_TOKEN=true
 PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
 PACKETCAPTURE_MQTT2_KEEPALIVE=120
 EOF
-            print_success "LetsMesh Packet Analyzer brokers enabled"
-            
-            # Configure topics for LetsMesh
-            configure_mqtt_topics 1
-            
-            if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
-                configure_additional_brokers
-            fi
-        else
-            # User declined LetsMesh, ask if they want to configure a custom broker
-            if prompt_yes_no "Would you like to configure a custom MQTT broker?" "y"; then
-                configure_custom_broker 1
-                
-                if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
-                    configure_additional_brokers
-                fi
-            else
-                print_warning "No MQTT brokers configured - you'll need to edit .env.local manually"
-            fi
+        print_success "LetsMesh Packet Analyzer brokers enabled"
+        
+        # Configure topics for LetsMesh
+        configure_mqtt_topics 1
+        
+        if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
+            configure_additional_brokers
         fi
     else
-        # No decoder available, can't use LetsMesh
-        print_warning "meshcore-decoder not available - cannot use LetsMesh auth token authentication"
-        
-        if prompt_yes_no "Would you like to configure a custom MQTT broker with username/password?" "y"; then
+        # User declined LetsMesh, ask if they want to configure a custom broker
+        if prompt_yes_no "Would you like to configure a custom MQTT broker?" "y"; then
             configure_custom_broker 1
             
             if prompt_yes_no "Would you like to configure additional MQTT brokers?" "n"; then
@@ -1279,20 +1249,15 @@ configure_custom_broker() {
     echo ""
     print_info "Authentication method:"
     echo "  1) Username/Password"
-    echo "  2) MeshCore Auth Token (requires meshcore-decoder)"
+    echo "  2) MeshCore Auth Token"
     echo "  3) None (anonymous)"
     AUTH_TYPE=$(prompt_input "Choose authentication method [1-3]" "1")
     
         if [ "$AUTH_TYPE" = "2" ]; then
-        if [ "$DECODER_AVAILABLE" = false ]; then
-            print_error "meshcore-decoder not available - using username/password instead"
-            AUTH_TYPE=1
-        else
-            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_USE_AUTH_TOKEN=true" >> "$ENV_LOCAL"
-            TOKEN_AUDIENCE=$(prompt_input "Token audience (optional)" "$EXISTING_TOKEN_AUDIENCE")
-            if [ -n "$TOKEN_AUDIENCE" ]; then
-                echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOKEN_AUDIENCE=$TOKEN_AUDIENCE" >> "$ENV_LOCAL"
-            fi
+        echo "PACKETCAPTURE_MQTT${BROKER_NUM}_USE_AUTH_TOKEN=true" >> "$ENV_LOCAL"
+        TOKEN_AUDIENCE=$(prompt_input "Token audience (optional)" "$EXISTING_TOKEN_AUDIENCE")
+        if [ -n "$TOKEN_AUDIENCE" ]; then
+            echo "PACKETCAPTURE_MQTT${BROKER_NUM}_TOKEN_AUDIENCE=$TOKEN_AUDIENCE" >> "$ENV_LOCAL"
         fi
     fi
     
@@ -1512,30 +1477,6 @@ main() {
     pip install --quiet --upgrade -r "$INSTALL_DIR/requirements.txt"
     # meshcore is now installed from PyPI via requirements.txt and will be upgraded on reinstall
     print_success "Python dependencies installed"
-    
-    # Check for meshcore-decoder (optional)
-    if command -v meshcore-decoder &> /dev/null; then
-        print_success "meshcore-decoder found: $(which meshcore-decoder)"
-        DECODER_AVAILABLE=true
-    else
-        print_warning "meshcore-decoder not found (required for auth token authentication)"
-        if prompt_yes_no "Would you like instructions to install it now?" "y"; then
-            echo ""
-            echo "To install meshcore-decoder, run:"
-            echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash"
-            echo "  # Restart your shell or run: source ~/.bashrc (or ~/.zshrc)"
-            echo "  nvm install --lts"
-            echo "  npm install -g @michaelhart/meshcore-decoder"
-            echo ""
-            if prompt_yes_no "Continue without meshcore-decoder (you can install it later)?" "y"; then
-                DECODER_AVAILABLE=false
-            else
-                exit 1
-            fi
-        else
-            DECODER_AVAILABLE=false
-        fi
-    fi
     
     # Configuration
     print_header "Configuration"
@@ -1888,7 +1829,7 @@ install_systemd_service() {
     local service_file="/tmp/meshcore-capture.service"
     local current_user=$(whoami)
     
-    # Build PATH with meshcore-decoder if available
+    # Build PATH (silently includes meshcore-decoder if available for legacy support)
     local service_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     if command -v meshcore-decoder &> /dev/null; then
         local decoder_dir=$(dirname "$(which meshcore-decoder)")
@@ -2059,12 +2000,11 @@ install_launchd_service() {
         fi
     fi
     
-    # Add meshcore-decoder directory if found
+    # Add meshcore-decoder directory if found (silent - for legacy support)
     if command -v meshcore-decoder &> /dev/null; then
         local decoder_dir=$(dirname "$(which meshcore-decoder)")
         if [ -n "$decoder_dir" ] && [ "$decoder_dir" != "." ] && [[ "$service_path" != *"$decoder_dir"* ]]; then
             service_path="${service_path}${decoder_dir}:"
-            print_info "Including meshcore-decoder path: $decoder_dir"
         fi
     fi
     

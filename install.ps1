@@ -389,7 +389,7 @@ function Configure-SingleMqttBroker {
     Write-Host ""
     Write-Host "Authentication method:" -ForegroundColor Blue
     Write-Host "  1) Username/Password" -ForegroundColor Blue
-    Write-Host "  2) MeshCore Auth Token (requires meshcore-decoder)" -ForegroundColor Blue
+    Write-Host "  2) MeshCore Auth Token" -ForegroundColor Blue
     Write-Host "  3) None (anonymous)" -ForegroundColor Blue
     
     $authChoice = Read-Host "Choose authentication method [1-3]"
@@ -1233,7 +1233,7 @@ PACKETCAPTURE_LOG_LEVEL=INFO
     Write-Host "INFO: Enable the LetsMesh.net Packet Analyzer (mqtt-us-v1.letsmesh.net) broker?" -ForegroundColor Blue
     Write-Host "  • Real-time packet analysis and visualization" -ForegroundColor Blue
     Write-Host "  • Network health monitoring" -ForegroundColor Blue
-    Write-Host "  • Requires meshcore-decoder for authentication" -ForegroundColor Blue
+    Write-Host "  • Uses device signing (Python signing as fallback)" -ForegroundColor Blue
                 Write-Host ""
                 
     $response = Read-Host "Enable LetsMesh Packet Analyzer? (y/N)"

@@ -1253,7 +1253,8 @@ class PacketCapture:
         # (SDK may have recreated the instance, leaving old subscriptions orphaned)
         self.cleanup_event_subscriptions()
         # Re-setup event handlers after reconnection
-        await self._setup_after_reconnection()
+        await self.setup_event_handlers()
+        await self.meshcore.start_auto_message_fetching()
     
     def _check_ble_grace_period(self, failure_reason: str = "failed") -> bool:
         """

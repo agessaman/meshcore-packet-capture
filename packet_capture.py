@@ -1044,6 +1044,11 @@ class PacketCapture:
         try:
             # 1. Check if meshcore object exists and reports connected
             if not self.meshcore or not self.meshcore.is_connected:
+                # For TCP with SDK auto-reconnect, don't log warning if SDK is still trying
+                if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled and not self.sdk_reconnect_exhausted:
+                    if self.debug:
+                        self.logger.debug("MeshCore reports not connected, but SDK auto-reconnect is active")
+                    return False
                 self.logger.warning("MeshCore reports not connected")
                 return False
             
@@ -1052,31 +1057,46 @@ class PacketCapture:
                 transport = get_transport(self.meshcore)
                 if transport:
                     if transport.is_closing():
+                        # For TCP with SDK auto-reconnect, SDK will handle reconnection
+                        if self.tcp_sdk_auto_reconnect_enabled and not self.sdk_reconnect_exhausted:
+                            if self.debug:
+                                self.logger.debug("TCP transport is closing, but SDK auto-reconnect is active")
+                            return False
                         self.logger.warning("TCP transport is closed or closing")
                         return False
-                else:
-                    # Transport not available might mean connection is lost
-                    if self.debug:
-                        self.logger.debug("TCP transport not available")
             
             # 3. Try a lightweight command with timeout
+            # Use longer timeout for TCP with SDK auto-reconnect (device might be busy)
+            health_check_timeout = 8.0 if (self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled) else 5.0
+            
             try:
                 result = await asyncio.wait_for(
                     self.meshcore.commands.send_device_query(),
-                    timeout=5.0  # Shorter timeout for faster detection
+                    timeout=health_check_timeout
                 )
                 if result and hasattr(result, 'type') and result.type != EventType.ERROR:
-                    if self.debug:
-                        self.logger.debug("Connection health check passed (device query successful)")
                     return True
                 else:
                     if self.debug:
                         self.logger.debug(f"Health check device query failed: {result}")
                     return False
             except asyncio.TimeoutError:
+                # For TCP with SDK auto-reconnect, timeout might just mean device is busy
+                # SDK will handle reconnection if needed, so don't log as warning
+                if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled and not self.sdk_reconnect_exhausted:
+                    if self.debug:
+                        self.logger.debug("Health check timed out, but SDK auto-reconnect is active")
+                    return False
                 self.logger.warning("Health check timed out")
                 return False
             except Exception as e:
+                # For TCP with SDK auto-reconnect, errors might be temporary
+                if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled and not self.sdk_reconnect_exhausted:
+                    if self.debug:
+                        error_type = type(e).__name__
+                        self.logger.debug(f"Health check command failed ({error_type}), but SDK auto-reconnect is active")
+                    return False
+                
                 # Log detailed error information for debugging
                 error_type = type(e).__name__
                 error_msg = str(e)
@@ -1094,6 +1114,11 @@ class PacketCapture:
                 return False
         
         except Exception as e:
+            # For TCP with SDK auto-reconnect, don't log as warning if SDK is handling it
+            if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled and not self.sdk_reconnect_exhausted:
+                if self.debug:
+                    self.logger.debug(f"Connection health check failed ({type(e).__name__}), but SDK auto-reconnect is active")
+                return False
             self.logger.warning(f"Connection health check failed: {e}")
             return False
     
@@ -1511,28 +1536,30 @@ class PacketCapture:
                     break  # Shutdown was requested
                 
                 # Check if we need to reconnect (either disconnected or health check failed)
+                # For TCP with SDK auto-reconnect, only check health if SDK has exhausted
+                if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled and not self.sdk_reconnect_exhausted:
+                    # SDK is handling reconnection - just check if it succeeded
+                    if self.meshcore and self.meshcore.is_connected:
+                        if not self.connected:
+                            # SDK reconnected - update our state
+                            self.connected = True
+                            self.sdk_reconnect_exhausted = False
+                            self.logger.info("SDK auto-reconnect succeeded - connection restored")
+                            # Clean up old subscriptions before re-setting up handlers
+                            # (SDK may have recreated the instance, leaving old subscriptions orphaned)
+                            self.cleanup_event_subscriptions()
+                            # Re-setup event handlers after SDK reconnection
+                            await self.setup_event_handlers()
+                            await self.meshcore.start_auto_message_fetching()
+                            # Reset consecutive failures on successful reconnection
+                            self.reset_consecutive_failures("connection")
+                    # Skip health check and reconnect logic - let SDK handle it
+                    continue
+                
+                # For other connection types or after SDK has exhausted, do normal health check
                 needs_reconnection = not self.connected or not await self.check_connection_health()
                 
                 if needs_reconnection:
-                    # For TCP connections with SDK auto-reconnect, only trigger custom reconnect
-                    # after SDK has exhausted its attempts
-                    if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled:
-                        if not self.sdk_reconnect_exhausted:
-                            # SDK is still trying to reconnect, give it more time
-                            if self.debug:
-                                self.logger.debug("SDK auto-reconnect is still active for TCP - waiting for it to exhaust before custom reconnect")
-                            # Check connection status - if SDK reconnected, update our state
-                            if self.meshcore and self.meshcore.is_connected:
-                                self.connected = True
-                                self.sdk_reconnect_exhausted = False
-                                self.logger.info("SDK auto-reconnect succeeded - connection restored")
-                                # Clean up old subscriptions before re-setting up handlers
-                                # (SDK may have recreated the instance, leaving old subscriptions orphaned)
-                                self.cleanup_event_subscriptions()
-                                # Re-setup event handlers after SDK reconnection
-                                await self.setup_event_handlers()
-                                await self.meshcore.start_auto_message_fetching()
-                            continue  # Skip custom reconnect, let SDK handle it
                     
                     # For non-TCP connections, or TCP after SDK has exhausted, use custom reconnect
                     if not self.connected:

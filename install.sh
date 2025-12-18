@@ -4,7 +4,7 @@
 # ============================================================================
 set -e
 
-SCRIPT_VERSION="1.1.3"
+SCRIPT_VERSION="1.2"
 DEFAULT_REPO="agessaman/meshcore-packet-capture"
 DEFAULT_BRANCH="main"
 
@@ -343,7 +343,6 @@ handle_ble_pairing() {
     echo ""
     print_info "Checking BLE pairing status for $device_name ($device_address)..."
     
-    # Debug: Show the actual values being passed
     if [ -z "$device_name" ] || [ -z "$device_address" ]; then
         print_error "Invalid device information: name='$device_name', address='$device_address'"
         return 1
@@ -1771,14 +1770,6 @@ main() {
             if [ -f "$INSTALL_DIR/.env.local" ] && grep -q "^PACKETCAPTURE_MQTT[1-4]_ENABLED=true" "$INSTALL_DIR/.env.local" 2>/dev/null; then
                 print_info "MQTT brokers already configured - skipping MQTT configuration"
             else
-                # Debug: Show what we're checking
-                if [ -f "$INSTALL_DIR/.env.local" ]; then
-                    print_info "Checking for MQTT brokers in: $INSTALL_DIR/.env.local"
-                    print_info "Found MQTT lines:"
-                    grep "^PACKETCAPTURE_MQTT[1-4]_ENABLED=" "$INSTALL_DIR/.env.local" 2>/dev/null || echo "  (none found)"
-                else
-                    print_info "Configuration file not found: $INSTALL_DIR/.env.local"
-                fi
                 # Still need to configure MQTT brokers if not already configured
                 configure_mqtt_brokers_only
             fi

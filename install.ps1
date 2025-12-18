@@ -9,7 +9,7 @@ param(
 )
 
 # Script configuration
-$ScriptVersion = "1.1.3"
+$ScriptVersion = "1.2"
 $ErrorActionPreference = "Stop"
 
 # Global variables
@@ -21,7 +21,6 @@ $SelectedSerialDevice = ""
 $TcpHost = ""
 $TcpPort = ""
 $Iata = ""
-$DecoderAvailable = $false
 $ServiceInstalled = $false
 $DockerInstalled = $false
 $UpdatingExisting = $false
@@ -95,14 +94,11 @@ function Invoke-BluetoothPairing {
 "@ -ErrorAction SilentlyContinue
         
         # Try to pair using Windows API
-        Write-Host "DEBUG: Attempting Windows Bluetooth API pairing..." -ForegroundColor Gray
-        
         # This is a simplified approach - in practice, you'd need more complex API calls
         # For now, we'll return false to fall back to other methods
         return $false
         
     } catch {
-        Write-Host "DEBUG: Windows Bluetooth API failed: $($_.Exception.Message)" -ForegroundColor Gray
         return $false
     }
 }
@@ -115,8 +111,6 @@ function Invoke-BluetoothctlPairing {
     )
     
     try {
-        Write-Host "DEBUG: Attempting bluetoothctl pairing..." -ForegroundColor Gray
-        
         # Use bluetoothctl to pair
         $pairingScript = @"
 #!/bin/bash
@@ -148,12 +142,10 @@ EOF
         if ($wslResult -match "Pairing successful" -or $gitBashResult -match "Pairing successful") {
                 return $true
         } else {
-            Write-Host "DEBUG: bluetoothctl pairing failed" -ForegroundColor Gray
                 return $false
             }
         
     } catch {
-        Write-Host "DEBUG: bluetoothctl approach failed: $($_.Exception.Message)" -ForegroundColor Gray
                 return $false
     }
 }
@@ -778,7 +770,6 @@ function Start-Installation {
                     return
                 }
                 
-                Write-Host "DEBUG: Bluetooth adapter found: $($bluetoothAdapter.FriendlyName)" -ForegroundColor Gray
                 
                 # Start Bluetooth discovery
                 Write-Host "INFO: Starting Bluetooth discovery..." -ForegroundColor Blue
@@ -1012,7 +1003,7 @@ function Start-Installation {
                                     }
                                 }
                             } catch {
-                                Write-Host "DEBUG: PowerShell Bluetooth cmdlets not available: $($_.Exception.Message)" -ForegroundColor Gray
+                                # PowerShell Bluetooth cmdlets not available, try next method
                             }
                             
                             # Method 2: Try using Windows Bluetooth API via .NET
@@ -1031,7 +1022,7 @@ function Start-Installation {
                                         Write-Host "ERROR: PIN must be 6 digits" -ForegroundColor Red
                                     }
                                 } catch {
-                                    Write-Host "DEBUG: Windows Bluetooth API failed: $($_.Exception.Message)" -ForegroundColor Gray
+                                    # Windows Bluetooth API failed, try next method
                                 }
                             }
                             
@@ -1054,7 +1045,7 @@ function Start-Installation {
                                         }
                                     }
                                 } catch {
-                                    Write-Host "DEBUG: bluetoothctl approach failed: $($_.Exception.Message)" -ForegroundColor Gray
+                                    # bluetoothctl approach failed, try next method
                                 }
                             }
                             

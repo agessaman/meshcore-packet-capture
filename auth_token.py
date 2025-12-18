@@ -211,6 +211,91 @@ def _create_auth_token_internal(
     return f"{header_encoded}.{payload_encoded}.{signature_hex}"
 
 
+async def _retryable_device_sign(
+    sign_func,
+    command_name: str = "sign",
+    timeout: float = 20.0,
+    max_retries: int = 3,
+    retry_delay: float = 0.3,
+    backoff_multiplier: float = 1.5
+):
+    """
+    Execute a device signing command with timeout and retry logic.
+    
+    Args:
+        sign_func: Async function that returns a meshcore Event
+        command_name: Name of the command for logging
+        timeout: Timeout in seconds for each attempt
+        max_retries: Maximum number of retry attempts (including initial attempt)
+        retry_delay: Initial delay between retries in seconds
+        backoff_multiplier: Multiplier for exponential backoff
+    
+    Returns:
+        Event object from the command
+    
+    Raises:
+        Exception: If all retries fail
+    """
+    from meshcore import EventType
+    
+    last_error = None
+    current_delay = retry_delay
+    
+    for attempt in range(max_retries):
+        try:
+            # Add small delay between retries (except first attempt)
+            if attempt > 0:
+                await asyncio.sleep(current_delay)
+                current_delay *= backoff_multiplier  # Exponential backoff
+            
+            # Execute command with timeout
+            result = await asyncio.wait_for(
+                sign_func(),
+                timeout=timeout
+            )
+            
+            # Check if result is an error
+            if result and hasattr(result, 'type'):
+                if result.type == EventType.ERROR:
+                    error_payload = result.payload if hasattr(result, 'payload') else {}
+                    error_reason = error_payload.get('reason', 'unknown')
+                    
+                    # Check if it's a transient error that we should retry
+                    if error_reason == 'no_event_received' and attempt < max_retries - 1:
+                        last_error = f"{command_name} failed: {error_reason}"
+                        logger.debug(f"{last_error} (attempt {attempt + 1}/{max_retries})")
+                        continue
+                    else:
+                        # Permanent error or last attempt
+                        raise Exception(f"{command_name} failed: {error_payload}")
+                else:
+                    # Success - return the result
+                    if attempt > 0:
+                        logger.debug(f"{command_name} succeeded on attempt {attempt + 1}")
+                    return result
+            else:
+                # Unexpected result format
+                raise Exception(f"{command_name} returned unexpected result format")
+                
+        except asyncio.TimeoutError:
+            last_error = f"{command_name} timed out after {timeout}s"
+            if attempt < max_retries - 1:
+                logger.debug(f"{last_error} (attempt {attempt + 1}/{max_retries})")
+                continue
+            else:
+                raise Exception(f"{last_error} (all {max_retries} attempts exhausted)")
+        except Exception as e:
+            # Re-raise if it's not a retryable error
+            if "failed:" in str(e) and attempt < max_retries - 1:
+                last_error = str(e)
+                logger.debug(f"{last_error} (attempt {attempt + 1}/{max_retries})")
+                continue
+            raise
+    
+    # All retries failed
+    raise Exception(f"{command_name} failed after {max_retries} attempts: {last_error}")
+
+
 async def _create_auth_token_with_device(
     payload: AuthTokenPayload,
     public_key_hex: str,
@@ -383,31 +468,48 @@ async def _create_auth_token_with_device(
             
             logger.debug(f"Total bytes sent: {total_sent} (expected: {len(signing_input_bytes)})")
             
-            # Manual sign_finish
+            # Manual sign_finish with retry logic
             logger.debug("Calling sign_finish...")
-            sig_evt = await meshcore_instance.commands.sign_finish(timeout=None, data_size=len(signing_input_bytes))
+            sig_evt = await _retryable_device_sign(
+                lambda: meshcore_instance.commands.sign_finish(timeout=None, data_size=len(signing_input_bytes)),
+                "sign_finish",
+                timeout=20.0,
+                max_retries=3,
+                retry_delay=0.3
+            )
         except Exception as e:
             logger.debug(f"Manual signing flow failed: {e}")
             raise
     else:
-        # Use the high-level sign() method with library defaults
+        # Use the high-level sign() method with library defaults and retry logic
         # Call sign() - it internally:
         # 1. Calls sign_start() to initialize
         # 2. Calls sign_data() for each chunk (using library's default chunk_size)
         # 3. Calls sign_finish() with calculated timeout based on data_size
         # The timeout parameter lets sign_finish() calculate timeout based on data_size
         # For JWT tokens (~372 bytes), it will use at least 15 seconds
-        # Try with timeout first (newer dev branch), fall back if not supported
-        try:
-            sig_evt = await meshcore_instance.commands.sign(
-                signing_input_bytes,
-                timeout=None  # Let sign_finish() calculate timeout based on data_size (15s minimum)
-            )
-        except TypeError:
-            # Older version doesn't support timeout parameter
-            sig_evt = await meshcore_instance.commands.sign(
-                signing_input_bytes
-            )
+        # Wrap in retry logic to handle transient BLE communication issues
+        async def sign_with_retry():
+            # Try with timeout first (newer dev branch), fall back if not supported
+            try:
+                return await meshcore_instance.commands.sign(
+                    signing_input_bytes,
+                    timeout=None  # Let sign_finish() calculate timeout based on data_size (15s minimum)
+                )
+            except TypeError:
+                # Older version doesn't support timeout parameter
+                return await meshcore_instance.commands.sign(
+                    signing_input_bytes
+                )
+        
+        # Use retry helper with longer timeout for signing operations
+        sig_evt = await _retryable_device_sign(
+            sign_with_retry,
+            "sign",
+            timeout=20.0,  # Longer timeout for signing (device needs time to process)
+            max_retries=3,
+            retry_delay=0.3
+        )
     
     # Check for error first (as shown in example)
     if sig_evt.type == EventType.ERROR:

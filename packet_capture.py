@@ -228,6 +228,10 @@ class PacketCapture:
         self.connection_retry_jitter = self.get_env_bool('CONNECTION_RETRY_JITTER', True)
         self.health_check_interval = self.get_env_int('HEALTH_CHECK_INTERVAL', 30)
         
+        # Health check grace period for BLE connections
+        self.health_check_grace_period = self.get_env_int('HEALTH_CHECK_GRACE_PERIOD', 2)  # Allow 2 consecutive failures
+        self.health_check_failure_count = 0  # Track consecutive health check failures
+        
         # MQTT connection
         self.mqtt_clients = []  # List of MQTT client info dictionaries
         self.mqtt_connected = False
@@ -1185,22 +1189,43 @@ class PacketCapture:
                         return False
             
             # 3. Try a lightweight command with timeout and retry
-            # Use longer timeout for TCP with SDK auto-reconnect (device might be busy)
-            health_check_timeout = 8.0 if (self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled) else 5.0
+            # Use longer timeout for BLE connections (Linux BLE can be slow) and TCP with SDK auto-reconnect
+            if self.connection_type == 'ble':
+                health_check_timeout = 12.0  # Longer timeout for BLE on Linux
+                health_check_retries = 3  # More retries for BLE
+            elif self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled:
+                health_check_timeout = 8.0  # Longer timeout for TCP with SDK auto-reconnect
+                health_check_retries = 2
+            else:
+                health_check_timeout = 5.0  # Default for serial/TCP without SDK auto-reconnect
+                health_check_retries = 2
             
             try:
                 result = await self.retryable_device_command(
                     lambda: self.meshcore.commands.send_device_query(),
                     "send_device_query (health check)",
                     timeout=health_check_timeout,
-                    max_retries=2,  # Fewer retries for health checks
-                    retry_delay=0.2
+                    max_retries=health_check_retries,
+                    retry_delay=0.3  # Slightly longer delay for health checks
                 )
                 if result and hasattr(result, 'type') and result.type != EventType.ERROR:
+                    # Success - reset failure count
+                    self.health_check_failure_count = 0
                     return True
                 else:
                     if self.debug:
                         self.logger.debug(f"Health check device query failed: {result}")
+                    # For BLE, if is_connected is True, we might still consider it healthy
+                    # (BLE can have slow responses but connection might still be valid)
+                    if self.connection_type == 'ble' and self.meshcore and self.meshcore.is_connected:
+                        self.health_check_failure_count += 1
+                        if self.health_check_failure_count <= self.health_check_grace_period:
+                            if self.debug:
+                                self.logger.debug(f"Health check query failed but BLE connection appears active (grace period: {self.health_check_failure_count}/{self.health_check_grace_period})")
+                            return True  # Allow grace period for BLE
+                        else:
+                            self.logger.warning(f"Health check failed {self.health_check_failure_count} times consecutively - connection may be degraded")
+                            return False
                     return False
             except asyncio.TimeoutError:
                 # For TCP with SDK auto-reconnect, timeout might just mean device is busy
@@ -1209,6 +1234,18 @@ class PacketCapture:
                     if self.debug:
                         self.logger.debug("Health check timed out, but SDK auto-reconnect is active")
                     return False
+                
+                # For BLE, allow grace period even on timeout if connection appears active
+                if self.connection_type == 'ble' and self.meshcore and self.meshcore.is_connected:
+                    self.health_check_failure_count += 1
+                    if self.health_check_failure_count <= self.health_check_grace_period:
+                        if self.debug:
+                            self.logger.debug(f"Health check timed out but BLE connection appears active (grace period: {self.health_check_failure_count}/{self.health_check_grace_period})")
+                        return True  # Allow grace period for BLE
+                    else:
+                        self.logger.warning(f"Health check timed out {self.health_check_failure_count} times consecutively - connection may be degraded")
+                        return False
+                
                 self.logger.warning("Health check timed out")
                 return False
             except Exception as e:
@@ -1430,6 +1467,8 @@ class PacketCapture:
             
             if self.meshcore and self.meshcore.is_connected:
                 self.connected = True
+                # Reset health check failure count on successful connection
+                self.health_check_failure_count = 0
                 # Reset SDK reconnect exhaustion flag on successful connection
                 if self.connection_type == 'tcp':
                     self.sdk_reconnect_exhausted = False
@@ -1678,11 +1717,14 @@ class PacketCapture:
                             await self.meshcore.start_auto_message_fetching()
                             # Reset consecutive failures on successful reconnection
                             self.reset_consecutive_failures("connection")
+                            # Reset health check failure count
+                            self.health_check_failure_count = 0
                     # Skip health check and reconnect logic - let SDK handle it
                     continue
                 
                 # For other connection types or after SDK has exhausted, do normal health check
-                needs_reconnection = not self.connected or not await self.check_connection_health()
+                health_check_passed = await self.check_connection_health()
+                needs_reconnection = not self.connected or not health_check_passed
                 
                 if needs_reconnection:
                     
@@ -1698,6 +1740,8 @@ class PacketCapture:
                         
                         # Reset consecutive failures on successful reconnection
                         self.reset_consecutive_failures("connection")
+                        # Reset health check failure count
+                        self.health_check_failure_count = 0
                         # Reset SDK reconnect exhaustion flag on successful reconnect
                         if self.connection_type == 'tcp':
                             self.sdk_reconnect_exhausted = False

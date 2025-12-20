@@ -47,10 +47,11 @@ except ImportError:
 
 # Import auth token module
 try:
-    from auth_token import create_auth_token, read_private_key_file
+    from auth_token import create_auth_token, create_auth_token_async, read_private_key_file
 except ImportError:
     print("Warning: auth_token.py not found - auth token authentication will not be available")
     create_auth_token = None
+    create_auth_token_async = None
     read_private_key_file = None
 
 # Private key functionality using meshcore_py library
@@ -226,6 +227,18 @@ class PacketCapture:
         self.connection_retry_backoff_multiplier = self.get_env_float('CONNECTION_RETRY_BACKOFF_MULTIPLIER', 2.0)
         self.connection_retry_jitter = self.get_env_bool('CONNECTION_RETRY_JITTER', True)
         self.health_check_interval = self.get_env_int('HEALTH_CHECK_INTERVAL', 30)
+        
+        # Health check grace period for BLE connections
+        self.health_check_grace_period = self.get_env_int('HEALTH_CHECK_GRACE_PERIOD', 2)  # Allow 2 consecutive failures
+        self.health_check_failure_count = 0  # Track consecutive health check failures
+        
+        # Retry configuration
+        self.default_retry_limit = self.get_env_int('DEVICE_COMMAND_RETRY_LIMIT', 3)  # Default retries for device commands
+        self.ble_retry_limit = self.get_env_int('BLE_COMMAND_RETRY_LIMIT', 3)  # Retries for BLE connections
+        self.tcp_retry_limit = self.get_env_int('TCP_COMMAND_RETRY_LIMIT', 2)  # Retries for TCP connections
+        self.health_check_retry_limit = self.get_env_int('HEALTH_CHECK_RETRY_LIMIT', None)  # Override for health checks (None = use connection-specific)
+        self.stats_retry_limit = self.get_env_int('STATS_RETRY_LIMIT', 2)  # Retries for stats queries (non-critical)
+        self.device_info_retry_limit = self.get_env_int('DEVICE_INFO_RETRY_LIMIT', 2)  # Retries for device info queries
         
         # MQTT connection
         self.mqtt_clients = []  # List of MQTT client info dictionaries
@@ -473,6 +486,102 @@ class PacketCapture:
         else:
             await asyncio.sleep(timeout)
             return False
+    
+    async def retryable_device_command(self, command_func, command_name: str, 
+                                       timeout: float = 10.0, max_retries: int = None,
+                                       retry_delay: float = 0.2, backoff_multiplier: float = 1.5):
+        """
+        Execute a device command with timeout and retry logic.
+        
+        Args:
+            command_func: Async function that returns a meshcore Event
+            command_name: Name of the command for logging
+            timeout: Timeout in seconds for each attempt
+            max_retries: Maximum number of retry attempts (including initial attempt)
+                        If None, uses connection-specific default from environment variables
+            retry_delay: Initial delay between retries in seconds
+            backoff_multiplier: Multiplier for exponential backoff
+        
+        Returns:
+            Event object from the command, or None if all retries failed
+        """
+        if not self._ensure_connected(command_name, "debug"):
+            return None
+        
+        # Use connection-specific default if max_retries not specified
+        if max_retries is None:
+            if self.connection_type == 'ble':
+                max_retries = self.ble_retry_limit
+            elif self.connection_type == 'tcp':
+                max_retries = self.tcp_retry_limit
+            else:
+                max_retries = self.default_retry_limit
+        
+        last_error = None
+        current_delay = retry_delay
+        
+        for attempt in range(max_retries):
+            try:
+                # Add small delay between retries (except first attempt)
+                if attempt > 0:
+                    await asyncio.sleep(current_delay)
+                    current_delay *= backoff_multiplier  # Exponential backoff
+                
+                # Execute command with timeout
+                result = await asyncio.wait_for(
+                    command_func(),
+                    timeout=timeout
+                )
+                
+                # Check if result is an error
+                if result and hasattr(result, 'type'):
+                    if result.type == EventType.ERROR:
+                        error_payload = result.payload if hasattr(result, 'payload') else {}
+                        error_reason = error_payload.get('reason', 'unknown')
+                        
+                        # Check if it's a transient error that we should retry
+                        if error_reason == 'no_event_received' and attempt < max_retries - 1:
+                            last_error = f"{command_name} failed: {error_reason}"
+                            if self.debug:
+                                self.logger.debug(f"{last_error} (attempt {attempt + 1}/{max_retries})")
+                            continue
+                        else:
+                            # Permanent error or last attempt
+                            self.logger.debug(f"{command_name} failed: {error_payload}")
+                            return result
+                    else:
+                        # Success - return the result
+                        if attempt > 0:
+                            self.logger.debug(f"{command_name} succeeded on attempt {attempt + 1}")
+                        return result
+                else:
+                    # Unexpected result format
+                    self.logger.debug(f"{command_name} returned unexpected result format")
+                    return result
+                    
+            except asyncio.TimeoutError:
+                last_error = f"{command_name} timed out after {timeout}s"
+                if attempt < max_retries - 1:
+                    if self.debug:
+                        self.logger.debug(f"{last_error} (attempt {attempt + 1}/{max_retries})")
+                    continue
+                else:
+                    self.logger.debug(f"{last_error} (all {max_retries} attempts exhausted)")
+                    return None
+            except Exception as e:
+                last_error = f"{command_name} raised exception: {e}"
+                if attempt < max_retries - 1:
+                    if self.debug:
+                        self.logger.debug(f"{last_error} (attempt {attempt + 1}/{max_retries})")
+                    continue
+                else:
+                    self.logger.debug(f"{last_error} (all {max_retries} attempts exhausted)")
+                    return None
+        
+        # All retries failed
+        if last_error:
+            self.logger.debug(f"{command_name} failed after {max_retries} attempts: {last_error}")
+        return None
 
     def should_exit_for_systemd_restart(self) -> bool:
         """Determine if we should exit to allow systemd restart"""
@@ -540,13 +649,22 @@ class PacketCapture:
                 self.logger.debug("Using cached firmware info")
                 return self.cached_firmware_info
             
-            if not self.meshcore or not self.meshcore.is_connected:
-                self.logger.debug("Cannot get firmware info - not connected to device")
+            if not self._ensure_connected("get_firmware_info", "debug"):
                 return {"model": "unknown", "version": "unknown"}
             
             self.logger.debug("Querying device for firmware info...")
-            # Use send_device_query() to get firmware version
-            result = await self.meshcore.commands.send_device_query()
+            # Use send_device_query() to get firmware version with retry logic
+            # Use connection-specific retry limit
+            result = await self.retryable_device_command(
+                lambda: self.meshcore.commands.send_device_query(),
+                "send_device_query",
+                timeout=10.0,
+                max_retries=None  # Use connection-specific default
+            )
+            
+            if result is None:
+                self.logger.debug("Device query failed after retries")
+                return {"model": "unknown", "version": "unknown"}
             
             self.logger.debug(f"Device query result type: {result.type}")
             self.logger.debug(f"Device query result: {result}")
@@ -717,14 +835,19 @@ class PacketCapture:
     async def set_radio_clock(self) -> bool:
         """Set radio clock only if device time is earlier than current system time"""
         try:
-            if not self.meshcore or not self.meshcore.is_connected:
-                self.logger.warning("Cannot set radio clock - not connected to device")
+            if not self._ensure_connected("set_radio_clock", "warning"):
                 return False
             
-            # Get current device time
+            # Get current device time with retry logic
             self.logger.info("Checking device time...")
-            time_result = await self.meshcore.commands.get_time()
-            if time_result.type == EventType.ERROR:
+            time_result = await self.retryable_device_command(
+                lambda: self.meshcore.commands.get_time(),
+                "get_time",
+                timeout=8.0,
+                max_retries=self.device_info_retry_limit,  # Use device info retry limit
+                retry_delay=0.2
+            )
+            if time_result is None or time_result.type == EventType.ERROR:
                 self.logger.warning("Device does not support time commands")
                 return False
             
@@ -738,8 +861,14 @@ class PacketCapture:
                 time_diff = current_time - device_time
                 self.logger.info(f"Device time is {time_diff} seconds behind, updating...")
                 
-                result = await self.meshcore.commands.set_time(current_time)
-                if result.type == EventType.OK:
+                result = await self.retryable_device_command(
+                    lambda: self.meshcore.commands.set_time(current_time),
+                    "set_time",
+                    timeout=8.0,
+                    max_retries=self.device_info_retry_limit,  # Use device info retry limit
+                    retry_delay=0.2
+                )
+                if result and result.type == EventType.OK:
                     self.logger.info(f"✓ Radio clock updated to: {current_time}")
                     self.last_clock_sync_time = current_time
                     return True
@@ -759,12 +888,23 @@ class PacketCapture:
         try:
             self.logger.info("Fetching private key from device...")
             
-            if not self.meshcore or not self.meshcore.is_connected:
-                self.logger.error("Cannot fetch private key - not connected to device")
+            if not self._ensure_connected("fetch_private_key_from_device", "error"):
                 return False
             
-            # Use meshcore library to export private key
-            result = await self.meshcore.commands.export_private_key()
+            # Use meshcore library to export private key with retry logic
+            # Use connection-specific retry limit (defaults to 3 for BLE, 2 for TCP)
+            result = await self.retryable_device_command(
+                lambda: self.meshcore.commands.export_private_key(),
+                "export_private_key",
+                timeout=10.0,
+                max_retries=None,  # Use connection-specific default
+                retry_delay=0.3  # Slightly longer delay for private key operations
+            )
+            
+            if result is None:
+                self.logger.error("Error fetching private key: command failed after retries")
+                self.private_key_export_available = False
+                return False
             
             if result.type == EventType.PRIVATE_KEY:
                 self.device_private_key = result.payload["private_key"]
@@ -795,17 +935,12 @@ class PacketCapture:
     
     
     async def create_jwt_with_private_key(self, audience: str = None) -> Optional[str]:
-        """Create JWT using private key from device"""
+        """Create JWT using on-device signing (preferred) or private key from device"""
         try:
-            if not self.device_private_key or not create_auth_token:
+            if not create_auth_token_async and not create_auth_token:
                 return None
             
-            # Convert bytearray to hex string if needed
-            private_key = self.device_private_key
-            if isinstance(private_key, (bytes, bytearray)):
-                private_key = private_key.hex()
-            
-            # Use the existing auth_token method
+            # Build claims
             claims = {}
             if audience:
                 claims['aud'] = audience
@@ -840,24 +975,88 @@ class PacketCapture:
             if client_agent:
                 claims['client'] = client_agent
             
-            jwt_token = create_auth_token(self.device_public_key, private_key, **claims)
+            # Prefer on-device signing if meshcore instance is available and connected
+            if (create_auth_token_async and 
+                self.meshcore and 
+                self.meshcore.is_connected and
+                os.getenv('AUTH_TOKEN_METHOD', '').lower().strip() not in ('python', 'meshcore-decoder')):
+                try:
+                    # Use on-device signing (no private key needed)
+                    # Don't pass private_key_hex so auth_token.py will fail fast if device signing fails
+                    jwt_token = await create_auth_token_async(
+                        self.device_public_key,
+                        meshcore_instance=self.meshcore,
+                        **claims
+                    )
+                    self.logger.info("✓ JWT created using on-device signing")
+                    return jwt_token
+                except Exception as e:
+                    # Device signing failed - fall back to private key if available
+                    self.logger.debug(f"On-device signing failed: {e}, attempting private key fallback...")
+            
+            # Fallback to private key signing (skip if device-only mode is enabled)
+            device_only = os.getenv('AUTH_TOKEN_DEVICE_ONLY', '').lower().strip() == 'true'
+            if device_only:
+                self.logger.error("Device-only signing mode enabled but device signing failed or not available")
+                return None
+            
+            # Fallback to private key signing - load from env/file first, then try device if needed
+            if not self.device_private_key:
+                # Try to load from environment variable first
+                env_private_key = self.get_env('PRIVATE_KEY', '')
+                if env_private_key:
+                    self.device_private_key = env_private_key
+                    self.logger.info("Device signing failed, using private key from environment")
+                # Try to read from private key file
+                elif read_private_key_file:
+                    private_key_file = self.get_env('PRIVATE_KEY_FILE', '')
+                    if private_key_file and Path(private_key_file).exists():
+                        try:
+                            self.device_private_key = read_private_key_file(private_key_file)
+                            self.logger.info(f"Device signing failed, using private key from file: {private_key_file}")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to read private key from file {private_key_file}: {e}")
+                
+                # If still no private key, try fetching from device
+                if not self.device_private_key:
+                    self.logger.info("Device signing not available, fetching private key from device for fallback...")
+                    private_key_fetch_success = await self.fetch_private_key_from_device()
+                    if not private_key_fetch_success:
+                        self.logger.warning("Cannot create JWT: device signing failed and private key not available from device or environment")
+                        return None
+            
+            # Convert bytearray to hex string if needed
+            private_key = self.device_private_key
+            if isinstance(private_key, (bytes, bytearray)):
+                private_key = private_key.hex()
+            
+            # Use async version if available (for consistency), otherwise sync version
+            if create_auth_token_async:
+                jwt_token = await create_auth_token_async(
+                    self.device_public_key,
+                    private_key_hex=private_key,
+                    **claims
+                )
+            else:
+                jwt_token = create_auth_token(self.device_public_key, private_key, **claims)
+            
             self.logger.info("✓ JWT created using private key from device")
             return jwt_token
             
         except Exception as e:
-            self.logger.error(f"Error creating JWT with private key: {e}")
+            device_only = os.getenv('AUTH_TOKEN_DEVICE_ONLY', '').lower().strip() == 'true'
+            if device_only:
+                self.logger.error(f"Device-only signing mode: JWT creation failed: {e}")
+            else:
+                self.logger.error(f"Error creating JWT: {e}", exc_info=True)
             return None
     
     async def create_auth_token_jwt(self, audience: str = None, broker_num: int = None) -> Optional[str]:
-        """Create JWT token using private key from device"""
-        # Use private key method (fetched from device)
+        """Create JWT token using on-device signing or private key from device"""
+        # Use on-device signing (preferred) or private key method (fallback)
+        # The create_jwt_with_private_key() method already logs which method was used
         jwt_token = await self.create_jwt_with_private_key(audience)
         if jwt_token:
-            if audience and ('mqtt' in audience.lower() or 'letsmesh' in audience.lower()):
-                self.logger.info("✓ JWT created using private key from device for MQTT authentication")
-            else:
-                self.logger.info("✓ JWT created using private key from device")
-            
             # Store token with expiry time if broker_num is provided
             if broker_num is not None:
                 import time
@@ -979,11 +1178,121 @@ class PacketCapture:
     
     
 
+    def _is_tcp_sdk_auto_reconnect_active(self) -> bool:
+        """
+        Check if TCP SDK auto-reconnect is active and handling reconnection.
+        
+        Returns:
+            True if TCP connection with SDK auto-reconnect enabled and not exhausted
+        """
+        return (self.connection_type == 'tcp' and 
+                self.tcp_sdk_auto_reconnect_enabled and 
+                not self.sdk_reconnect_exhausted)
+    
+    def _get_connection_timeout_config(self, default_timeout: float = 5.0, default_retries: int = None):
+        """
+        Get timeout and retry configuration based on connection type.
+        
+        Args:
+            default_timeout: Default timeout for connections without special handling
+            default_retries: Default number of retries (None = use connection-specific default)
+        
+        Returns:
+            Tuple of (timeout, retries) appropriate for the current connection type
+        """
+        if self.connection_type == 'ble':
+            retries = self.health_check_retry_limit if self.health_check_retry_limit is not None else self.ble_retry_limit
+            return (12.0, retries)  # Longer timeout and more retries for BLE on Linux
+        elif self._is_tcp_sdk_auto_reconnect_active():
+            retries = self.health_check_retry_limit if self.health_check_retry_limit is not None else self.tcp_retry_limit
+            return (8.0, retries)  # Longer timeout for TCP with SDK auto-reconnect
+        else:
+            retries = self.health_check_retry_limit if self.health_check_retry_limit is not None else (default_retries or self.default_retry_limit)
+            return (default_timeout, retries)
+    
+    def _ensure_connected(self, command_name: str = "command", log_level: str = "debug") -> bool:
+        """
+        Check if device is connected, logging appropriately if not.
+        
+        Args:
+            command_name: Name of the command being executed (for logging)
+            log_level: Log level to use ("debug", "warning", "error")
+        
+        Returns:
+            True if connected, False otherwise
+        """
+        if not self.meshcore or not self.meshcore.is_connected:
+            message = f"Cannot execute {command_name} - not connected to device"
+            if log_level == "error":
+                self.logger.error(message)
+            elif log_level == "warning":
+                self.logger.warning(message)
+            else:
+                self.logger.debug(message)
+            return False
+        return True
+    
+    def _reset_connection_state(self):
+        """
+        Reset all connection-related state variables after successful connection/reconnection.
+        This includes health check counters, SDK reconnect flags, and consecutive failure counts.
+        """
+        self.connected = True
+        self.health_check_failure_count = 0
+        if self.connection_type == 'tcp':
+            self.sdk_reconnect_exhausted = False
+        self.reset_consecutive_failures("connection")
+    
+    async def _setup_after_reconnection(self):
+        """
+        Perform all setup tasks required after a successful reconnection.
+        This includes cleaning up old subscriptions, setting up event handlers,
+        and starting auto message fetching.
+        """
+        # Clean up old subscriptions before re-setting up handlers
+        # (SDK may have recreated the instance, leaving old subscriptions orphaned)
+        self.cleanup_event_subscriptions()
+        # Re-setup event handlers after reconnection
+        await self.setup_event_handlers()
+        await self.meshcore.start_auto_message_fetching()
+    
+    def _check_ble_grace_period(self, failure_reason: str = "failed") -> bool:
+        """
+        Check if BLE health check failure should be allowed under grace period.
+        
+        Args:
+            failure_reason: Description of why the health check failed (for logging)
+        
+        Returns:
+            True if failure is within grace period and should be allowed, False otherwise
+        """
+        if self.connection_type == 'ble' and self.meshcore and self.meshcore.is_connected:
+            self.health_check_failure_count += 1
+            if self.health_check_failure_count <= self.health_check_grace_period:
+                if self.debug:
+                    self.logger.debug(
+                        f"Health check {failure_reason} but BLE connection appears active "
+                        f"(grace period: {self.health_check_failure_count}/{self.health_check_grace_period})"
+                    )
+                return True  # Allow grace period for BLE
+            else:
+                self.logger.warning(
+                    f"Health check {failure_reason} {self.health_check_failure_count} times consecutively - "
+                    "connection may be degraded"
+                )
+                return False
+        return False
+    
     async def check_connection_health(self) -> bool:
         """Enhanced health check with network validation"""
         try:
             # 1. Check if meshcore object exists and reports connected
             if not self.meshcore or not self.meshcore.is_connected:
+                # For TCP with SDK auto-reconnect, don't log warning if SDK is still trying
+                if self._is_tcp_sdk_auto_reconnect_active():
+                    if self.debug:
+                        self.logger.debug("MeshCore reports not connected, but SDK auto-reconnect is active")
+                    return False
                 self.logger.warning("MeshCore reports not connected")
                 return False
             
@@ -992,35 +1301,82 @@ class PacketCapture:
                 transport = get_transport(self.meshcore)
                 if transport:
                     if transport.is_closing():
+                        # For TCP with SDK auto-reconnect, SDK will handle reconnection
+                        if self.tcp_sdk_auto_reconnect_enabled and not self.sdk_reconnect_exhausted:
+                            if self.debug:
+                                self.logger.debug("TCP transport is closing, but SDK auto-reconnect is active")
+                            return False
                         self.logger.warning("TCP transport is closed or closing")
                         return False
-                else:
-                    # Transport not available might mean connection is lost
-                    if self.debug:
-                        self.logger.debug("TCP transport not available")
             
-            # 3. Try a lightweight command with timeout
+            # 3. Try a lightweight command with timeout and retry
+            # Use longer timeout for BLE connections (Linux BLE can be slow) and TCP with SDK auto-reconnect
+            health_check_timeout, health_check_retries = self._get_connection_timeout_config()
+            
             try:
-                result = await asyncio.wait_for(
-                    self.meshcore.commands.send_device_query(),
-                    timeout=5.0  # Shorter timeout for faster detection
+                result = await self.retryable_device_command(
+                    lambda: self.meshcore.commands.send_device_query(),
+                    "send_device_query (health check)",
+                    timeout=health_check_timeout,
+                    max_retries=health_check_retries,  # Uses connection-specific or health_check_retry_limit override
+                    retry_delay=0.3  # Slightly longer delay for health checks
                 )
                 if result and hasattr(result, 'type') and result.type != EventType.ERROR:
-                    if self.debug:
-                        self.logger.debug("Connection health check passed (device query successful)")
+                    # Success - reset failure count
+                    self.health_check_failure_count = 0
                     return True
                 else:
                     if self.debug:
                         self.logger.debug(f"Health check device query failed: {result}")
+                    # For BLE, if is_connected is True, we might still consider it healthy
+                    # (BLE can have slow responses but connection might still be valid)
+                    if self._check_ble_grace_period("query failed"):
+                        return True
                     return False
             except asyncio.TimeoutError:
+                # For TCP with SDK auto-reconnect, timeout might just mean device is busy
+                # SDK will handle reconnection if needed, so don't log as warning
+                if self._is_tcp_sdk_auto_reconnect_active():
+                    if self.debug:
+                        self.logger.debug("Health check timed out, but SDK auto-reconnect is active")
+                    return False
+                
+                # For BLE, allow grace period even on timeout if connection appears active
+                if self._check_ble_grace_period("timed out"):
+                    return True
+                
                 self.logger.warning("Health check timed out")
                 return False
             except Exception as e:
-                self.logger.warning(f"Health check command failed: {e}")
+                # For TCP with SDK auto-reconnect, errors might be temporary
+                if self._is_tcp_sdk_auto_reconnect_active():
+                    if self.debug:
+                        error_type = type(e).__name__
+                        self.logger.debug(f"Health check command failed ({error_type}), but SDK auto-reconnect is active")
+                    return False
+                
+                # Log detailed error information for debugging
+                error_type = type(e).__name__
+                error_msg = str(e)
+                # Check if it's an errno error (common on macOS/Linux)
+                errno_value = getattr(e, 'errno', None)
+                if errno_value is not None:
+                    import errno
+                    try:
+                        errno_name = errno.errorcode.get(errno_value, f"UNKNOWN({errno_value})")
+                        self.logger.warning(f"Health check command failed: {error_type} [{errno_name}]: {error_msg}")
+                    except (AttributeError, KeyError):
+                        self.logger.warning(f"Health check command failed: {error_type} [errno={errno_value}]: {error_msg}")
+                else:
+                    self.logger.warning(f"Health check command failed: {error_type}: {error_msg}")
                 return False
         
         except Exception as e:
+            # For TCP with SDK auto-reconnect, don't log as warning if SDK is handling it
+            if self._is_tcp_sdk_auto_reconnect_active():
+                if self.debug:
+                    self.logger.debug(f"Connection health check failed ({type(e).__name__}), but SDK auto-reconnect is active")
+                return False
             self.logger.warning(f"Connection health check failed: {e}")
             return False
     
@@ -1209,10 +1565,7 @@ class PacketCapture:
                         await asyncio.sleep(0.5)
             
             if self.meshcore and self.meshcore.is_connected:
-                self.connected = True
-                # Reset SDK reconnect exhaustion flag on successful connection
-                if self.connection_type == 'tcp':
-                    self.sdk_reconnect_exhausted = False
+                self._reset_connection_state()
                 self.logger.info(f"Connected to: {self.meshcore.self_info}")
                 
                 # Wait for self_info to be populated (it may be empty initially, especially for serial)
@@ -1236,9 +1589,12 @@ class PacketCapture:
                 if not self_info_populated and hasattr(self.meshcore, 'commands'):
                     try:
                         self.logger.debug("Attempting to query device info...")
-                        await asyncio.wait_for(
-                            self.meshcore.commands.send_device_query(),
-                            timeout=3.0
+                        result = await self.retryable_device_command(
+                            lambda: self.meshcore.commands.send_device_query(),
+                            "send_device_query (device info)",
+                            timeout=3.0,
+                            max_retries=self.device_info_retry_limit,  # Use device info retry limit
+                            retry_delay=0.2
                         )
                         # Wait a bit more after query
                         await asyncio.sleep(0.5)
@@ -1283,40 +1639,10 @@ class PacketCapture:
                 # Don't publish status here - wait for MQTT connections
                 # Status will be published after MQTT connections are established
                 
-                # Setup JWT authentication using private key from device
+                # Setup JWT authentication - will use on-device signing (preferred)
+                # Private key fallback will be loaded lazily only if device signing fails
                 self.logger.info("Setting up JWT authentication...")
-                
-                # Try to fetch private key from device first
-                private_key_fetch_success = await self.fetch_private_key_from_device()
-                
-                # Fallback: Try to get private key from environment variable
-                if not private_key_fetch_success:
-                    env_private_key = self.get_env('PRIVATE_KEY', '')
-                    if env_private_key:
-                        self.device_private_key = env_private_key
-                        self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from environment)")
-                    # Try to read from private key file
-                    elif read_private_key_file:
-                        private_key_file = self.get_env('PRIVATE_KEY_FILE', '')
-                        if private_key_file and Path(private_key_file).exists():
-                            try:
-                                self.device_private_key = read_private_key_file(private_key_file)
-                                self.logger.info(f"Device private key: {self.device_private_key[:4]}... (from file: {private_key_file})")
-                            except Exception as e:
-                                self.logger.warning(f"Failed to read private key from file {private_key_file}: {e}")
-                
-                # Log authentication method status
-                if private_key_fetch_success:
-                    self.logger.info("✓ JWT authentication: Private key from device")
-                elif self.device_private_key:
-                    self.logger.info("✓ JWT authentication: Private key from environment/file")
-                else:
-                    self.logger.info("❌ JWT authentication: Not available")
-                    self.logger.info("To enable JWT authentication:")
-                    self.logger.info("  1. Ensure device supports private key export (ENABLE_PRIVATE_KEY_EXPORT=1), or")
-                    self.logger.info("  2. Set PACKETCAPTURE_PRIVATE_KEY environment variable, or")
-                    self.logger.info("  3. Set PACKETCAPTURE_PRIVATE_KEY_FILE to point to a private key file, or")
-                    self.logger.info("  4. Create a .env.local file with PACKETCAPTURE_PRIVATE_KEY=your_private_key_here")
+                self.logger.info("✓ JWT authentication: Will use on-device signing")
                 
                 return True
             else:
@@ -1387,6 +1713,20 @@ class PacketCapture:
         self.logger.info(f"Attempting MeshCore reconnection (attempt {self.connection_retry_count}/{self.max_connection_retries if self.max_connection_retries > 0 else '∞'}) with {delay:.1f}s delay...")
         
         # Clean up existing connection
+        # Capture BLE address before disconnecting (needed for bluetoothctl cleanup)
+        ble_device = None
+        if self.meshcore and self.connection_type == 'ble':
+            # Try to get BLE address from meshcore object before disconnecting
+            try:
+                # Check if meshcore has address attribute (BLE connections often do)
+                if hasattr(self.meshcore, 'address') and self.meshcore.address:
+                    ble_device = self.meshcore.address
+            except Exception:
+                pass
+            # Fallback to environment variables
+            if not ble_device:
+                ble_device = self.get_env('BLE_DEVICE', '') or self.get_env('BLE_ADDRESS', '')
+        
         if self.meshcore:
             try:
                 # Clean up event subscriptions BEFORE stopping/disconnecting to prevent pending tasks
@@ -1401,9 +1741,23 @@ class PacketCapture:
             except Exception as e:
                 self.logger.debug(f"Error disconnecting during reconnect: {e}")
             self.meshcore = None
-            # For BLE connections, wait a bit longer to ensure full cleanup
+            # For BLE connections, ensure full cleanup including OS-level disconnect
             if self.connection_type == 'ble':
-                await asyncio.sleep(0.5)
+                # On Linux, force disconnect via bluetoothctl to ensure clean state
+                import platform
+                if platform.system() == 'Linux':
+                    try:
+                        import subprocess
+                        if ble_device and ble_device != 'Unknown':
+                            self.logger.debug(f"Force disconnecting BLE device {ble_device} via bluetoothctl...")
+                            subprocess.run(['bluetoothctl', 'disconnect', ble_device], 
+                                         capture_output=True, timeout=10)
+                            await asyncio.sleep(1)  # Give time for disconnection
+                    except Exception as e:
+                        self.logger.debug(f"Could not force BLE disconnect via bluetoothctl: {e}")
+                else:
+                    # On non-Linux systems, add a short delay to ensure BLE cleanup completes
+                    await asyncio.sleep(0.5)
         
         # Wait before retrying with exponential backoff
         if delay > 0:
@@ -1440,28 +1794,23 @@ class PacketCapture:
                     break  # Shutdown was requested
                 
                 # Check if we need to reconnect (either disconnected or health check failed)
-                needs_reconnection = not self.connected or not await self.check_connection_health()
+                # For TCP with SDK auto-reconnect, only check health if SDK has exhausted
+                if self._is_tcp_sdk_auto_reconnect_active():
+                    # SDK is handling reconnection - just check if it succeeded
+                    if self.meshcore and self.meshcore.is_connected:
+                        if not self.connected:
+                            # SDK reconnected - update our state
+                            self._reset_connection_state()
+                            self.logger.info("SDK auto-reconnect succeeded - connection restored")
+                            await self._setup_after_reconnection()
+                    # Skip health check and reconnect logic - let SDK handle it
+                    continue
+                
+                # For other connection types or after SDK has exhausted, do normal health check
+                health_check_passed = await self.check_connection_health()
+                needs_reconnection = not self.connected or not health_check_passed
                 
                 if needs_reconnection:
-                    # For TCP connections with SDK auto-reconnect, only trigger custom reconnect
-                    # after SDK has exhausted its attempts
-                    if self.connection_type == 'tcp' and self.tcp_sdk_auto_reconnect_enabled:
-                        if not self.sdk_reconnect_exhausted:
-                            # SDK is still trying to reconnect, give it more time
-                            if self.debug:
-                                self.logger.debug("SDK auto-reconnect is still active for TCP - waiting for it to exhaust before custom reconnect")
-                            # Check connection status - if SDK reconnected, update our state
-                            if self.meshcore and self.meshcore.is_connected:
-                                self.connected = True
-                                self.sdk_reconnect_exhausted = False
-                                self.logger.info("SDK auto-reconnect succeeded - connection restored")
-                                # Clean up old subscriptions before re-setting up handlers
-                                # (SDK may have recreated the instance, leaving old subscriptions orphaned)
-                                self.cleanup_event_subscriptions()
-                                # Re-setup event handlers after SDK reconnection
-                                await self.setup_event_handlers()
-                                await self.meshcore.start_auto_message_fetching()
-                            continue  # Skip custom reconnect, let SDK handle it
                     
                     # For non-TCP connections, or TCP after SDK has exhausted, use custom reconnect
                     if not self.connected:
@@ -1472,16 +1821,8 @@ class PacketCapture:
                     # Attempt to reconnect
                     if await self.reconnect_meshcore():
                         self.logger.info("MeshCore reconnection successful, resuming packet capture")
-                        
-                        # Reset consecutive failures on successful reconnection
-                        self.reset_consecutive_failures("connection")
-                        # Reset SDK reconnect exhaustion flag on successful reconnect
-                        if self.connection_type == 'tcp':
-                            self.sdk_reconnect_exhausted = False
-                        
-                        # Re-setup event handlers after reconnection
-                        await self.setup_event_handlers()
-                        await self.meshcore.start_auto_message_fetching()
+                        self._reset_connection_state()
+                        await self._setup_after_reconnection()
                     else:
                         self.logger.error("MeshCore reconnection failed, will retry on next health check")
                         # Track consecutive failures for more intelligent failure detection
@@ -1683,11 +2024,6 @@ class PacketCapture:
             use_auth_token = self.get_env_bool(f'MQTT{broker_num}_USE_AUTH_TOKEN', False)
             
             if use_auth_token:
-                # Check if we have any JWT authentication method available
-                if not self.private_key_export_available and not self.device_private_key:
-                    self.logger.error(f"MQTT{broker_num}: No JWT authentication method available (private key from device or environment)")
-                    return None
-                
                 try:
                     username = f"v1_{self.device_public_key.upper()}"
                     audience = self.get_env(f'MQTT{broker_num}_TOKEN_AUDIENCE', "")
@@ -1906,9 +2242,7 @@ class PacketCapture:
                 self.logger.debug("Stats refresh skipped: stats_status_enabled is False")
             return None
         
-        if not self.meshcore or not self.meshcore.is_connected:
-            if self.debug:
-                self.logger.debug("Stats refresh skipped: meshcore not connected")
+        if not self._ensure_connected("refresh_stats", "debug"):
             return None
         
         if self.stats_refresh_interval <= 0:
@@ -1940,19 +2274,31 @@ class PacketCapture:
             
             stats_payload = {}
             try:
-                core_result = await self.meshcore.commands.get_stats_core()
-                if core_result.type == EventType.STATS_CORE and core_result.payload:
+                core_result = await self.retryable_device_command(
+                    lambda: self.meshcore.commands.get_stats_core(),
+                    "get_stats_core",
+                    timeout=8.0,
+                    max_retries=self.stats_retry_limit,  # Use stats retry limit
+                    retry_delay=0.2
+                )
+                if core_result and core_result.type == EventType.STATS_CORE and core_result.payload:
                     stats_payload.update(core_result.payload)
-                elif core_result.type == EventType.ERROR:
+                elif core_result and core_result.type == EventType.ERROR:
                     self.logger.debug(f"Core stats unavailable: {core_result.payload}")
             except Exception as exc:
                 self.logger.debug(f"Error fetching core stats: {exc}")
             
             try:
-                radio_result = await self.meshcore.commands.get_stats_radio()
-                if radio_result.type == EventType.STATS_RADIO and radio_result.payload:
+                radio_result = await self.retryable_device_command(
+                    lambda: self.meshcore.commands.get_stats_radio(),
+                    "get_stats_radio",
+                    timeout=8.0,
+                    max_retries=self.stats_retry_limit,  # Use stats retry limit
+                    retry_delay=0.2
+                )
+                if radio_result and radio_result.type == EventType.STATS_RADIO and radio_result.payload:
                     stats_payload.update(radio_result.payload)
-                elif radio_result.type == EventType.ERROR:
+                elif radio_result and radio_result.type == EventType.ERROR:
                     self.logger.debug(f"Radio stats unavailable: {radio_result.payload}")
             except Exception as exc:
                 self.logger.debug(f"Error fetching radio stats: {exc}")
@@ -2837,8 +3183,7 @@ class PacketCapture:
     async def send_advert(self):
         """Send a flood advert using meshcore commands"""
         try:
-            if not self.meshcore or not self.meshcore.is_connected:
-                self.logger.warning("Cannot send advert - not connected to MeshCore")
+            if not self._ensure_connected("send_advert", "warning"):
                 return False
             
             self.logger.info("Sending flood advert...")

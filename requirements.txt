@@ -1,8 +1,8 @@
 # Core dependencies for MeshCore packet capture
 paho-mqtt>=1.6.0
 
-# MeshCore package - requires 2.2.2+ for stats command support
-meshcore>=2.2.2
+# MeshCore package - on-device signing support available in 2.2.4+
+meshcore>=2.2.4
 
 # MeshCore package dependencies (installed automatically with meshcore)
 bleak>=0.21.0
@@ -11,3 +11,6 @@ pycayennelpp>=1.0.0
 
 # Linux BLE pairing support
 pexpect>=4.8.0
+
+# JWT token generation (Ed25519 signing)
+pynacl>=1.5.0

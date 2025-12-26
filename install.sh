@@ -125,6 +125,11 @@ detect_serial_devices() {
         while IFS= read -r device; do
             devices+=("$device")
         done < <(ls /dev/cu.usb* /dev/cu.wchusbserial* /dev/cu.SLAB_USBtoUART* 2>/dev/null | sort)
+    elif [ "$(uname)" = "FreeBSD" ]; then
+        # FreeBSD: Use /dev/cuaU* devices (callout devices, preferred over ttyU*)
+        while IFS= read -r device; do
+            devices+=("$device")
+        done < <(ls /dev/cuaU* | grep -v -E '\.(lock|init)$' 2>/dev/null | sort)
     else
         # Linux: Prefer /dev/serial/by-id/ for persistent naming
         if [ -d /dev/serial/by-id ]; then

@@ -46,11 +46,8 @@ RUN mkdir -p /app/data && chown -R meshcore:meshcore /app
 USER meshcore
 
 # Set default environment variables
-ENV PACKETCAPTURE_CONNECTION_TYPE=ble \
-    PACKETCAPTURE_TIMEOUT=30 \
-    PACKETCAPTURE_MAX_CONNECTION_RETRIES=5 \
-    PACKETCAPTURE_CONNECTION_RETRY_DELAY=5 \
-    PACKETCAPTURE_HEALTH_CHECK_INTERVAL=30 \
+# Note: These are defaults - override in docker-compose.yml or .env.local
+ENV PACKETCAPTURE_CONNECTION_TYPE=serial \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 

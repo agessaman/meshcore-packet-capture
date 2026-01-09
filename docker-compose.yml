@@ -2,26 +2,57 @@ version: '3.8'
 
 services:
   meshcore-capture:
-    build: .
+    # Use pre-built image (recommended)
+    image: ghcr.io/agessaman/meshcore-packet-capture:latest
+    # Or build from source: uncomment the line below and comment out the image line above
+    # build: .
     container_name: meshcore-packet-capture
-    privileged: true  # Required for BLE access and device communication
+    # Privileged mode configuration:
+    # - Set to 'false' for serial connections (default, more secure)
+    # - Set to 'true' for BLE connections (required for Bluetooth access)
+    # To enable for BLE, change 'false' to 'true' below
+    # or create docker-compose.override.yml with: privileged: true
+    privileged: false  # Change to true for BLE connections
     devices:
-      # Mount serial devices (uncomment and modify as needed)
-      - /dev/ttyUSB0:/dev/ttyUSB0
-      - /dev/ttyUSB1:/dev/ttyUSB1
-      - /dev/ttyACM0:/dev/ttyACM0
+      # Mount serial devices using persistent device IDs (recommended)
+      # Format: host_path:container_path
+      # Find your device ID on the host with: sudo ls -la /dev/serial/by-id/
+      # Standard container path is /dev/ttyUSB0 (matches code default, no config needed)
+      # Example: /dev/serial/by-id/usb-Heltec_HT-n5262_3D3B4D4A4D776001-if00:/dev/ttyUSB0
+      # Uncomment and modify the line below with your device ID:
+      - /dev/serial/by-id/usb-Heltec_HT-n5262_3D3B4D4A4D776001-if00:/dev/ttyUSB0
+      
+      # Alternative: Use numbered devices directly (may change after reboot)
+      # - /dev/ttyUSB0:/dev/ttyUSB0
+      # - /dev/ttyUSB1:/dev/ttyUSB1
+      # - /dev/ttyACM0:/dev/ttyACM0
     volumes:
       # Persistent data storage
       - ./data:/app/data
       # Configuration files (optional - can use environment variables instead)
+      # Copy .env.local.example to .env.local and customize for your setup
       - ./.env.local:/app/.env.local:ro
+      # Logs directory (optional - uncomment to mount logs separately from data)
+      # - ./logs:/app/logs
     environment:
       # Connection settings
-      - PACKETCAPTURE_CONNECTION_TYPE=ble
-      - PACKETCAPTURE_TIMEOUT=30
-      - PACKETCAPTURE_MAX_CONNECTION_RETRIES=5
-      - PACKETCAPTURE_CONNECTION_RETRY_DELAY=5
-      - PACKETCAPTURE_HEALTH_CHECK_INTERVAL=30
+      - PACKETCAPTURE_CONNECTION_TYPE=serial
+      # For serial connections:
+      # PACKETCAPTURE_SERIAL_PORTS defaults to /dev/ttyUSB0 (matches standard container path above)
+      # Only set this if using a different container path or multiple ports
+      # - PACKETCAPTURE_SERIAL_PORTS=/dev/ttyUSB0
+      # For BLE connections:
+      # 1. Change CONNECTION_TYPE above to 'ble'
+      # 2. Set privileged: true (see line 15)
+      # 3. Optionally set BLE device address or name:
+      # - PACKETCAPTURE_BLE_ADDRESS=AA:BB:CC:DD:EE:FF
+      # - PACKETCAPTURE_BLE_DEVICE_NAME=MeshCore Device
+      # Connection timeout, retries, and health check use defaults (30s, 5 retries, 30s interval)
+      # Uncomment to customize:
+      # - PACKETCAPTURE_TIMEOUT=30
+      # - PACKETCAPTURE_MAX_CONNECTION_RETRIES=5
+      # - PACKETCAPTURE_CONNECTION_RETRY_DELAY=5
+      # - PACKETCAPTURE_HEALTH_CHECK_INTERVAL=30
       
       # MQTT settings (configure as needed)
       - PACKETCAPTURE_MQTT1_ENABLED=true
@@ -31,27 +62,46 @@ services:
       - PACKETCAPTURE_MQTT1_PASSWORD=
       - PACKETCAPTURE_MQTT1_USE_TLS=false
       
-      # MQTT reconnection settings
-      - PACKETCAPTURE_MAX_MQTT_RETRIES=5
-      - PACKETCAPTURE_MQTT_RETRY_DELAY=5
-      - PACKETCAPTURE_EXIT_ON_RECONNECT_FAIL=true
+      # Example: Let'sMesh Analyzer - EU Server (uncomment to enable)
+      # - PACKETCAPTURE_MQTT2_ENABLED=true
+      # - PACKETCAPTURE_MQTT2_SERVER=mqtt-eu-v1.letsmesh.net
+      # - PACKETCAPTURE_MQTT2_PORT=443
+      # - PACKETCAPTURE_MQTT2_TRANSPORT=websockets
+      # - PACKETCAPTURE_MQTT2_USE_TLS=true
+      # - PACKETCAPTURE_MQTT2_USE_AUTH_TOKEN=true
+      # - PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
       
-      # Topic settings
-      - PACKETCAPTURE_TOPIC_STATUS=meshcore/status
-      - PACKETCAPTURE_TOPIC_PACKETS=meshcore/packets
-      - PACKETCAPTURE_TOPIC_RAW=meshcore/raw
-      - PACKETCAPTURE_TOPIC_DECODED=meshcore/decoded
-      - PACKETCAPTURE_TOPIC_DEBUG=meshcore/debug
+      # MQTT reconnection settings use defaults (5 retries, 5s delay, exit on fail)
+      # Uncomment to customize:
+      # - PACKETCAPTURE_MAX_MQTT_RETRIES=5
+      # - PACKETCAPTURE_MQTT_RETRY_DELAY=5
+      # - PACKETCAPTURE_EXIT_ON_RECONNECT_FAIL=true
+      
+      # Topic settings (when IATA is configured, topics automatically use template format)
+      # Template variables: {IATA}, {IATA_lower}, {PUBLIC_KEY}
+      # Default when IATA is set: meshcore/{IATA}/{PUBLIC_KEY}/status, etc.
+      # Uncomment to override with custom topics:
+      # - PACKETCAPTURE_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status
+      # - PACKETCAPTURE_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets
+      # - PACKETCAPTURE_TOPIC_RAW=meshcore/{IATA}/{PUBLIC_KEY}/raw
+      # - PACKETCAPTURE_TOPIC_DECODED=meshcore/{IATA}/{PUBLIC_KEY}/decoded
+      # - PACKETCAPTURE_TOPIC_DEBUG=meshcore/{IATA}/{PUBLIC_KEY}/debug
       
       # Device settings
       - PACKETCAPTURE_IATA=LOC
-      - PACKETCAPTURE_ORIGIN=PacketCapture Docker
+      # PACKETCAPTURE_ORIGIN is optional - if not set, uses device name from meshcore connection
+      # Uncomment and set if you want to override the device name:
+      # - PACKETCAPTURE_ORIGIN=Your Custom Name
       
       # Advert settings
+      # Adverts are used for network discovery, not connection keepalive
+      # The connection stays alive through regular packet traffic
+      # Default: 11 hours. Set to 0 to disable periodic adverts
       - PACKETCAPTURE_ADVERT_INTERVAL_HOURS=11
       
-      # RF data settings
-      - PACKETCAPTURE_RF_DATA_TIMEOUT=15.0
+      # RF data settings use default (15.0 seconds timeout)
+      # Uncomment to customize:
+      # - PACKETCAPTURE_RF_DATA_TIMEOUT=15.0
     networks:
       - meshcore-network
     restart: unless-stopped

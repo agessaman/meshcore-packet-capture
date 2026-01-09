@@ -54,22 +54,34 @@ services:
       # - PACKETCAPTURE_CONNECTION_RETRY_DELAY=5
       # - PACKETCAPTURE_HEALTH_CHECK_INTERVAL=30
       
-      # MQTT settings (configure as needed)
+      # MQTT settings - Let'sMesh Analyzer (US and EU servers for redundancy)
+      # MQTT Broker 1 - Let'sMesh Analyzer (US)
       - PACKETCAPTURE_MQTT1_ENABLED=true
-      - PACKETCAPTURE_MQTT1_SERVER=localhost
-      - PACKETCAPTURE_MQTT1_PORT=1883
-      - PACKETCAPTURE_MQTT1_USERNAME=
-      - PACKETCAPTURE_MQTT1_PASSWORD=
-      - PACKETCAPTURE_MQTT1_USE_TLS=false
+      - PACKETCAPTURE_MQTT1_SERVER=mqtt-us-v1.letsmesh.net
+      - PACKETCAPTURE_MQTT1_PORT=443
+      - PACKETCAPTURE_MQTT1_TRANSPORT=websockets
+      - PACKETCAPTURE_MQTT1_USE_TLS=true
+      - PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN=true
+      - PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt-us-v1.letsmesh.net
+      - PACKETCAPTURE_MQTT1_KEEPALIVE=120
       
-      # Example: Let'sMesh Analyzer - EU Server (uncomment to enable)
-      # - PACKETCAPTURE_MQTT2_ENABLED=true
-      # - PACKETCAPTURE_MQTT2_SERVER=mqtt-eu-v1.letsmesh.net
-      # - PACKETCAPTURE_MQTT2_PORT=443
-      # - PACKETCAPTURE_MQTT2_TRANSPORT=websockets
-      # - PACKETCAPTURE_MQTT2_USE_TLS=true
-      # - PACKETCAPTURE_MQTT2_USE_AUTH_TOKEN=true
-      # - PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
+      # MQTT Broker 2 - Let'sMesh Analyzer (EU)
+      - PACKETCAPTURE_MQTT2_ENABLED=true
+      - PACKETCAPTURE_MQTT2_SERVER=mqtt-eu-v1.letsmesh.net
+      - PACKETCAPTURE_MQTT2_PORT=443
+      - PACKETCAPTURE_MQTT2_TRANSPORT=websockets
+      - PACKETCAPTURE_MQTT2_USE_TLS=true
+      - PACKETCAPTURE_MQTT2_USE_AUTH_TOKEN=true
+      - PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE=mqtt-eu-v1.letsmesh.net
+      - PACKETCAPTURE_MQTT2_KEEPALIVE=120
+      
+      # Custom MQTT broker (optional - uncomment and configure as needed)
+      # - PACKETCAPTURE_MQTT3_ENABLED=true
+      # - PACKETCAPTURE_MQTT3_SERVER=your-mqtt-broker
+      # - PACKETCAPTURE_MQTT3_PORT=1883
+      # - PACKETCAPTURE_MQTT3_USERNAME=your_username
+      # - PACKETCAPTURE_MQTT3_PASSWORD=your_password
+      # - PACKETCAPTURE_MQTT3_USE_TLS=false
       
       # MQTT reconnection settings use defaults (5 retries, 5s delay, exit on fail)
       # Uncomment to customize:

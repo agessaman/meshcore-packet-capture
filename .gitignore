@@ -75,3 +75,8 @@ Thumbs.db
 # Testing directory (not committed to repo)
 tests/
 nixos-test/
+local-docs/
+
+# State files
+advert_state.json
+data/advert_state.json

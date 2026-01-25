@@ -253,8 +253,8 @@ CMD_SEND_CONTROL_DATA = 55
 CMD_GET_STATS = 56
 
 # Response codes
-RESP_CODE_OK = 0
-RESP_CODE_ERR = 1
+RESP_CODE_OK = 1
+RESP_CODE_ERR = 0
 RESP_CODE_CONTACTS_START = 2
 RESP_CODE_CONTACT = 3
 RESP_CODE_END_OF_CONTACTS = 4
@@ -324,10 +324,21 @@ class BinaryCommandProxy:
         self.command_connection = None  # Secondary connection for command forwarding (TCP only)
         self.command_reader = None
         self.command_writer = None
-        self.pending_responses = {}  # Map of cmd_code to list of (writer, response_event, response_data, timestamp)
+        self.pending_responses = {}  # Map of cmd_code to list of (writer, response_event, response_data, timestamp, timed_out)
         self.response_handlers = {}  # Map of EventType to handler functions
         self.response_lock = asyncio.Lock()  # Lock for pending_responses access
         self.event_subscriptions = []  # Track event subscriptions for cleanup
+
+        # Phase 3: Event buffering for race condition handling
+        self.buffered_events = {}  # Map of cmd_code to list of (resp_code, event, timestamp)
+        self.event_buffer_timeout = 2.0  # Buffer events for 2 seconds
+        self.event_buffer_cleanup_task = None
+
+        # Phase 5: Statistics and monitoring
+        self.command_stats = {}  # Map of cmd_code to {success: int, timeout: int, error: int, total_time: float}
+        self.stats_lock = asyncio.Lock()
+        self.last_stats_log_time = 0
+        self.stats_log_interval = 60  # Log statistics every 60 seconds
     
     def wrap_frame(self, data: bytes) -> bytes:
         """Wrap data with outgoing frame protocol: '>' + 2-byte LE length + payload"""
@@ -497,8 +508,22 @@ class BinaryCommandProxy:
         try:
             self.meshcore.subscribe(EventType.DEVICE_INFO, handle_device_info)
             self.event_subscriptions.append((EventType.DEVICE_INFO, handle_device_info))
-            self.meshcore.subscribe(EventType.BATT_AND_STORAGE, handle_batt_storage)
-            self.event_subscriptions.append((EventType.BATT_AND_STORAGE, handle_batt_storage))
+
+            # Try to subscribe to BATTERY event (may not exist in all versions)
+            try:
+                if hasattr(EventType, 'BATTERY'):
+                    self.meshcore.subscribe(EventType.BATTERY, handle_batt_storage)
+                    self.event_subscriptions.append((EventType.BATTERY, handle_batt_storage))
+                    self.logger.debug("Subscribed to BATTERY event")
+                elif hasattr(EventType, 'BATT_AND_STORAGE'):
+                    self.meshcore.subscribe(EventType.BATT_AND_STORAGE, handle_batt_storage)
+                    self.event_subscriptions.append((EventType.BATT_AND_STORAGE, handle_batt_storage))
+                    self.logger.debug("Subscribed to BATT_AND_STORAGE event")
+                else:
+                    self.logger.debug("No battery event type available")
+            except Exception as e:
+                self.logger.debug(f"Could not subscribe to battery events: {e}")
+
             self.meshcore.subscribe(EventType.OK, handle_ok)
             self.event_subscriptions.append((EventType.OK, handle_ok))
             self.meshcore.subscribe(EventType.ERROR, handle_error)
@@ -509,16 +534,59 @@ class BinaryCommandProxy:
     
     async def handle_response_event(self, cmd_code, resp_code, event):
         """Handle a response event and send it to pending command"""
+        # Phase 1: Add detailed event handler logging
+        event_start_time = time.time()
         async with self.response_lock:
+            pending_count = len(self.pending_responses.get(cmd_code, []))
             if cmd_code not in self.pending_responses or not self.pending_responses[cmd_code]:
-                # No pending command for this response
-                self.logger.debug(f"No pending command {cmd_code} for {resp_code} response")
+                # Phase 3: Buffer event for possible late-arriving pending response
+                self.logger.debug(f"Event handler: No pending command {cmd_code} for {resp_code} response - buffering event (total pending commands: {len(self.pending_responses)})")
+
+                if cmd_code not in self.buffered_events:
+                    self.buffered_events[cmd_code] = []
+
+                self.buffered_events[cmd_code].append((resp_code, event, time.time()))
+                self.logger.debug(f"Event handler: Buffered event for cmd_code {cmd_code}, buffer now has {len(self.buffered_events[cmd_code])} event(s)")
                 return
-            
-            self.logger.debug(f"Found pending command {cmd_code}, converting event to binary")
-            # Convert event to binary response
-            response_data = self.event_to_binary(resp_code, event)
-            await self.send_response_to_pending(cmd_code, resp_code, response_data)
+
+            self.logger.debug(f"Event handler: Found {pending_count} pending command(s) for {cmd_code}, converting event to binary")
+
+            # Pop the pending entry (we're already holding the lock)
+            pending_entry = self.pending_responses[cmd_code].pop(0)
+            if not self.pending_responses[cmd_code]:
+                del self.pending_responses[cmd_code]
+
+            if len(pending_entry) == 5:
+                writer, response_event, _, queued_time, timed_out = pending_entry
+            else:
+                writer, response_event, _, queued_time = pending_entry
+                timed_out = False
+
+        # Release lock before doing I/O
+        wait_time = time.time() - queued_time
+        self.logger.debug(f"Event handler: Sending response for command {cmd_code} (waited {wait_time:.3f}s in queue)")
+
+        # Convert event to binary response
+        response_data = self.event_to_binary(resp_code, event)
+
+        # Build final response
+        if len(response_data) > 0 and response_data[0] == resp_code:
+            final_response = response_data
+        else:
+            final_response = bytes([resp_code]) + response_data
+
+        # Send response
+        try:
+            wrapped_response = self.wrap_frame(final_response)
+            self.logger.debug(f"Event handler: Sending wrapped response ({len(wrapped_response)} bytes, payload {len(final_response)} bytes): {wrapped_response.hex()}")
+            writer.write(wrapped_response)
+            await writer.drain()
+            response_event.set()
+        except Exception as e:
+            self.logger.error(f"Event handler: Error sending response for command {cmd_code}: {e}", exc_info=True)
+
+        event_duration = time.time() - event_start_time
+        self.logger.debug(f"Event handler: Processed {resp_code} event for command {cmd_code} in {event_duration:.3f}s")
     
     def event_to_binary(self, resp_code, event):
         """Convert meshcore_py event to binary response format"""
@@ -660,19 +728,38 @@ class BinaryCommandProxy:
     
     async def send_response_to_pending(self, cmd_code, resp_code, response_data):
         """Send response to pending command and remove from pending list"""
-        if cmd_code not in self.pending_responses:
-            return
-        
-        pending_list = self.pending_responses[cmd_code]
-        if not pending_list:
-            return
-        
-        # Get the first pending command (FIFO)
-        writer, response_event, _, _ = pending_list.pop(0)
-        
-        # If no more pending, remove the entry
-        if not pending_list:
-            del self.pending_responses[cmd_code]
+        # Phase 1: Track response timing
+        response_start_time = time.time()
+
+        # CRITICAL: Acquire lock before accessing pending_responses
+        async with self.response_lock:
+            if cmd_code not in self.pending_responses:
+                self.logger.debug(f"send_response_to_pending: No pending responses for command {cmd_code}")
+                return
+
+            pending_list = self.pending_responses[cmd_code]
+            if not pending_list:
+                self.logger.debug(f"send_response_to_pending: Pending list empty for command {cmd_code}")
+                return
+
+            # Get the first pending command (FIFO)
+            # Handle both old format (4 elements) and new format (5 elements with timed_out flag)
+            pending_entry = pending_list.pop(0)
+            if len(pending_entry) == 5:
+                writer, response_event, _, queued_time, timed_out = pending_entry
+            else:
+                writer, response_event, _, queued_time = pending_entry
+                timed_out = False
+
+            wait_time = time.time() - queued_time
+            if timed_out:
+                self.logger.warning(f"send_response_to_pending: Sending late response for command {cmd_code} (waited {wait_time:.3f}s - was timed out)")
+            else:
+                self.logger.debug(f"send_response_to_pending: Sending response for command {cmd_code} (waited {wait_time:.3f}s in queue)")
+
+            # If no more pending, remove the entry
+            if not pending_list:
+                del self.pending_responses[cmd_code]
         
         # Build final response if resp_code provided
         if resp_code is not None:
@@ -867,17 +954,24 @@ class BinaryCommandProxy:
                 
                 cmd_code = payload[0]
                 command_data = payload  # Full payload is the command
-                
+
+                # Phase 1: Add timing for command reception
+                cmd_received_time = time.time()
+
                 # Log the full command for debugging
                 if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(f"Received framed command {cmd_code} (0x{cmd_code:02X}) with {len(payload)} bytes payload")
+                    self.logger.debug(f"[T+0.000s] Received framed command {cmd_code} (0x{cmd_code:02X}) with {len(payload)} bytes payload from {client_addr}")
                     if len(command_data) <= 64:
                         self.logger.debug(f"Full command data: {command_data.hex()}")
                     else:
                         self.logger.debug(f"Command data (first 64 bytes): {command_data[:64].hex()}...")
-                
+
                 # Handle the command (pass unwrapped payload)
                 await self.process_command(writer, cmd_code, command_data)
+
+                # Phase 1: Log total command handling time
+                cmd_duration = time.time() - cmd_received_time
+                self.logger.debug(f"[T+{cmd_duration:.3f}s] Command {cmd_code} (0x{cmd_code:02X}) processing complete")
                 
         except asyncio.CancelledError:
             pass
@@ -896,14 +990,66 @@ class BinaryCommandProxy:
         """Clean up event subscriptions"""
         if not self.meshcore:
             return
-        
+
         for event_type, handler in self.event_subscriptions:
             try:
                 self.meshcore.unsubscribe(event_type, handler)
             except Exception as e:
                 self.logger.debug(f"Error unsubscribing from {event_type}: {e}")
-        
+
         self.event_subscriptions.clear()
+
+    async def record_command_result(self, cmd_code, result_type, duration):
+        """Phase 5: Record command statistics"""
+        async with self.stats_lock:
+            if cmd_code not in self.command_stats:
+                self.command_stats[cmd_code] = {
+                    'success': 0,
+                    'timeout': 0,
+                    'error': 0,
+                    'total_time': 0.0,
+                    'count': 0
+                }
+
+            stats = self.command_stats[cmd_code]
+            stats[result_type] += 1
+            stats['count'] += 1
+            stats['total_time'] += duration
+
+            # Log statistics periodically
+            current_time = time.time()
+            if current_time - self.last_stats_log_time >= self.stats_log_interval:
+                self.log_statistics()
+                self.last_stats_log_time = current_time
+
+    def log_statistics(self):
+        """Phase 5: Log command statistics"""
+        if not self.command_stats:
+            return
+
+        self.logger.info("=== Binary Interface Command Statistics ===")
+        for cmd_code, stats in self.command_stats.items():
+            total = stats['count']
+            if total == 0:
+                continue
+
+            success_rate = (stats['success'] / total) * 100
+            timeout_rate = (stats['timeout'] / total) * 100
+            error_rate = (stats['error'] / total) * 100
+            avg_time = stats['total_time'] / total
+
+            self.logger.info(
+                f"  Cmd {cmd_code} (0x{cmd_code:02X}): "
+                f"{total} total, "
+                f"{stats['success']} success ({success_rate:.1f}%), "
+                f"{stats['timeout']} timeout ({timeout_rate:.1f}%), "
+                f"{stats['error']} error ({error_rate:.1f}%), "
+                f"avg time: {avg_time:.3f}s"
+            )
+
+            # Warn if timeout rate is high
+            if timeout_rate > 20:
+                self.logger.warning(f"High timeout rate for command {cmd_code}: {timeout_rate:.1f}%")
     
     async def process_command(self, writer, cmd_code, command_data):
         """Process a command from a client"""
@@ -922,43 +1068,83 @@ class BinaryCommandProxy:
             # Send OK response (wrapped in frame)
             ok_response = bytes([RESP_CODE_OK])
             wrapped_ok = self.wrap_frame(ok_response)
+            self.logger.debug(f"CMD_APP_START: Sending RESP_CODE_OK frame: {wrapped_ok.hex()}")
             writer.write(wrapped_ok)
             await writer.drain()
             
             # Send self_info response (wrapped in frame)
             if self.meshcore and self.meshcore.self_info:
                 self_info = self.meshcore.self_info
-                # Build RESP_CODE_SELF_INFO frame
-                # Format: [RESP_CODE_SELF_INFO (5)] + [name_len (1)] + [name] + [public_key (32)]
-                name = self_info.get('name', '').encode('utf-8')
+                # Build RESP_CODE_SELF_INFO per spec (58+ bytes + null-terminated name)
+                # See: local-docs/companion_radio_binary_commands.md lines 178-199
+
+                # Extract fields from self_info
+                name = self_info.get('name', '').encode('utf-8') + b'\x00'  # null-terminated
                 public_key_hex = self_info.get('public_key', '')
-                
-                # Convert public key from hex to bytes
                 try:
                     public_key_bytes = bytes.fromhex(public_key_hex) if public_key_hex else bytes(32)
                 except Exception:
                     public_key_bytes = bytes(32)
-                
-                # Build response frame
-                response = bytes([RESP_CODE_SELF_INFO])
-                response += bytes([len(name)])
-                response += name
-                response += public_key_bytes
-                
+
+                # Build response frame per spec
+                response = bytes([RESP_CODE_SELF_INFO])  # 0: response_code
+                response += bytes([self_info.get('advert_type', 1)])  # 1: advert_type (1=ADV_TYPE_CHAT)
+                response += bytes([self_info.get('tx_power', 22)])  # 2: tx_power_dbm
+                response += bytes([self_info.get('max_tx_power', 22)])  # 3: max_tx_power
+                response += public_key_bytes  # 4-35: public_key (32 bytes)
+
+                # Lat/lon as int32 little-endian (multiplied by 1e6)
+                lat = int(self_info.get('latitude', 0) * 1e6)
+                lon = int(self_info.get('longitude', 0) * 1e6)
+                response += lat.to_bytes(4, 'little', signed=True)  # 36-39: latitude
+                response += lon.to_bytes(4, 'little', signed=True)  # 40-43: longitude
+
+                response += bytes([self_info.get('multi_acks', 0)])  # 44: multi_acks
+                response += bytes([self_info.get('advert_loc_policy', 0)])  # 45: advert_loc_policy
+                response += bytes([self_info.get('telemetry_mode', 0)])  # 46: telemetry_mode
+                response += bytes([self_info.get('manual_add_contacts', 0)])  # 47: manual_add_contacts
+
+                # Radio params as uint32 little-endian (divided by 1000)
+                freq = int(self_info.get('frequency', 915000000) / 1000)
+                bw = int(self_info.get('bandwidth', 500000) / 1000)
+                response += freq.to_bytes(4, 'little')  # 48-51: freq
+                response += bw.to_bytes(4, 'little')  # 52-55: bw
+
+                response += bytes([self_info.get('spreading_factor', 9)])  # 56: sf
+                response += bytes([self_info.get('coding_rate', 7)])  # 57: cr
+                response += name  # 58+: node_name (null-terminated)
+
+                self.logger.debug(f"CMD_APP_START: SELF_INFO payload ({len(response)} bytes): name='{name[:-1].decode('utf-8', errors='ignore')}', public_key={public_key_bytes.hex()[:16]}...")
+
                 # Wrap in frame protocol
                 wrapped_response = self.wrap_frame(response)
+                self.logger.debug(f"CMD_APP_START: Sending RESP_CODE_SELF_INFO frame: {wrapped_response.hex()}")
                 writer.write(wrapped_response)
                 await writer.drain()
             else:
-                # Fallback: send minimal self_info
-                name = b'PacketCapture'
-                response = bytes([RESP_CODE_SELF_INFO])
-                response += bytes([len(name)])
-                response += name
-                response += bytes(32)  # Empty public key
-                
+                # Fallback: send minimal self_info per spec
+                name = b'PacketCapture\x00'  # null-terminated
+                response = bytes([RESP_CODE_SELF_INFO])  # 0: response_code
+                response += bytes([1])  # 1: advert_type (1=ADV_TYPE_CHAT)
+                response += bytes([22])  # 2: tx_power_dbm (22 dBm default)
+                response += bytes([22])  # 3: max_tx_power
+                response += bytes(32)  # 4-35: empty public_key
+                response += bytes(8)  # 36-43: lat/lon (zeros)
+                response += bytes([0])  # 44: multi_acks
+                response += bytes([0])  # 45: advert_loc_policy
+                response += bytes([0])  # 46: telemetry_mode
+                response += bytes([0])  # 47: manual_add_contacts
+                response += int(915000).to_bytes(4, 'little')  # 48-51: freq (915MHz)
+                response += int(500).to_bytes(4, 'little')  # 52-55: bw (500kHz)
+                response += bytes([9])  # 56: sf (SF9)
+                response += bytes([7])  # 57: cr (4/7)
+                response += name  # 58+: node_name
+
+                self.logger.warning(f"CMD_APP_START: No self_info available, using fallback ({len(response)} bytes)")
+
                 # Wrap in frame protocol
                 wrapped_response = self.wrap_frame(response)
+                self.logger.debug(f"CMD_APP_START: Sending fallback RESP_CODE_SELF_INFO frame: {wrapped_response.hex()}")
                 writer.write(wrapped_response)
                 await writer.drain()
         else:
@@ -977,63 +1163,191 @@ class BinaryCommandProxy:
             writer.write(wrapped_error)
             await writer.drain()
             return
+
+        # Phase 4: Detect connection type early for BLE-specific optimizations
+        connection_type = "unknown"
+        is_ble = False
+        try:
+            if hasattr(self.meshcore, 'cx') and hasattr(self.meshcore.cx, 'connection'):
+                conn = self.meshcore.cx.connection
+                conn_type_str = str(type(conn).__name__).lower()
+                connection_type = conn_type_str
+                is_ble = 'ble' in conn_type_str
+                self.logger.debug(f"Connection type detected: {connection_type}, is_BLE: {is_ble}")
+        except Exception as e:
+            self.logger.debug(f"Could not detect connection type: {e}")
         
         # First, try to use meshcore command interface for commands that support it
         # This is more reliable than raw binary for triggering events
         if cmd_code == CMD_DEVICE_QUERY and hasattr(self.meshcore.commands, 'send_device_query'):
             self.logger.debug("Using meshcore command interface for CMD_DEVICE_QUERY")
             # Register pending response before sending command
+            buffered_event_found = False
             async with self.response_lock:
                 if cmd_code not in self.pending_responses:
                     self.pending_responses[cmd_code] = []
-                
+
                 response_event = asyncio.Event()
-                self.pending_responses[cmd_code].append((writer, response_event, None, time.time()))
+                self.pending_responses[cmd_code].append((writer, response_event, None, time.time(), False))
+
+                # Phase 3: Check if there's a buffered event for this command
+                if cmd_code in self.buffered_events and self.buffered_events[cmd_code]:
+                    resp_code_buf, event_buf, event_time = self.buffered_events[cmd_code].pop(0)
+                    event_age = time.time() - event_time
+                    self.logger.debug(f"Found buffered event for cmd_code {cmd_code} (age: {event_age:.3f}s) - using it immediately")
+
+                    # Clean up buffer if empty
+                    if not self.buffered_events[cmd_code]:
+                        del self.buffered_events[cmd_code]
+
+                    # Process buffered event immediately
+                    response_data = self.event_to_binary(resp_code_buf, event_buf)
+                    await self.send_response_to_pending(cmd_code, resp_code_buf, response_data)
+                    buffered_event_found = True
+
+            # If we found and used a buffered event, return early
+            if buffered_event_found:
+                self.logger.debug(f"CMD_DEVICE_QUERY satisfied from buffered event")
+                return
             
             # Send command via meshcore interface
             try:
-                result = await self.meshcore.commands.send_device_query()
-                self.logger.debug(f"send_device_query() returned: type={type(result)}, has_type={hasattr(result, 'type') if result else False}")
-                
-                # The result should trigger a DEVICE_INFO event which will be handled by our event handler
-                # Wait for the event handler to process it (with a short delay to allow event to fire)
+                start_time = time.time()
+                # Add timeout to prevent hanging indefinitely (BLE can be slow, allow 5 seconds)
+                try:
+                    result = await asyncio.wait_for(
+                        self.meshcore.commands.send_device_query(),
+                        timeout=5.0
+                    )
+                    query_time = time.time() - start_time
+                    self.logger.debug(f"send_device_query() returned in {query_time:.3f}s: type={type(result)}, has_type={hasattr(result, 'type') if result else False}")
+                except asyncio.TimeoutError:
+                    query_time = time.time() - start_time
+                    self.logger.error(f"send_device_query() TIMED OUT after {query_time:.3f}s - meshcore library did not respond")
+
+                    # Send error response immediately - don't wait for event
+                    await self.record_command_result(cmd_code, 'timeout', query_time)
+
+                    # Remove from pending
+                    async with self.response_lock:
+                        if cmd_code in self.pending_responses:
+                            pending_list = self.pending_responses[cmd_code]
+                            self.pending_responses[cmd_code] = [
+                                entry for entry in pending_list
+                                if entry[0] != writer
+                            ]
+                            if not self.pending_responses[cmd_code]:
+                                del self.pending_responses[cmd_code]
+
+                    # Send error response to client
+                    error_response = bytes([RESP_CODE_ERR, 1])
+                    wrapped_error = self.wrap_frame(error_response)
+                    writer.write(wrapped_error)
+                    await writer.drain()
+                    self.logger.info(f"CMD_DEVICE_QUERY error response sent after meshcore timeout")
+                    return
+
+                # Phase 0 Fix: Check result IMMEDIATELY before waiting for event
+                # For BLE connections, the result contains valid data but events may not fire
+                # Phase 4: Add comprehensive result validation
+                if result:
+                    has_type = hasattr(result, 'type')
+                    has_payload = hasattr(result, 'payload')
+                    type_matches = has_type and result.type == EventType.DEVICE_INFO
+
+                    self.logger.debug(f"Result validation: has_type={has_type}, has_payload={has_payload}, type_matches={type_matches}")
+
+                    if type_matches:
+                        # We have valid result data - check if event handler already sent response
+                        self.logger.debug(f"Direct result available for CMD_DEVICE_QUERY (connection_type={connection_type})")
+
+                        try:
+                            # Check if pending response still exists (event handler may have consumed it)
+                            response_already_sent = False
+                            async with self.response_lock:
+                                if cmd_code not in self.pending_responses or not self.pending_responses[cmd_code]:
+                                    # Event handler already consumed and sent response
+                                    response_already_sent = True
+                                    self.logger.debug(f"Event handler already sent response for CMD_DEVICE_QUERY")
+
+                            if response_already_sent:
+                                # Event handler won the race - that's fine, response was sent
+                                response_time = time.time() - start_time
+                                self.logger.info(f"CMD_DEVICE_QUERY response sent via event handler in {response_time:.3f}s (connection: {connection_type})")
+                                await self.record_command_result(cmd_code, 'success', response_time)
+                                return
+
+                            # We won the race - send response from direct result
+                            self.logger.debug(f"Using direct result for CMD_DEVICE_QUERY (event handler hasn't fired yet)")
+                            response_data = self.event_to_binary(RESP_CODE_DEVICE_INFO, result)
+
+                            # Clean up pending response and send directly (we have writer in scope)
+                            async with self.response_lock:
+                                if cmd_code in self.pending_responses and self.pending_responses[cmd_code]:
+                                    # Remove our pending entry since we're handling it now
+                                    self.pending_responses[cmd_code].pop(0)
+                                    if not self.pending_responses[cmd_code]:
+                                        del self.pending_responses[cmd_code]
+                                else:
+                                    # Race condition - event handler just consumed it
+                                    self.logger.debug(f"Event handler consumed pending response between checks - skipping send")
+                                    return
+
+                            # Send response directly using writer we already have
+                            wrapped_response = self.wrap_frame(response_data)
+                            self.logger.debug(f"Writing wrapped response ({len(wrapped_response)} bytes) via direct result")
+                            writer.write(wrapped_response)
+                            await writer.drain()
+
+                            response_time = time.time() - start_time
+                            self.logger.info(f"CMD_DEVICE_QUERY response sent via direct result in {response_time:.3f}s (connection: {connection_type})")
+
+                            # Phase 5: Record success
+                            await self.record_command_result(cmd_code, 'success', response_time)
+                            return
+                        except Exception as e:
+                            self.logger.error(f"Error converting result to binary: {e}", exc_info=True)
+                            # Fall through to event waiting
+                    else:
+                        self.logger.debug(f"Result not usable: result_type={type(result)}, attributes={dir(result) if result else 'None'}")
+                else:
+                    self.logger.debug("send_device_query() returned None")
+
+                # Fallback: If result is invalid or doesn't have expected data, wait for event
+                # This preserves backward compatibility if events do fire
+                self.logger.debug(f"Result not immediately usable, waiting for DEVICE_INFO event")
                 await asyncio.sleep(0.1)  # Give event handler a chance to fire
-                
+
                 try:
                     await asyncio.wait_for(response_event.wait(), timeout=4.9)
                     # Response was sent by event handler
-                    self.logger.debug(f"Response sent via event handler for command {cmd_code}")
+                    response_time = time.time() - start_time
+                    self.logger.debug(f"Response sent via event handler for command {cmd_code} in {response_time:.3f}s")
                     return
                 except asyncio.TimeoutError:
-                    # Event didn't fire, try to use result directly
-                    self.logger.debug(f"Event handler didn't fire, trying to use result directly")
-                    if result and hasattr(result, 'type') and result.type == EventType.DEVICE_INFO:
-                        # Convert result to binary
-                        response_data = self.event_to_binary(RESP_CODE_DEVICE_INFO, result)
-                        wrapped_response = self.wrap_frame(response_data)
-                        writer.write(wrapped_response)
-                        await writer.drain()
-                        self.logger.debug(f"Sent response directly from result for command {cmd_code}")
-                        # Signal event to clean up
-                        response_event.set()
-                        return
-                    else:
-                        # Remove from pending
-                        async with self.response_lock:
-                            if cmd_code in self.pending_responses:
-                                pending_list = self.pending_responses[cmd_code]
-                                self.pending_responses[cmd_code] = [
-                                    (w, e, d, t) for w, e, d, t in pending_list
-                                    if w != writer
-                                ]
-                                if not self.pending_responses[cmd_code]:
-                                    del self.pending_responses[cmd_code]
-                        
-                        error_response = bytes([RESP_CODE_ERR, 1])
-                        wrapped_error = self.wrap_frame(error_response)
-                        writer.write(wrapped_error)
-                        await writer.drain()
-                        return
+                    # Event didn't fire and result was unusable
+                    timeout_duration = time.time() - start_time
+                    self.logger.warning(f"Event handler timeout and no valid result for CMD_DEVICE_QUERY after {timeout_duration:.3f}s")
+
+                    # Phase 5: Record timeout
+                    await self.record_command_result(cmd_code, 'timeout', timeout_duration)
+
+                    # Remove from pending
+                    async with self.response_lock:
+                        if cmd_code in self.pending_responses:
+                            pending_list = self.pending_responses[cmd_code]
+                            self.pending_responses[cmd_code] = [
+                                entry for entry in pending_list
+                                if entry[0] != writer
+                            ]
+                            if not self.pending_responses[cmd_code]:
+                                del self.pending_responses[cmd_code]
+
+                    error_response = bytes([RESP_CODE_ERR, 1])
+                    wrapped_error = self.wrap_frame(error_response)
+                    writer.write(wrapped_error)
+                    await writer.drain()
+                    return
             except Exception as e:
                 self.logger.error(f"Error executing command via meshcore interface: {e}", exc_info=True)
                 # Remove from pending
@@ -1114,8 +1428,8 @@ class BinaryCommandProxy:
                             # Remove this specific pending entry
                             pending_list = self.pending_responses[cmd_code]
                             self.pending_responses[cmd_code] = [
-                                (w, e, d, t) for w, e, d, t in pending_list
-                                if w != writer
+                                entry for entry in pending_list
+                                if entry[0] != writer
                             ]
                             if not self.pending_responses[cmd_code]:
                                 del self.pending_responses[cmd_code]
@@ -1229,8 +1543,8 @@ class BinaryCommandProxy:
         except Exception as e:
             self.logger.debug(f"Error attempting to send raw binary: {e}")
         
-        # Fallback: Try secondary connection if available
-        if self.command_writer:
+        # Fallback: Try secondary connection if available (skip for BLE - it doesn't support secondary connections)
+        if self.command_writer and not is_ble:
             try:
                 # Send command to radio via secondary connection
                 self.command_writer.write(command_data)
@@ -1297,102 +1611,30 @@ class BinaryCommandProxy:
                 self.logger.error(f"Error forwarding command via secondary connection: {e}")
                 # Fall through to meshcore interface
         
-        # Try to use meshcore command interface for commands that support it
-        # This is more reliable than raw binary for triggering events
-        try:
-            # Map command to meshcore_py method
-            if cmd_code == CMD_DEVICE_QUERY and hasattr(self.meshcore.commands, 'send_device_query'):
-                self.logger.debug("Using meshcore command interface for CMD_DEVICE_QUERY")
-                # Register pending response before sending command
-                async with self.response_lock:
-                    if cmd_code not in self.pending_responses:
-                        self.pending_responses[cmd_code] = []
-                    
-                    response_event = asyncio.Event()
-                    self.pending_responses[cmd_code].append((writer, response_event, None, time.time()))
-                
-                # Send command via meshcore interface
-                try:
-                    result = await self.meshcore.commands.send_device_query()
-                    # The result should trigger a DEVICE_INFO event which will be handled by our event handler
-                    # Wait for the event handler to process it
-                    try:
-                        await asyncio.wait_for(response_event.wait(), timeout=5.0)
-                        # Response was sent by event handler
-                        return
-                    except asyncio.TimeoutError:
-                        # Event didn't fire, try to use result directly
-                        if result and hasattr(result, 'type') and result.type == EventType.DEVICE_INFO:
-                            # Convert result to binary
-                            response_data = self.event_to_binary(RESP_CODE_DEVICE_INFO, result)
-                            wrapped_response = self.wrap_frame(response_data)
-                            writer.write(wrapped_response)
-                            await writer.drain()
-                            # Signal event to clean up
-                            response_event.set()
-                            return
-                        else:
-                            # Remove from pending
-                            async with self.response_lock:
-                                if cmd_code in self.pending_responses:
-                                    pending_list = self.pending_responses[cmd_code]
-                                    self.pending_responses[cmd_code] = [
-                                        (w, e, d, t) for w, e, d, t in pending_list
-                                        if w != writer
-                                    ]
-                                    if not self.pending_responses[cmd_code]:
-                                        del self.pending_responses[cmd_code]
-                            
-                            error_response = bytes([RESP_CODE_ERR, 1])
-                            wrapped_error = self.wrap_frame(error_response)
-                            writer.write(wrapped_error)
-                            await writer.drain()
-                            return
-                except Exception as e:
-                    self.logger.error(f"Error executing command via meshcore interface: {e}", exc_info=True)
-                    # Remove from pending
-                    async with self.response_lock:
-                        if cmd_code in self.pending_responses:
-                            pending_list = self.pending_responses[cmd_code]
-                            self.pending_responses[cmd_code] = [
-                                (w, e, d, t) for w, e, d, t in pending_list
-                                if w != writer
-                            ]
-                            if not self.pending_responses[cmd_code]:
-                                del self.pending_responses[cmd_code]
-                    
-                    error_response = bytes([RESP_CODE_ERR, 1])
-                    wrapped_error = self.wrap_frame(error_response)
-                    writer.write(wrapped_error)
-                    await writer.drain()
-                    return
-            else:
-                # Command not supported via meshcore interface or not mappable
-                # Log more details about the connection type and available methods
-                connection_type = "unknown"
-                if hasattr(self.meshcore, 'cx') and hasattr(self.meshcore.cx, 'connection'):
-                    conn = self.meshcore.cx.connection
-                    connection_type = str(type(conn).__name__)
-                
-                self.logger.warning(
-                    f"Command {cmd_code} (0x{cmd_code:02X}) cannot be forwarded - "
-                    f"connection type: {connection_type}, "
-                    f"secondary connection: {self.command_writer is not None}"
-                )
-                self.logger.debug(
-                    f"Command {cmd_code} data: {command_data.hex() if len(command_data) <= 32 else command_data[:32].hex() + '...'}"
-                )
-                error_response = bytes([RESP_CODE_ERR, 1])  # ERR_CODE_UNSUPPORTED_CMD
-                wrapped_error = self.wrap_frame(error_response)
-                writer.write(wrapped_error)
-                await writer.drain()
-        except Exception as e:
-            self.logger.error(f"Error forwarding command {cmd_code}: {e}", exc_info=True)
-            # Send error response (wrapped in frame)
-            error_response = bytes([RESP_CODE_ERR, 1])  # ERR_CODE_UNSUPPORTED_CMD
-            wrapped_error = self.wrap_frame(error_response)
-            writer.write(wrapped_error)
-            await writer.drain()
+        # Phase 2: Removed duplicate CMD_DEVICE_QUERY handling block
+        # The primary handler at the beginning of forward_command() now handles all CMD_DEVICE_QUERY requests
+        # with the Phase 0 fix (immediate result check)
+
+        # If we reach here, the command couldn't be forwarded via any available method
+        connection_type = "unknown"
+        if hasattr(self.meshcore, 'cx') and hasattr(self.meshcore.cx, 'connection'):
+            conn = self.meshcore.cx.connection
+            connection_type = str(type(conn).__name__)
+
+        self.logger.warning(
+            f"Command {cmd_code} (0x{cmd_code:02X}) cannot be forwarded - "
+            f"connection type: {connection_type}, "
+            f"secondary connection: {self.command_writer is not None}"
+        )
+        self.logger.debug(
+            f"Command {cmd_code} data: {command_data.hex() if len(command_data) <= 32 else command_data[:32].hex() + '...'}"
+        )
+
+        # Send error response (wrapped in frame)
+        error_response = bytes([RESP_CODE_ERR, 1])  # ERR_CODE_UNSUPPORTED_CMD
+        wrapped_error = self.wrap_frame(error_response)
+        writer.write(wrapped_error)
+        await writer.drain()
     
     async def forward_push_notification(self, push_code, data):
         """Forward a push notification to all connected clients (wrapped in frame protocol)"""
@@ -1518,9 +1760,12 @@ class PacketCapture:
         self.jwt_renewal_threshold = self.get_env_int('JWT_RENEWAL_THRESHOLD', 300)  # Renew 5 minutes before expiry
         
         # Advert settings
-        self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 11)
+        self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 47)
         self.last_advert_time = 0
         self.advert_task = None
+        
+        # Load persisted advert state
+        self.last_advert_time = self._load_advert_state()
         
         # Packet type filtering for uploads
         upload_types_str = self.get_env('UPLOAD_PACKET_TYPES', '').strip()
@@ -1570,6 +1815,11 @@ class PacketCapture:
         if binary_interface_enabled:
             binary_interface_host = self.get_env('BINARY_INTERFACE_HOST', '0.0.0.0')
             binary_interface_port = self.get_env_int('BINARY_INTERFACE_PORT', 5000)
+
+            # Debug: Log the configuration being used
+            print(f"DEBUG: Binary interface config - host={binary_interface_host}, port={binary_interface_port}")
+            print(f"DEBUG: Env var PACKETCAPTURE_BINARY_INTERFACE_PORT={os.getenv('PACKETCAPTURE_BINARY_INTERFACE_PORT', 'NOT SET')}")
+
             self.binary_proxy = BinaryCommandProxy(
                 None,  # Will be set when meshcore connects
                 self.logger,
@@ -1643,6 +1893,92 @@ class PacketCapture:
             return float(self.get_env(key, str(fallback)))
         except ValueError:
             return fallback
+    
+    def _get_state_file_path(self):
+        """Get the path to the state file for persisting last_advert_time.
+        
+        Works across all installation methods:
+        - Docker: Uses /app/data/ (mounted volume)
+        - NixOS: Uses cfg.dataDir (working directory)
+        - Systemd: Uses script directory or data subdirectory
+        """
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Try data subdirectory first (works for Docker and if created)
+        data_dir = os.path.join(script_dir, 'data')
+        if os.path.exists(data_dir) and os.path.isdir(data_dir):
+            return os.path.join(data_dir, 'advert_state.json')
+        
+        # Fall back to script directory (works for all installation methods)
+        return os.path.join(script_dir, 'advert_state.json')
+    
+    def _load_advert_state(self):
+        """Load last_advert_time from persistent state file.
+        
+        Returns the timestamp if found, otherwise returns 0.
+        """
+        state_file = self._get_state_file_path()
+        
+        if not os.path.exists(state_file):
+            if self.debug:
+                self.logger.debug(f"Advert state file not found: {state_file}")
+            return 0
+        
+        try:
+            with open(state_file, 'r') as f:
+                state = json.load(f)
+                last_time = state.get('last_advert_time', 0)
+                
+                # Validate the timestamp is reasonable (not in the future, not too old)
+                current_time = time.time()
+                if last_time > current_time:
+                    # Timestamp is in the future, ignore it
+                    if self.debug:
+                        self.logger.debug(f"Advert state timestamp is in the future, ignoring: {last_time}")
+                    return 0
+                
+                # If timestamp is more than 1 year old, treat as invalid
+                if current_time - last_time > 31536000:  # 1 year in seconds
+                    if self.debug:
+                        self.logger.debug(f"Advert state timestamp is too old, ignoring: {last_time}")
+                    return 0
+                
+                if self.debug:
+                    self.logger.debug(f"Loaded last_advert_time from state file: {last_time} ({datetime.fromtimestamp(last_time).isoformat()})")
+                return last_time
+                
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            self.logger.warning(f"Failed to load advert state from {state_file}: {e}")
+            return 0
+    
+    def _save_advert_state(self):
+        """Save last_advert_time to persistent state file."""
+        state_file = self._get_state_file_path()
+        state_dir = os.path.dirname(state_file)
+        
+        try:
+            # Create directory if it doesn't exist (for data subdirectory case)
+            if state_dir and not os.path.exists(state_dir):
+                os.makedirs(state_dir, mode=0o755, exist_ok=True)
+            
+            state = {
+                'last_advert_time': self.last_advert_time,
+                'updated_at': time.time()
+            }
+            
+            # Write atomically using a temporary file
+            temp_file = state_file + '.tmp'
+            with open(temp_file, 'w') as f:
+                json.dump(state, f, indent=2)
+            
+            # Atomic rename
+            os.replace(temp_file, state_file)
+            
+            if self.debug:
+                self.logger.debug(f"Saved last_advert_time to state file: {self.last_advert_time} ({datetime.fromtimestamp(self.last_advert_time).isoformat()})")
+                
+        except (IOError, OSError) as e:
+            self.logger.warning(f"Failed to save advert state to {state_file}: {e}")
     
     
     def calculate_connection_retry_delay(self, attempt: int) -> float:
@@ -4467,6 +4803,7 @@ class PacketCapture:
             self.logger.info("Sending flood advert...")
             await self.meshcore.commands.send_advert(flood=True)
             self.last_advert_time = time.time()
+            self._save_advert_state()  # Persist the timestamp
             self.logger.info("Flood advert sent successfully!")
             return True
             

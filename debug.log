@@ -1,0 +1,290 @@
+2026-01-09 16:49:29 - PacketCapture - INFO - Logging initialized with level: INFO
+2026-01-09 16:49:29 - PacketCapture - INFO - Starting MeshCore Packet Capture...
+2026-01-09 16:49:29 - PacketCapture - INFO - Connecting to MeshCore node...
+2026-01-09 16:49:29 - PacketCapture - INFO - Using connection type: ble
+2026-01-09 16:49:29 - PacketCapture - INFO - Connecting via BLE to address: 00DDF382-9A5E-F28A-7589-7493F94BF0C6
+2026-01-09 16:49:29 - meshcore - INFO - Scanning for devices...
+2026-01-09 16:49:29 - meshcore - INFO - Found device: 00DDF382-9A5E-F28A-7589-7493F94BF0C6: MeshCore-HOWL Ikoka
+2026-01-09 16:49:31 - meshcore - INFO - BLE Connection started
+2026-01-09 16:49:31 - PacketCapture - INFO - Connected to: {'adv_type': 1, 'tx_power': 20, 'max_tx_power': 20, 'public_key': '219e53e7af451bf94b98cf46a2fe79a7c6aa2e5eb54b5e9039a2f9af7e35e912', 'adv_lat': 47.983486, 'adv_lon': -122.132393, 'multi_acks': 0, 'adv_loc_policy': 0, 'telemetry_mode_env': 0, 'telemetry_mode_loc': 0, 'telemetry_mode_base': 0, 'manual_add_contacts': True, 'radio_freq': 910.525, 'radio_bw': 62.5, 'radio_sf': 7, 'radio_cr': 5, 'name': 'HOWL Ikoka'}
+2026-01-09 16:49:31 - PacketCapture - INFO - Device name: HOWL Ikoka
+2026-01-09 16:49:31 - PacketCapture - INFO - Device public key: 219E53E7AF451BF94B98CF46A2FE79A7C6AA2E5EB54B5E9039A2F9AF7E35E912
+2026-01-09 16:49:31 - PacketCapture - INFO - Radio info: 910.525,62.5,7,5
+2026-01-09 16:49:31 - PacketCapture - INFO - Checking device time...
+2026-01-09 16:49:32 - PacketCapture - INFO - Device time: 1768006171, System time: 1768006172
+2026-01-09 16:49:32 - PacketCapture - INFO - Device time is 1 seconds behind, updating...
+2026-01-09 16:49:32 - PacketCapture - INFO - ✓ Radio clock updated to: 1768006172
+2026-01-09 16:49:32 - PacketCapture - INFO - Setting up JWT authentication...
+2026-01-09 16:49:32 - PacketCapture - INFO - ✓ JWT authentication: Will use on-device signing
+2026-01-09 16:49:32 - PacketCapture - ERROR - Failed to connect to any MQTT broker
+2026-01-09 16:49:32 - PacketCapture - WARNING - Failed to connect to MQTT broker, continuing without MQTT...
+2026-01-09 16:49:32 - PacketCapture - INFO - Event handlers setup complete
+2026-01-09 16:49:32 - PacketCapture - INFO - Packet capture mode enabled via event subscriptions
+2026-01-09 16:49:32 - PacketCapture - INFO - Starting binary interface proxy...
+2026-01-09 16:49:32 - PacketCapture - INFO - Initializing binary interface proxy on 0.0.0.0:5001
+2026-01-09 16:49:32 - PacketCapture - INFO - Command forwarding for ble connections will use meshcore command interface where possible
+2026-01-09 16:49:32 - PacketCapture - INFO - Binary interface proxy listening on 0.0.0.0:5001
+2026-01-09 16:49:32 - PacketCapture - INFO - Binary interface proxy started successfully
+2026-01-09 16:49:32 - PacketCapture - INFO - Packet capture is running. Press Ctrl+C to stop.
+2026-01-09 16:49:32 - PacketCapture - INFO - Waiting for packets...
+2026-01-09 16:49:35 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:35 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:35 - PacketCapture - INFO - 📦 Captured packet #1: F type 7, 56 bytes, SNR: 9.5, RSSI: -75, hash: 087B9A2AB3F0EA97 (MQTT: 0/0)
+2026-01-09 16:49:35 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:35 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:35 - PacketCapture - INFO - 📦 Captured packet #2: F type 7, 56 bytes, SNR: 12.75, RSSI: -2, hash: 087B9A2AB3F0EA97 (MQTT: 0/0)
+2026-01-09 16:49:36 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:36 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:36 - PacketCapture - INFO - 📦 Captured packet #3: F type 7, 57 bytes, SNR: 12.5, RSSI: 0, hash: 087B9A2AB3F0EA97 (MQTT: 0/0)
+2026-01-09 16:49:37 - PacketCapture - INFO - Sending flood advert...
+2026-01-09 16:49:37 - PacketCapture - INFO - Flood advert sent successfully!
+2026-01-09 16:49:38 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:38 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:38 - PacketCapture - INFO - 📦 Captured packet #4: F type 4, 114 bytes, SNR: 13.0, RSSI: -3, hash: 160C4D482DECE717 (MQTT: 0/0)
+2026-01-09 16:49:40 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:40 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:40 - PacketCapture - INFO - 📦 Captured packet #5: F type 5, 40 bytes, SNR: 9.5, RSSI: -75, hash: 5559AEE09D95A162 (MQTT: 0/0)
+2026-01-09 16:49:41 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:41 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:41 - PacketCapture - INFO - 📦 Captured packet #6: F type 4, 114 bytes, SNR: 12.75, RSSI: 0, hash: 160C4D482DECE717 (MQTT: 0/0)
+2026-01-09 16:49:41 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:41 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:41 - PacketCapture - INFO - 📦 Captured packet #7: F type 5, 41 bytes, SNR: 11.75, RSSI: -3, hash: 5559AEE09D95A162 (MQTT: 0/0)
+2026-01-09 16:49:42 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:42 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:42 - PacketCapture - INFO - 📦 Captured packet #8: F type 5, 42 bytes, SNR: 12.75, RSSI: 0, hash: 5559AEE09D95A162 (MQTT: 0/0)
+2026-01-09 16:49:47 - PacketCapture - INFO - Binary interface client connected from ('127.0.0.1', 56237)
+2026-01-09 16:49:47 - PacketCapture - INFO - CMD_DEVICE_QUERY response sent via direct result in 0.144s (connection: bleconnection)
+2026-01-09 16:49:47 - PacketCapture - INFO - === Binary Interface Command Statistics ===
+2026-01-09 16:49:47 - PacketCapture - INFO -   Cmd 22 (0x16): 1 total, 1 success (100.0%), 0 timeout (0.0%), 0 error (0.0%), avg time: 0.144s
+2026-01-09 16:49:47 - PacketCapture - INFO - Binary interface client ('127.0.0.1', 56237) disconnected
+2026-01-09 16:49:51 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:51 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:51 - PacketCapture - INFO - 📦 Captured packet #9: F type 5, 43 bytes, SNR: 12.0, RSSI: -2, hash: 7BBD191AAA42A2FD (MQTT: 0/0)
+2026-01-09 16:49:51 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:51 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:51 - PacketCapture - INFO - 📦 Captured packet #10: F type 5, 42 bytes, SNR: 9.5, RSSI: -74, hash: 7BBD191AAA42A2FD (MQTT: 0/0)
+2026-01-09 16:49:51 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:51 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:51 - PacketCapture - INFO - 📦 Captured packet #11: F type 5, 44 bytes, SNR: 12.75, RSSI: 0, hash: 7BBD191AAA42A2FD (MQTT: 0/0)
+2026-01-09 16:49:58 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:58 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:58 - PacketCapture - INFO - 📦 Captured packet #12: F type 5, 117 bytes, SNR: 12.0, RSSI: -1, hash: 626973FDE7D331D2 (MQTT: 0/0)
+2026-01-09 16:49:58 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:49:58 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:49:58 - PacketCapture - INFO - 📦 Captured packet #13: F type 5, 118 bytes, SNR: 12.5, RSSI: -2, hash: 626973FDE7D331D2 (MQTT: 0/0)
+2026-01-09 16:50:00 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:00 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:00 - PacketCapture - INFO - 📦 Captured packet #14: F type 5, 119 bytes, SNR: 11.75, RSSI: -59, hash: 626973FDE7D331D2 (MQTT: 0/0)
+2026-01-09 16:50:00 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:00 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:00 - PacketCapture - INFO - 📦 Captured packet #15: F type 5, 118 bytes, SNR: 12.75, RSSI: 0, hash: 626973FDE7D331D2 (MQTT: 0/0)
+2026-01-09 16:50:01 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:01 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:01 - PacketCapture - INFO - 📦 Captured packet #16: D type 0, 22 bytes, SNR: 12.0, RSSI: -3, hash: 6464678AE64A4485 (MQTT: 0/0)
+2026-01-09 16:50:02 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:02 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:02 - PacketCapture - INFO - 📦 Captured packet #17: D type 1, 86 bytes, SNR: 11.5, RSSI: -48, hash: 5F7F7EFB650606A2 (MQTT: 0/0)
+2026-01-09 16:50:05 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:05 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:05 - PacketCapture - INFO - 📦 Captured packet #18: F type 2, 25 bytes, SNR: 12.5, RSSI: -2, hash: BF1683567435BAE3 (MQTT: 0/0)
+2026-01-09 16:50:06 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:06 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:06 - PacketCapture - INFO - 📦 Captured packet #19: F type 2, 26 bytes, SNR: 12.25, RSSI: 0, hash: BF1683567435BAE3 (MQTT: 0/0)
+2026-01-09 16:50:09 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:09 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:09 - PacketCapture - INFO - 📦 Captured packet #20: F type 2, 26 bytes, SNR: 12.75, RSSI: -2, hash: 6E19858DAA90DAC7 (MQTT: 0/0)
+2026-01-09 16:50:09 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:09 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:09 - PacketCapture - INFO - 📦 Captured packet #21: F type 2, 26 bytes, SNR: 11.25, RSSI: -60, hash: 6E19858DAA90DAC7 (MQTT: 0/0)
+2026-01-09 16:50:09 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:09 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:09 - PacketCapture - INFO - 📦 Captured packet #22: F type 2, 25 bytes, SNR: 9.25, RSSI: -75, hash: 6E19858DAA90DAC7 (MQTT: 0/0)
+2026-01-09 16:50:10 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:10 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:10 - PacketCapture - INFO - 📦 Captured packet #23: F type 2, 27 bytes, SNR: 12.5, RSSI: 0, hash: 6E19858DAA90DAC7 (MQTT: 0/0)
+2026-01-09 16:50:13 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:13 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:13 - PacketCapture - INFO - 📦 Captured packet #24: F type 2, 25 bytes, SNR: 10.5, RSSI: -60, hash: 3E8E3EE6BC985785 (MQTT: 0/0)
+2026-01-09 16:50:13 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:13 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:13 - PacketCapture - INFO - 📦 Captured packet #25: F type 2, 26 bytes, SNR: 12.5, RSSI: 0, hash: 3E8E3EE6BC985785 (MQTT: 0/0)
+2026-01-09 16:50:14 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:14 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:14 - PacketCapture - INFO - 📦 Captured packet #26: F type 2, 26 bytes, SNR: 12.75, RSSI: -2, hash: 3E8E3EE6BC985785 (MQTT: 0/0)
+2026-01-09 16:50:26 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:26 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:26 - PacketCapture - INFO - 📦 Captured packet #27: F type 7, 57 bytes, SNR: 12.25, RSSI: -60, hash: 8A2C9423EDC07D06 (MQTT: 0/0)
+2026-01-09 16:50:26 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:26 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:26 - PacketCapture - INFO - 📦 Captured packet #28: F type 7, 58 bytes, SNR: 12.25, RSSI: 0, hash: 8A2C9423EDC07D06 (MQTT: 0/0)
+2026-01-09 16:50:27 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:27 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:27 - PacketCapture - INFO - 📦 Captured packet #29: F type 7, 56 bytes, SNR: 9.0, RSSI: -75, hash: 8A2C9423EDC07D06 (MQTT: 0/0)
+2026-01-09 16:50:27 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:27 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:27 - PacketCapture - INFO - 📦 Captured packet #30: F type 7, 57 bytes, SNR: 11.75, RSSI: -3, hash: 8A2C9423EDC07D06 (MQTT: 0/0)
+2026-01-09 16:50:35 - PacketCapture - INFO - Binary interface client connected from ('127.0.0.1', 56517)
+2026-01-09 16:50:39 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:39 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:39 - PacketCapture - INFO - 📦 Captured packet #31: F type 7, 56 bytes, SNR: 12.0, RSSI: -60, hash: D8A0FDEDD1142D17 (MQTT: 0/0)
+2026-01-09 16:50:40 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:40 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:40 - PacketCapture - INFO - 📦 Captured packet #32: F type 7, 56 bytes, SNR: 9.25, RSSI: -75, hash: D8A0FDEDD1142D17 (MQTT: 0/0)
+2026-01-09 16:50:40 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:40 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:40 - PacketCapture - INFO - 📦 Captured packet #33: F type 7, 57 bytes, SNR: 12.5, RSSI: -2, hash: D8A0FDEDD1142D17 (MQTT: 0/0)
+2026-01-09 16:50:41 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:41 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:41 - PacketCapture - INFO - 📦 Captured packet #34: F type 7, 57 bytes, SNR: 12.0, RSSI: 0, hash: D8A0FDEDD1142D17 (MQTT: 0/0)
+2026-01-09 16:50:47 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:47 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:47 - PacketCapture - INFO - 📦 Captured packet #35: F type 3, 11 bytes, SNR: 11.0, RSSI: -61, hash: 4C0E58197395F5EB (MQTT: 0/0)
+2026-01-09 16:50:48 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:48 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:48 - PacketCapture - INFO - 📦 Captured packet #36: F type 3, 12 bytes, SNR: 11.0, RSSI: 0, hash: 4C0E58197395F5EB (MQTT: 0/0)
+2026-01-09 16:50:48 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:48 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:48 - PacketCapture - INFO - 📦 Captured packet #37: F type 3, 10 bytes, SNR: 9.5, RSSI: -76, hash: 4C0E58197395F5EB (MQTT: 0/0)
+2026-01-09 16:50:52 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:52 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:52 - PacketCapture - INFO - 📦 Captured packet #38: F type 7, 61 bytes, SNR: 11.25, RSSI: -60, hash: 2A0EA0ED556AEAA3 (MQTT: 0/0)
+2026-01-09 16:50:53 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:53 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:53 - PacketCapture - INFO - 📦 Captured packet #39: F type 7, 62 bytes, SNR: 12.0, RSSI: -3, hash: 2A0EA0ED556AEAA3 (MQTT: 0/0)
+2026-01-09 16:50:54 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:50:54 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:50:54 - PacketCapture - INFO - 📦 Captured packet #40: F type 7, 62 bytes, SNR: 12.0, RSSI: 0, hash: 2A0EA0ED556AEAA3 (MQTT: 0/0)
+2026-01-09 16:50:55 - PacketCapture - INFO - Binary interface client ('127.0.0.1', 56517) disconnected
+2026-01-09 16:51:02 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:02 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:02 - PacketCapture - INFO - 📦 Captured packet #41: D type 0, 22 bytes, SNR: 12.75, RSSI: -5, hash: D9844A0389CA1CE3 (MQTT: 0/0)
+2026-01-09 16:51:03 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:03 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:03 - PacketCapture - INFO - 📦 Captured packet #42: D type 1, 86 bytes, SNR: 11.5, RSSI: -42, hash: 387410A3669CCEA1 (MQTT: 0/0)
+2026-01-09 16:51:05 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:05 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:05 - PacketCapture - INFO - 📦 Captured packet #43: F type 2, 30 bytes, SNR: 12.25, RSSI: -58, hash: 41DA36ACCA72C85D (MQTT: 0/0)
+2026-01-09 16:51:05 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:05 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:05 - PacketCapture - INFO - 📦 Captured packet #44: F type 2, 31 bytes, SNR: 12.0, RSSI: -3, hash: 41DA36ACCA72C85D (MQTT: 0/0)
+2026-01-09 16:51:05 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:05 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:05 - PacketCapture - INFO - 📦 Captured packet #45: F type 2, 31 bytes, SNR: 12.75, RSSI: 0, hash: 41DA36ACCA72C85D (MQTT: 0/0)
+2026-01-09 16:51:06 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:06 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:06 - PacketCapture - INFO - 📦 Captured packet #46: F type 2, 43 bytes, SNR: 9.5, RSSI: -75, hash: 7D35C4045C409709 (MQTT: 0/0)
+2026-01-09 16:51:06 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:06 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:06 - PacketCapture - INFO - 📦 Captured packet #47: F type 2, 43 bytes, SNR: 12.25, RSSI: -2, hash: 7D35C4045C409709 (MQTT: 0/0)
+2026-01-09 16:51:07 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:07 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:07 - PacketCapture - INFO - 📦 Captured packet #48: F type 2, 44 bytes, SNR: 12.75, RSSI: 0, hash: 7D35C4045C409709 (MQTT: 0/0)
+2026-01-09 16:51:09 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:09 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:09 - PacketCapture - INFO - 📦 Captured packet #49: F type 2, 42 bytes, SNR: 10.5, RSSI: -74, hash: FEAC8625F968D10D (MQTT: 0/0)
+2026-01-09 16:51:09 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:09 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:09 - PacketCapture - INFO - 📦 Captured packet #50: F type 2, 43 bytes, SNR: 11.75, RSSI: 0, hash: FEAC8625F968D10D (MQTT: 0/0)
+2026-01-09 16:51:09 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:09 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:09 - PacketCapture - INFO - 📦 Captured packet #51: F type 2, 41 bytes, SNR: 11.75, RSSI: -58, hash: FEAC8625F968D10D (MQTT: 0/0)
+2026-01-09 16:51:14 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:14 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:14 - PacketCapture - INFO - 📦 Captured packet #52: F type 2, 41 bytes, SNR: 11.75, RSSI: -59, hash: AF3150D211DE3D86 (MQTT: 0/0)
+2026-01-09 16:51:14 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:14 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:14 - PacketCapture - INFO - 📦 Captured packet #53: F type 2, 41 bytes, SNR: 12.75, RSSI: -2, hash: AF3150D211DE3D86 (MQTT: 0/0)
+2026-01-09 16:51:14 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:14 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:14 - PacketCapture - INFO - 📦 Captured packet #54: F type 2, 42 bytes, SNR: 11.75, RSSI: 0, hash: AF3150D211DE3D86 (MQTT: 0/0)
+2026-01-09 16:51:26 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:26 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:26 - PacketCapture - INFO - 📦 Captured packet #55: F type 4, 139 bytes, SNR: 10.25, RSSI: -57, hash: A2BC7CA28A1CF4F1 (MQTT: 0/0)
+2026-01-09 16:51:27 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:27 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:27 - PacketCapture - INFO - 📦 Captured packet #56: F type 4, 139 bytes, SNR: 12.75, RSSI: -2, hash: A2BC7CA28A1CF4F1 (MQTT: 0/0)
+2026-01-09 16:51:28 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:28 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:28 - PacketCapture - INFO - 📦 Captured packet #57: F type 4, 140 bytes, SNR: 12.5, RSSI: 0, hash: A2BC7CA28A1CF4F1 (MQTT: 0/0)
+2026-01-09 16:51:37 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:37 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:37 - PacketCapture - INFO - 📦 Captured packet #58: F type 0, 29 bytes, SNR: 12.5, RSSI: -58, hash: F4F1274ECC5D8DA9 (MQTT: 0/0)
+2026-01-09 16:51:37 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:37 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:37 - PacketCapture - INFO - 📦 Captured packet #59: F type 0, 29 bytes, SNR: 12.25, RSSI: -3, hash: F4F1274ECC5D8DA9 (MQTT: 0/0)
+2026-01-09 16:51:38 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:38 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:38 - PacketCapture - INFO - 📦 Captured packet #60: F type 0, 30 bytes, SNR: 12.25, RSSI: 0, hash: F4F1274ECC5D8DA9 (MQTT: 0/0)
+2026-01-09 16:51:45 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:45 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:45 - PacketCapture - INFO - 📦 Captured packet #61: F type 5, 46 bytes, SNR: 11.0, RSSI: -58, hash: F18C2AD464B5D736 (MQTT: 0/0)
+2026-01-09 16:51:45 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:45 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:45 - PacketCapture - INFO - 📦 Captured packet #62: F type 5, 47 bytes, SNR: 12.25, RSSI: -2, hash: F18C2AD464B5D736 (MQTT: 0/0)
+2026-01-09 16:51:46 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:51:46 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:51:46 - PacketCapture - INFO - 📦 Captured packet #63: F type 5, 47 bytes, SNR: 12.5, RSSI: 0, hash: F18C2AD464B5D736 (MQTT: 0/0)
+2026-01-09 16:52:03 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:03 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:03 - PacketCapture - INFO - 📦 Captured packet #64: D type 0, 22 bytes, SNR: 12.25, RSSI: -5, hash: 25A640DBD87E1357 (MQTT: 0/0)
+2026-01-09 16:52:03 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:03 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:03 - PacketCapture - INFO - 📦 Captured packet #65: D type 1, 86 bytes, SNR: 12.25, RSSI: -43, hash: 7F7BDB94D300AC3D (MQTT: 0/0)
+2026-01-09 16:52:05 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:05 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:05 - PacketCapture - INFO - 📦 Captured packet #66: F type 5, 89 bytes, SNR: 11.25, RSSI: -3, hash: E15F859B319802AE (MQTT: 0/0)
+2026-01-09 16:52:07 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:07 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:07 - PacketCapture - INFO - 📦 Captured packet #67: F type 5, 90 bytes, SNR: 8.75, RSSI: -76, hash: E15F859B319802AE (MQTT: 0/0)
+2026-01-09 16:52:07 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:07 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:07 - PacketCapture - INFO - 📦 Captured packet #68: F type 5, 90 bytes, SNR: 12.0, RSSI: 0, hash: E15F859B319802AE (MQTT: 0/0)
+2026-01-09 16:52:10 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:10 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:10 - PacketCapture - INFO - 📦 Captured packet #69: F type 4, 130 bytes, SNR: 12.25, RSSI: -59, hash: 78127154F0DD3772 (MQTT: 0/0)
+2026-01-09 16:52:10 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:10 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:10 - PacketCapture - INFO - 📦 Captured packet #70: F type 4, 131 bytes, SNR: 9.25, RSSI: 0, hash: 78127154F0DD3772 (MQTT: 0/0)
+2026-01-09 16:52:18 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:18 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:18 - PacketCapture - INFO - 📦 Captured packet #71: F type 3, 11 bytes, SNR: 12.25, RSSI: 0, hash: BED2B451DAA907B3 (MQTT: 0/0)
+2026-01-09 16:52:24 - PacketCapture - INFO - Binary interface client connected from ('127.0.0.1', 56604)
+2026-01-09 16:52:43 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:43 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:43 - PacketCapture - INFO - 📦 Captured packet #72: F type 3, 10 bytes, SNR: 12.0, RSSI: -58, hash: 1202FC05FD8E9810 (MQTT: 0/0)
+2026-01-09 16:52:43 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:43 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:43 - PacketCapture - INFO - 📦 Captured packet #73: F type 3, 11 bytes, SNR: 12.25, RSSI: -3, hash: 1202FC05FD8E9810 (MQTT: 0/0)
+2026-01-09 16:52:43 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:52:43 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:52:43 - PacketCapture - INFO - 📦 Captured packet #74: F type 3, 11 bytes, SNR: 12.25, RSSI: 0, hash: 1202FC05FD8E9810 (MQTT: 0/0)
+2026-01-09 16:53:04 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:53:04 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:53:04 - PacketCapture - INFO - 📦 Captured packet #75: D type 0, 22 bytes, SNR: 12.25, RSSI: -3, hash: DA2210D2165F12CD (MQTT: 0/0)
+2026-01-09 16:53:04 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:53:04 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:53:04 - PacketCapture - INFO - 📦 Captured packet #76: D type 1, 86 bytes, SNR: 12.0, RSSI: -49, hash: 01DFF8A3C59FC720 (MQTT: 0/0)
+2026-01-09 16:53:05 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:53:05 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:53:05 - PacketCapture - INFO - 📦 Captured packet #77: F type 3, 11 bytes, SNR: 12.5, RSSI: -3, hash: 0E208E4F94263845 (MQTT: 0/0)
+2026-01-09 16:53:05 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:53:05 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:53:05 - PacketCapture - INFO - 📦 Captured packet #78: F type 3, 11 bytes, SNR: 12.5, RSSI: -60, hash: 0E208E4F94263845 (MQTT: 0/0)
+2026-01-09 16:53:06 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:53:06 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:53:06 - PacketCapture - INFO - 📦 Captured packet #79: F type 3, 11 bytes, SNR: 9.5, RSSI: -74, hash: 0E208E4F94263845 (MQTT: 0/0)
+2026-01-09 16:53:06 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:53:06 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:53:06 - PacketCapture - INFO - 📦 Captured packet #80: F type 3, 12 bytes, SNR: 12.5, RSSI: 0, hash: 0E208E4F94263845 (MQTT: 0/0)
+2026-01-09 16:53:17 - PacketCapture - WARNING - Not connected - skipping publish to packets
+2026-01-09 16:53:17 - PacketCapture - WARNING - Not connected - skipping publish to raw
+2026-01-09 16:53:17 - PacketCapture - INFO - 📦 Captured packet #81: F type 5, 137 bytes, SNR: 12.25, RSSI: -2, hash: BC4BD0E48A23CD9D (MQTT: 0/0)
+2026-01-09 16:53:18 - PacketCapture - INFO - Received signal 15, initiating immediate shutdown...
+2026-01-09 16:53:18 - PacketCapture - INFO - Shutdown signal received, stopping capture...
+2026-01-09 16:53:18 - PacketCapture - INFO - Stopping packet capture...
+2026-01-09 16:53:18 - PacketCapture - INFO - Disconnecting BLE device...
+2026-01-09 16:53:18 - PacketCapture - INFO - Binary interface client ('127.0.0.1', 56604) disconnected
+2026-01-09 16:53:19 - PacketCapture - INFO - Packet capture stopped. Total packets captured: 81
+DEBUG: Binary interface config - host=0.0.0.0, port=5001
+DEBUG: Env var PACKETCAPTURE_BINARY_INTERFACE_PORT=5001

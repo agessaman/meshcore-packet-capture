@@ -2341,7 +2341,7 @@ services:
       - PACKETCAPTURE_TOPIC_DEBUG=meshcore/debug
       
       # Device settings
-      - PACKETCAPTURE_IATA=LOC
+      - PACKETCAPTURE_IATA=XYZ
       - PACKETCAPTURE_ORIGIN=PacketCapture Docker
       
       # Advert settings

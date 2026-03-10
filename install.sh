@@ -4,7 +4,7 @@
 # ============================================================================
 set -e
 
-SCRIPT_VERSION="1.2"
+SCRIPT_VERSION="1.2.1"
 DEFAULT_REPO="agessaman/meshcore-packet-capture"
 DEFAULT_BRANCH="main"
 
@@ -2395,7 +2395,7 @@ services:
       # - PACKETCAPTURE_TOPIC_DEBUG=meshcore/{IATA}/{PUBLIC_KEY}/debug
       
       # Device settings
-      - PACKETCAPTURE_IATA=LOC
+      - PACKETCAPTURE_IATA=XYZ
       # PACKETCAPTURE_ORIGIN is optional - if not set, uses device name from meshcore connection
       # Uncomment and set if you want to override the device name:
       # - PACKETCAPTURE_ORIGIN=Your Custom Name

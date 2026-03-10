@@ -295,9 +295,12 @@ class PacketCapture:
         self.jwt_renewal_threshold = self.get_env_int('JWT_RENEWAL_THRESHOLD', 300)  # Renew 5 minutes before expiry
         
         # Advert settings
-        self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 11)
+        self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 47)
         self.last_advert_time = 0
         self.advert_task = None
+        
+        # Load persisted advert state
+        self.last_advert_time = self._load_advert_state()
         
         # Packet type filtering for uploads
         upload_types_str = self.get_env('UPLOAD_PACKET_TYPES', '').strip()
@@ -405,6 +408,92 @@ class PacketCapture:
             return float(self.get_env(key, str(fallback)))
         except ValueError:
             return fallback
+    
+    def _get_state_file_path(self):
+        """Get the path to the state file for persisting last_advert_time.
+        
+        Works across all installation methods:
+        - Docker: Uses /app/data/ (mounted volume)
+        - NixOS: Uses cfg.dataDir (working directory)
+        - Systemd: Uses script directory or data subdirectory
+        """
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Try data subdirectory first (works for Docker and if created)
+        data_dir = os.path.join(script_dir, 'data')
+        if os.path.exists(data_dir) and os.path.isdir(data_dir):
+            return os.path.join(data_dir, 'advert_state.json')
+        
+        # Fall back to script directory (works for all installation methods)
+        return os.path.join(script_dir, 'advert_state.json')
+    
+    def _load_advert_state(self):
+        """Load last_advert_time from persistent state file.
+        
+        Returns the timestamp if found, otherwise returns 0.
+        """
+        state_file = self._get_state_file_path()
+        
+        if not os.path.exists(state_file):
+            if self.debug:
+                self.logger.debug(f"Advert state file not found: {state_file}")
+            return 0
+        
+        try:
+            with open(state_file, 'r') as f:
+                state = json.load(f)
+                last_time = state.get('last_advert_time', 0)
+                
+                # Validate the timestamp is reasonable (not in the future, not too old)
+                current_time = time.time()
+                if last_time > current_time:
+                    # Timestamp is in the future, ignore it
+                    if self.debug:
+                        self.logger.debug(f"Advert state timestamp is in the future, ignoring: {last_time}")
+                    return 0
+                
+                # If timestamp is more than 1 year old, treat as invalid
+                if current_time - last_time > 31536000:  # 1 year in seconds
+                    if self.debug:
+                        self.logger.debug(f"Advert state timestamp is too old, ignoring: {last_time}")
+                    return 0
+                
+                if self.debug:
+                    self.logger.debug(f"Loaded last_advert_time from state file: {last_time} ({datetime.fromtimestamp(last_time).isoformat()})")
+                return last_time
+                
+        except (json.JSONDecodeError, IOError, OSError) as e:
+            self.logger.warning(f"Failed to load advert state from {state_file}: {e}")
+            return 0
+    
+    def _save_advert_state(self):
+        """Save last_advert_time to persistent state file."""
+        state_file = self._get_state_file_path()
+        state_dir = os.path.dirname(state_file)
+        
+        try:
+            # Create directory if it doesn't exist (for data subdirectory case)
+            if state_dir and not os.path.exists(state_dir):
+                os.makedirs(state_dir, mode=0o755, exist_ok=True)
+            
+            state = {
+                'last_advert_time': self.last_advert_time,
+                'updated_at': time.time()
+            }
+            
+            # Write atomically using a temporary file
+            temp_file = state_file + '.tmp'
+            with open(temp_file, 'w') as f:
+                json.dump(state, f, indent=2)
+            
+            # Atomic rename
+            os.replace(temp_file, state_file)
+            
+            if self.debug:
+                self.logger.debug(f"Saved last_advert_time to state file: {self.last_advert_time} ({datetime.fromtimestamp(self.last_advert_time).isoformat()})")
+                
+        except (IOError, OSError) as e:
+            self.logger.warning(f"Failed to save advert state to {state_file}: {e}")
     
     
     def calculate_connection_retry_delay(self, attempt: int) -> float:
@@ -3189,6 +3278,7 @@ class PacketCapture:
             self.logger.info("Sending flood advert...")
             await self.meshcore.commands.send_advert(flood=True)
             self.last_advert_time = time.time()
+            self._save_advert_state()  # Persist the timestamp
             self.logger.info("Flood advert sent successfully!")
             return True
             

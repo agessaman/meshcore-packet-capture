@@ -2,6 +2,7 @@
 config.ini
 .env.*
 old/
+advert_state.json
 
 # Python
 __pycache__/

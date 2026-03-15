@@ -1,8 +1,8 @@
 # Core dependencies for MeshCore packet capture
 paho-mqtt>=1.6.0
 
-# MeshCore package - on-device signing support available in 2.2.4+
-meshcore>=2.2.4
+# MeshCore package - multi-byte path support requires 2.2.31+
+meshcore>=2.2.31
 
 # MeshCore package dependencies (installed automatically with meshcore)
 bleak>=0.21.0

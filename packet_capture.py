@@ -2635,17 +2635,20 @@ class PacketCapture:
                 self.logger.error(f"Packet too short for path_len at offset {offset}: {len(byte_data)} bytes")
                 return None
             
-            path_len = byte_data[offset]
+            path_len_byte = byte_data[offset]
             offset += 1
+
+            # MeshCore packs path_len byte: low 6 bits hop count, high 2 bits hash-size mode.
+            path_byte_len, path_hash_bytes = self._decode_packed_path_length(path_len_byte)
             
             # Check if we have enough data for the full path
-            if len(byte_data) < offset + path_len:
-                self.logger.error(f"Packet too short for path (need {offset + path_len}, have {len(byte_data)})")
+            if len(byte_data) < offset + path_byte_len:
+                self.logger.error(f"Packet too short for path (need {offset + path_byte_len}, have {len(byte_data)})")
                 return None
             
             # Extract path
-            path = byte_data[offset:offset + path_len].hex()
-            offset += path_len
+            path_bytes = byte_data[offset:offset + path_byte_len]
+            offset += path_byte_len
             
             # Remaining data is payload
             payload = byte_data[offset:]
@@ -2661,19 +2664,18 @@ class PacketCapture:
             # Extract payload type (bits 2-5)
             payload_type = PayloadType((header >> 2) & 0x0F)
 
-            # Convert path to list of hex values
-            path_values = []
-            i = 0
-            while i < len(path):
-                path_values.append(path[i:i+2])
-                i += 2
+            # Convert path bytes to hop tokens using decoded hash width (1/2/3 bytes)
+            path_values = self._split_path_hops(path_bytes, path_hash_bytes)
             
             message = {
                 "payload_type": payload_type.name,
                 "payload_type_value": payload_type.value,
                 "payload_version": payload_version.name,
                 "route_type": route_type.name,
-                "path": path_values
+                "path": path_values,
+                "path_len_byte": path_len_byte,
+                "path_byte_len": path_byte_len,
+                "path_hash_bytes": path_hash_bytes,
             }
         
             payload_value = {}
@@ -2698,6 +2700,40 @@ class PacketCapture:
             self.logger.error(f"Error decoding packet (len={len(byte_data)}): {e}", exc_info=True)
             self.logger.error(f"Failed packet hex: {raw_data}")
             return None
+
+    def _decode_packed_path_length(self, path_len_byte: int, max_path_size: int = 64) -> tuple[int, int]:
+        """Decode packed path length byte per MeshCore firmware.
+
+        path_len layout:
+        - low 6 bits: hop count
+        - high 2 bits: bytes-per-hop minus 1
+        """
+        hop_count = path_len_byte & 0x3F
+        bytes_per_hop = (path_len_byte >> 6) + 1
+
+        # Mode 3 => 4 bytes/hop is reserved in firmware; fallback to legacy interpretation.
+        if bytes_per_hop == 4:
+            return path_len_byte, 1
+
+        path_byte_len = hop_count * bytes_per_hop
+        if path_byte_len > max_path_size:
+            # Invalid packed value; fallback keeps compatibility with legacy one-byte parsing.
+            return path_len_byte, 1
+
+        return path_byte_len, bytes_per_hop
+
+    def _split_path_hops(self, path_bytes: bytes, bytes_per_hop: int) -> list[str]:
+        """Split path bytes into per-hop hex tokens."""
+        path_hex = path_bytes.hex()
+        hop_hex_chars = max(bytes_per_hop, 1) * 2
+
+        if hop_hex_chars <= 0:
+            hop_hex_chars = 2
+
+        nodes = [path_hex[i:i + hop_hex_chars] for i in range(0, len(path_hex), hop_hex_chars)]
+        if (len(path_hex) % hop_hex_chars) != 0:
+            nodes = [path_hex[i:i + 2] for i in range(0, len(path_hex), 2)]
+        return nodes
     
     def calculate_packet_hash(self, raw_hex: str, payload_type: int = None) -> str:
         """Calculate hash for packet identification - based on packet.cpp"""
@@ -2718,13 +2754,23 @@ class PacketCapture:
             offset = 1  # After header
             if has_transport:
                 offset += 4  # Skip 4 bytes of transport codes
+
+            if len(byte_data) <= offset:
+                self.logger.debug(f"Packet too short for path_len while hashing: len={len(byte_data)}, offset={offset}")
+                return "0000000000000000"
             
-            # Read path_len (1 byte on wire, but stored as uint16_t in C++)
-            path_len = byte_data[offset]
+            # Read packed path_len byte from wire
+            path_len_byte = byte_data[offset]
             offset += 1
-            
+
             # Skip past the path to get to payload
-            payload_start = offset + path_len
+            path_byte_len, _ = self._decode_packed_path_length(path_len_byte)
+            payload_start = offset + path_byte_len
+            if payload_start > len(byte_data):
+                self.logger.debug(
+                    f"Packet too short for decoded path while hashing: need {payload_start}, have {len(byte_data)}"
+                )
+                return "0000000000000000"
             payload_data = byte_data[payload_start:]
             
             # Calculate hash exactly like MeshCore Packet::calculatePacketHash():
@@ -2737,8 +2783,8 @@ class PacketCapture:
             if payload_type == 9:  # PAYLOAD_TYPE_TRACE
                 # C++ does: sha.update(&path_len, sizeof(path_len))
                 # path_len is uint16_t, so sizeof(path_len) = 2 bytes
-                # Convert path_len to 2-byte little-endian uint16_t
-                hash_obj.update(path_len.to_bytes(2, byteorder='little'))
+                # Convert wire path_len byte to 2-byte little-endian uint16_t
+                hash_obj.update(path_len_byte.to_bytes(2, byteorder='little'))
             
             hash_obj.update(payload_data)
             
@@ -2808,7 +2854,9 @@ class PacketCapture:
                 if decoded_message and 'path' in decoded_message:
                     # Calculate actual payload length from the raw data
                     # Total bytes - header(1) - transport(4 if present) - path_length(1) - path_bytes
-                    path_len_bytes = len(decoded_message['path']) // 2  # Convert hex chars to bytes
+                    path_len_bytes = decoded_message.get('path_byte_len')
+                    if path_len_bytes is None:
+                        path_len_bytes = len(decoded_message.get('path', []))
                     has_transport = decoded_message.get('route_type') in ['TRANSPORT_FLOOD', 'TRANSPORT_DIRECT']
                     transport_bytes = 4 if has_transport else 0
                     payload_len = str(max(0, packet_len - 1 - transport_bytes - 1 - path_len_bytes))

@@ -35,6 +35,8 @@ done
 # Use environment variables if set, otherwise use defaults/args
 REPO="${INSTALL_REPO:-$DEFAULT_REPO}"
 BRANCH="${INSTALL_BRANCH:-$DEFAULT_BRANCH}"
+MIN_MESHCORE_VERSION="2.2.31"
+ENABLE_LEGACY_DECODER_PATH="${PACKETCAPTURE_ENABLE_LEGACY_DECODER_PATH:-false}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -115,6 +117,119 @@ print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
 }
 
+# Compare semantic-ish versions (numeric components only)
+is_version_at_least() {
+    local python_cmd="$1"
+    local installed_version="$2"
+    local min_version="$3"
+
+    "$python_cmd" - "$installed_version" "$min_version" << 'PY'
+import re
+import sys
+
+installed = sys.argv[1]
+minimum = sys.argv[2]
+
+def normalize(version: str):
+    # Keep numeric components only; this handles versions like 2.2.31rc1.
+    parts = [int(x) for x in re.findall(r"\d+", version)]
+    return parts or [0]
+
+left = normalize(installed)
+right = normalize(minimum)
+size = max(len(left), len(right))
+left += [0] * (size - len(left))
+right += [0] * (size - len(right))
+
+sys.exit(0 if left >= right else 1)
+PY
+}
+
+# Validate meshcore availability and minimum version for a given Python interpreter.
+check_meshcore_version() {
+    local python_cmd="$1"
+    local context="$2"
+    local min_version="${3:-$MIN_MESHCORE_VERSION}"
+
+    if ! command -v "$python_cmd" &> /dev/null; then
+        print_warning "Python command '$python_cmd' not found during $context"
+        return 1
+    fi
+
+    local installed_version
+    installed_version=$("$python_cmd" -c "import meshcore; print(getattr(meshcore, '__version__', '0.0.0'))" 2>/dev/null || true)
+    if [ -z "$installed_version" ]; then
+        print_warning "meshcore not available during $context"
+        print_info "Install or upgrade meshcore to version $min_version or newer"
+        print_info "Manual update command: $python_cmd -m pip install --upgrade \"meshcore>=$min_version\""
+        return 1
+    fi
+
+    if ! is_version_at_least "$python_cmd" "$installed_version" "$min_version"; then
+        print_warning "meshcore $installed_version detected during $context"
+        print_info "meshcore $min_version or newer is required for multi-byte path support"
+        print_info "Manual update command: $python_cmd -m pip install --upgrade \"meshcore>=$min_version\""
+        return 1
+    fi
+
+    print_info "meshcore version check passed ($installed_version >= $min_version)"
+    return 0
+}
+
+# Create runtime launcher with meshcore version guard for services and Docker.
+create_runtime_launcher() {
+    local launcher_file="$INSTALL_DIR/start_packet_capture.sh"
+    cat > "$launcher_file" << EOF
+#!/bin/sh
+set -e
+
+MIN_MESHCORE_VERSION="\${MIN_MESHCORE_VERSION:-$MIN_MESHCORE_VERSION}"
+PYTHON_BIN="\${PYTHON_BIN:-python3}"
+SCRIPT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+
+if ! command -v "\$PYTHON_BIN" >/dev/null 2>&1; then
+    echo "ERROR: Python interpreter '\$PYTHON_BIN' not found."
+    exit 1
+fi
+
+INSTALLED_MESHCORE_VERSION=\$("\$PYTHON_BIN" -c "import meshcore; print(getattr(meshcore, '__version__', '0.0.0'))" 2>/dev/null || true)
+if [ -z "\$INSTALLED_MESHCORE_VERSION" ]; then
+    echo "ERROR: meshcore is not installed for '\$PYTHON_BIN'."
+    echo "ERROR: Install meshcore >= \$MIN_MESHCORE_VERSION for multi-byte path support."
+    echo "ERROR: Manual update command: \$PYTHON_BIN -m pip install --upgrade \"meshcore>=\$MIN_MESHCORE_VERSION\""
+    exit 1
+fi
+
+if ! "\$PYTHON_BIN" - "\$INSTALLED_MESHCORE_VERSION" "\$MIN_MESHCORE_VERSION" << 'PY'
+import re
+import sys
+
+installed = sys.argv[1]
+minimum = sys.argv[2]
+
+def normalize(version: str):
+    parts = [int(x) for x in re.findall(r"\d+", version)]
+    return parts or [0]
+
+left = normalize(installed)
+right = normalize(minimum)
+size = max(len(left), len(right))
+left += [0] * (size - len(left))
+right += [0] * (size - len(right))
+sys.exit(0 if left >= right else 1)
+PY
+then
+    echo "ERROR: meshcore \$INSTALLED_MESHCORE_VERSION is too old."
+    echo "ERROR: meshcore >= \$MIN_MESHCORE_VERSION is required for multi-byte path support."
+    echo "ERROR: Manual update command: \$PYTHON_BIN -m pip install --upgrade \"meshcore>=\$MIN_MESHCORE_VERSION\""
+    exit 1
+fi
+
+exec "\$PYTHON_BIN" "\$SCRIPT_DIR/packet_capture.py"
+EOF
+    chmod +x "$launcher_file"
+}
+
 # Detect available serial devices
 detect_serial_devices() {
     local devices=()
@@ -170,11 +285,16 @@ scan_ble_devices() {
         return 1
     fi
     
-    # Check if meshcore and bleak are available
-    if ! python3 -c "import meshcore, bleak" 2>/dev/null; then
-        print_warning "meshcore or bleak not available - cannot scan for BLE devices"
+    # Check if bleak is available (meshcore is validated separately below)
+    if ! python3 -c "import bleak" 2>/dev/null; then
+        print_warning "bleak not available - cannot scan for BLE devices"
         print_info "BLE scanning requires the meshcore library and its dependencies"
         print_info "These will be installed after the main installation completes"
+        return 1
+    fi
+
+    if ! check_meshcore_version "python3" "BLE scanning preflight"; then
+        print_warning "Cannot scan for BLE devices with incompatible meshcore version"
         return 1
     fi
     
@@ -372,11 +492,16 @@ handle_ble_pairing() {
         print_info "Using system Python (venv not yet created)"
     fi
     
-    # Check if dependencies are available (meshcore and bleak)
-    if ! "$python_cmd" -c "import meshcore, bleak" 2>/dev/null; then
-        print_warning "BLE dependencies (meshcore/bleak) not yet installed"
+    # Check bleak availability first (meshcore version is validated separately)
+    if ! "$python_cmd" -c "import bleak" 2>/dev/null; then
+        print_warning "BLE dependency bleak is not available yet"
         print_info "The virtual environment will be set up after device configuration."
         print_info "You may need to pair the device manually, or re-run the installer after dependencies are installed."
+        return 1
+    fi
+
+    if ! check_meshcore_version "$python_cmd" "BLE pairing preflight"; then
+        print_warning "Skipping automatic pairing check due to incompatible meshcore version"
         return 1
     fi
     
@@ -1646,7 +1771,13 @@ main() {
     source "$INSTALL_DIR/venv/bin/activate"
     pip install --quiet --upgrade pip
     pip install --quiet --upgrade -r "$INSTALL_DIR/requirements.txt"
-    # meshcore is now installed from PyPI via requirements.txt and will be upgraded on reinstall
+    if ! check_meshcore_version "$INSTALL_DIR/venv/bin/python3" "dependency installation validation"; then
+        print_error "Installed meshcore version is incompatible with multi-byte path support"
+        print_error "Please ensure meshcore>=$MIN_MESHCORE_VERSION is available and rerun the installer"
+        print_error "Manual update command: \"$INSTALL_DIR/venv/bin/python3\" -m pip install --upgrade \"meshcore>=$MIN_MESHCORE_VERSION\""
+        exit 1
+    fi
+    create_runtime_launcher
     print_success "Python dependencies installed"
     
     # Configuration
@@ -1992,11 +2123,14 @@ install_systemd_service() {
     local service_file="/tmp/meshcore-capture.service"
     local current_user=$(whoami)
     
-    # Build PATH (silently includes meshcore-decoder if available for legacy support)
+    # Build PATH (legacy decoder path is opt-in only)
     local service_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    if command -v meshcore-decoder &> /dev/null; then
+    if [ "$ENABLE_LEGACY_DECODER_PATH" = "true" ] && command -v meshcore-decoder &> /dev/null; then
         local decoder_dir=$(dirname "$(which meshcore-decoder)")
         service_path="${decoder_dir}:${service_path}"
+        print_info "Legacy meshcore-decoder path enabled: $decoder_dir"
+    elif command -v meshcore-decoder &> /dev/null; then
+        print_info "meshcore-decoder found but not added to PATH (set PACKETCAPTURE_ENABLE_LEGACY_DECODER_PATH=true to enable)"
     fi
     
     cat > "$service_file" << EOF
@@ -2009,6 +2143,8 @@ Wants=time-sync.target
 User=$current_user
 WorkingDirectory=$INSTALL_DIR
 Environment="PATH=$service_path"
+Environment="PYTHON_BIN=$INSTALL_DIR/venv/bin/python3"
+Environment="MIN_MESHCORE_VERSION=$MIN_MESHCORE_VERSION"
 Environment="PACKETCAPTURE_MAX_ACTIVE_TASKS=50"
 Environment="PACKETCAPTURE_JWT_CIRCUIT_BREAKER_FAILURES=3"
 Environment="PACKETCAPTURE_JWT_CIRCUIT_BREAKER_TIMEOUT=180"
@@ -2024,7 +2160,7 @@ Environment="PACKETCAPTURE_MAX_SERVICE_FAILURES=3"
 Environment="PACKETCAPTURE_SERVICE_FAILURE_WINDOW=300"
 Environment="PACKETCAPTURE_CRITICAL_FAILURE_THRESHOLD=5"
 Environment="PACKETCAPTURE_MAX_CONSECUTIVE_FAILURES=3"
-ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/packet_capture.py
+ExecStart=$INSTALL_DIR/start_packet_capture.sh
 ExecStop=/bin/bash -c 'if [ -f $INSTALL_DIR/.env.local ] && grep -q "PACKETCAPTURE_CONNECTION_TYPE=ble" $INSTALL_DIR/.env.local; then BLE_DEVICE=\$(grep "PACKETCAPTURE_BLE_DEVICE=" $INSTALL_DIR/.env.local | cut -d= -f2); if [ -n "\$BLE_DEVICE" ] && command -v bluetoothctl >/dev/null 2>&1; then echo "Disconnecting BLE device \$BLE_DEVICE..."; bluetoothctl disconnect "\$BLE_DEVICE" 2>/dev/null || true; sleep 2; fi; fi'
 KillMode=process
 Restart=on-failure
@@ -2104,7 +2240,7 @@ install_launchd_service() {
     local plist_file="$HOME/Library/LaunchAgents/com.meshcore.packet-capture.plist"
     mkdir -p "$HOME/Library/LaunchAgents"
     
-    # Build comprehensive PATH that includes Node.js and meshcore-decoder
+    # Build comprehensive PATH that includes Node.js (legacy decoder path is opt-in)
     # LaunchAgents don't inherit shell PATH, so we must explicitly set it
     local service_path=""
     
@@ -2163,12 +2299,15 @@ install_launchd_service() {
         fi
     fi
     
-    # Add meshcore-decoder directory if found (silent - for legacy support)
-    if command -v meshcore-decoder &> /dev/null; then
+    # Add meshcore-decoder directory only when explicitly enabled
+    if [ "$ENABLE_LEGACY_DECODER_PATH" = "true" ] && command -v meshcore-decoder &> /dev/null; then
         local decoder_dir=$(dirname "$(which meshcore-decoder)")
         if [ -n "$decoder_dir" ] && [ "$decoder_dir" != "." ] && [[ "$service_path" != *"$decoder_dir"* ]]; then
             service_path="${service_path}${decoder_dir}:"
+            print_info "Legacy meshcore-decoder path enabled: $decoder_dir"
         fi
+    elif command -v meshcore-decoder &> /dev/null; then
+        print_info "meshcore-decoder found but not added to PATH (set PACKETCAPTURE_ENABLE_LEGACY_DECODER_PATH=true to enable)"
     fi
     
     # Add standard system paths
@@ -2188,8 +2327,7 @@ install_launchd_service() {
     <string>com.meshcore.packet-capture</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$INSTALL_DIR/venv/bin/python3</string>
-        <string>$INSTALL_DIR/packet_capture.py</string>
+        <string>$INSTALL_DIR/start_packet_capture.sh</string>
     </array>
     <key>WorkingDirectory</key>
     <string>$INSTALL_DIR</string>
@@ -2197,6 +2335,10 @@ install_launchd_service() {
     <dict>
         <key>PATH</key>
         <string>$service_path</string>
+        <key>PYTHON_BIN</key>
+        <string>$INSTALL_DIR/venv/bin/python3</string>
+        <key>MIN_MESHCORE_VERSION</key>
+        <string>$MIN_MESHCORE_VERSION</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -2245,6 +2387,10 @@ install_docker() {
     
     # Create Docker configuration files
     print_info "Creating Docker configuration..."
+    if [ ! -f "$INSTALL_DIR/start_packet_capture.sh" ]; then
+        print_info "Creating runtime launcher script for Docker startup checks..."
+        create_runtime_launcher
+    fi
     
     # Create Dockerfile
     cat > "$INSTALL_DIR/Dockerfile" << 'EOF'
@@ -2281,11 +2427,12 @@ RUN mkdir -p /app/data
 # Set default environment variables
 # Note: These are defaults - override in docker-compose.yml or .env.local
 ENV PACKETCAPTURE_CONNECTION_TYPE=serial
+ENV MIN_MESHCORE_VERSION=2.2.31
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 # Default command
-CMD ["python", "packet_capture.py"]
+CMD ["./start_packet_capture.sh"]
 EOF
     
     # Create docker-compose.yml

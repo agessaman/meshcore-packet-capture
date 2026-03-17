@@ -157,7 +157,10 @@ check_meshcore_version() {
     fi
 
     local installed_version
-    installed_version=$("$python_cmd" -c "import meshcore; print(getattr(meshcore, '__version__', '0.0.0'))" 2>/dev/null || true)
+    installed_version=$("$python_cmd" -c 'try:
+ from importlib.metadata import version; print(version("meshcore"))
+except Exception:
+ import meshcore; print(getattr(meshcore, "__version__", "0.0.0"))' 2>/dev/null || true)
     if [ -z "$installed_version" ]; then
         print_warning "meshcore not available during $context"
         print_info "Install or upgrade meshcore to version $min_version or newer"
@@ -192,7 +195,10 @@ if ! command -v "\$PYTHON_BIN" >/dev/null 2>&1; then
     exit 1
 fi
 
-INSTALLED_MESHCORE_VERSION=\$("\$PYTHON_BIN" -c "import meshcore; print(getattr(meshcore, '__version__', '0.0.0'))" 2>/dev/null || true)
+INSTALLED_MESHCORE_VERSION=\$("\$PYTHON_BIN" -c 'try:
+ from importlib.metadata import version; print(version("meshcore"))
+except Exception:
+ import meshcore; print(getattr(meshcore, "__version__", "0.0.0"))' 2>/dev/null || true)
 if [ -z "\$INSTALLED_MESHCORE_VERSION" ]; then
     echo "ERROR: meshcore is not installed for '\$PYTHON_BIN'."
     echo "ERROR: Install meshcore >= \$MIN_MESHCORE_VERSION for multi-byte path support."

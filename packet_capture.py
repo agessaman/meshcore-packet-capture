@@ -2684,7 +2684,8 @@ class PacketCapture:
             
             if payload_type is PayloadType.ADVERT:
                 key_prefix = payload_value["public_key"][:2]
-                if payload_value["name"].endswith("^"):
+                name = payload_value.get("name", "")
+                if name.endswith("^"):
                     message.update(payload_value)
                 elif key_prefix not in self.opted_in_ids:
                     self.opted_in_ids.append(key_prefix)
@@ -2838,7 +2839,7 @@ class PacketCapture:
                 "PATH": "8",
                 "TRACE": "9",
                 "MULTIPART": "10",
-                "Type11": "11",
+                "CONTROL": "11",
                 "Type12": "12",
                 "Type13": "13",
                 "Type14": "14",

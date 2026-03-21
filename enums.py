@@ -42,7 +42,7 @@ class PayloadType(Enum):
     PATH = 0x08         # PAYLOAD_TYPE_PATH
     TRACE = 0x09        # PAYLOAD_TYPE_TRACE
     MULTIPART = 0x0A    # PAYLOAD_TYPE_MULTIPART
-    Type11 = 0x0B       # Reserved
+    CONTROL = 0x0B      # PAYLOAD_TYPE_CONTROL
     Type12 = 0x0C       # Reserved
     Type13 = 0x0D       # Reserved
     Type14 = 0x0E       # Reserved

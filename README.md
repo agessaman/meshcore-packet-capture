@@ -227,7 +227,8 @@ This setting allows you to filter which packet types are uploaded to MQTT broker
 - `8` = PATH
 - `9` = TRACE
 - `10` = MULTIPART
-- `11-14` = Reserved
+- `11` = CONTROL
+- `12-14` = Reserved
 - `15` = RAW_CUSTOM
 
 **Examples:**

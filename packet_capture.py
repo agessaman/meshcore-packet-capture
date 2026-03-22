@@ -276,9 +276,6 @@ class PacketCapture:
         self.rf_data_cache = {}
         self.packet_count = 0
         
-        # Opted-in IDs for advert filtering (mirroring mctomqtt.py)
-        self.opted_in_ids = []
-        
         # Device information
         self.device_name = None
         self.device_public_key = None
@@ -2683,12 +2680,7 @@ class PacketCapture:
                 payload_value = self.parse_advert(payload)
             
             if payload_type is PayloadType.ADVERT:
-                key_prefix = payload_value["public_key"][:2]
-                name = payload_value.get("name", "")
-                if name.endswith("^"):
-                    message.update(payload_value)
-                elif key_prefix not in self.opted_in_ids:
-                    self.opted_in_ids.append(key_prefix)
+                message.update(payload_value)
             else:
                 message.update(payload_value)
                 

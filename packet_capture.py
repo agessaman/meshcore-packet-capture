@@ -274,6 +274,8 @@ class PacketCapture:
         
         # Packet correlation cache
         self.rf_data_cache = {}
+        self.recent_rf_packets = {}
+        self.raw_duplicate_window = self.get_env_float('RAW_DUPLICATE_WINDOW', 2.0)
         self.packet_count = 0
         
         # Opted-in IDs for advert filtering (mirroring mctomqtt.py)
@@ -2952,6 +2954,13 @@ class PacketCapture:
                         if current_time - v['timestamp'] < timeout
                     }
                     
+                    # Remember RF-originated packets so RAW_DATA for the same reception doesn't double-publish.
+                    self.recent_rf_packets[raw_hex.upper()] = current_time
+                    self.recent_rf_packets = {
+                        k: v for k, v in self.recent_rf_packets.items()
+                        if current_time - v < self.raw_duplicate_window
+                    }
+
                     # Process the packet
                     await self.process_packet_from_rf_data(raw_hex, rf_data)
                 else:
@@ -3001,6 +3010,19 @@ class PacketCapture:
                 # Remove 0x prefix if present
                 if raw_hex.startswith('0x'):
                     raw_hex = raw_hex[2:]
+
+                raw_hex = raw_hex.upper()
+                current_time = time.time()
+                recent_rf_time = self.recent_rf_packets.get(raw_hex)
+                if recent_rf_time is not None and (current_time - recent_rf_time) < self.raw_duplicate_window:
+                    if self.debug:
+                        self.logger.debug("Skipping RAW_DATA packet already processed from RX_LOG_DATA")
+                    return
+
+                self.recent_rf_packets = {
+                    k: v for k, v in self.recent_rf_packets.items()
+                    if current_time - v < self.raw_duplicate_window
+                }
                 
                 # Find corresponding RF data
                 packet_prefix = raw_hex[:32]

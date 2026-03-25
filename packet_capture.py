@@ -2513,21 +2513,27 @@ class PacketCapture:
     def parse_advert(self, payload):
         """Parse advert payload - matches C++ AdvertDataHelpers.h implementation"""
         try:
-            # Validate minimum payload size
-            if len(payload) < 101:
-                self.logger.error(f"ADVERT payload too short: {len(payload)} bytes")
+            # The advert header is fixed-width: pubkey (32) + timestamp (4) + signature (64).
+            if len(payload) < 100:
+                self.logger.error(f"ADVERT payload too short for header: {len(payload)} bytes")
                 return {}
-            
+
             # advert header
             pub_key = payload[0:32]
             timestamp = int.from_bytes(payload[32:32+4], "little")
             signature = payload[36:36+64]
 
+            advert = {
+                "public_key": pub_key.hex(),
+                "advert_time": timestamp,
+                "signature": signature.hex(),
+            }
+
             # appdata - parse according to C++ AdvertDataParser
             app_data = payload[100:]
             if len(app_data) == 0:
                 self.logger.error("ADVERT has no app data")
-                return {}
+                return advert
             
             flags_byte = app_data[0]
             
@@ -2538,12 +2544,6 @@ class PacketCapture:
             # Create flags object with the full byte value
             flags = AdvertFlags(flags_byte)
             
-            advert = {
-                "public_key": pub_key.hex(),
-                "advert_time": timestamp,
-                "signature": signature.hex(),
-            }
-
             # Extract type from lower 4 bits (matches C++ getType())
             adv_type = flags_byte & 0x0F
             if adv_type == AdvertFlags.ADV_TYPE_CHAT:

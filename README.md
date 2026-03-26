@@ -112,6 +112,7 @@ Configuration is handled via environment variables and `.env` files. The install
 - `PACKETCAPTURE_MAX_CONNECTION_RETRIES`: Maximum MeshCore connection retry attempts (0 = infinite)
 - `PACKETCAPTURE_CONNECTION_RETRY_DELAY`: Delay between MeshCore reconnection attempts (seconds)
 - `PACKETCAPTURE_HEALTH_CHECK_INTERVAL`: How often to check connection health (seconds)
+- `PACKETCAPTURE_DRAIN_MESSAGES`: When `true` (default), run meshcore auto message fetch so the device message queue is drained; set to `false` for RF packet capture only without pulling stored messages
 
 #### Logging Settings
 - `PACKETCAPTURE_LOG_LEVEL`: Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) - default: `INFO`

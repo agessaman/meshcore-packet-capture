@@ -276,6 +276,9 @@ class PacketCapture:
         self.rf_data_cache = {}
         self.recent_rf_packets = {}
         self.raw_duplicate_window = self.get_env_float('RAW_DUPLICATE_WINDOW', 2.0)
+        # When True (default), call get_msg() on MESSAGES_WAITING to drain the device message queue.
+        # Set PACKETCAPTURE_DRAIN_MESSAGES=false to capture RF packets only without pulling stored mesh messages.
+        self.drain_messages = self.get_env_bool('DRAIN_MESSAGES', True)
         self.packet_count = 0
         
         # Device information
@@ -1331,6 +1334,15 @@ class PacketCapture:
             self.sdk_reconnect_exhausted = False
         self.reset_consecutive_failures("connection")
     
+    async def _start_auto_message_fetching_if_enabled(self):
+        """Start meshcore auto-fetch loop when PACKETCAPTURE_DRAIN_MESSAGES is enabled (default)."""
+        if not self.drain_messages:
+            self.logger.info(
+                "PACKETCAPTURE_DRAIN_MESSAGES is false: skipping auto message fetch (device message queue will not be drained)"
+            )
+            return
+        await self.meshcore.start_auto_message_fetching()
+    
     async def _setup_after_reconnection(self):
         """
         Perform all setup tasks required after a successful reconnection.
@@ -1342,7 +1354,7 @@ class PacketCapture:
         self.cleanup_event_subscriptions()
         # Re-setup event handlers after reconnection
         await self.setup_event_handlers()
-        await self.meshcore.start_auto_message_fetching()
+        await self._start_auto_message_fetching_if_enabled()
     
     def _check_ble_grace_period(self, failure_reason: str = "failed") -> bool:
         """
@@ -3168,8 +3180,8 @@ class PacketCapture:
         # Setup event handlers
         await self.setup_event_handlers()
         
-        # Start auto message fetching
-        await self.meshcore.start_auto_message_fetching()
+        # Start auto message fetching (optional; see PACKETCAPTURE_DRAIN_MESSAGES)
+        await self._start_auto_message_fetching_if_enabled()
         
         self.logger.info("Packet capture is running. Press Ctrl+C to stop.")
         self.logger.info("Waiting for packets...")

@@ -2530,7 +2530,11 @@ class PacketCapture:
             # The advert header is fixed-width: pubkey (32) + timestamp (4) + signature (64).
             if len(payload) < 100:
                 self.logger.error(f"ADVERT payload too short for header: {len(payload)} bytes")
-                return {}
+                return {
+                    "advert_parse_ok": False,
+                    "advert_error": "payload_too_short_header",
+                    "advert_payload_len": len(payload),
+                }
 
             # advert header
             pub_key = payload[0:32]
@@ -2538,6 +2542,7 @@ class PacketCapture:
             signature = payload[36:36+64]
 
             advert = {
+                "advert_parse_ok": True,
                 "public_key": pub_key.hex(),
                 "advert_time": timestamp,
                 "signature": signature.hex(),
@@ -2619,7 +2624,12 @@ class PacketCapture:
             
         except Exception as e:
             self.logger.error(f"Error parsing ADVERT payload: {e}", exc_info=True)
-            return {}
+            return {
+                "advert_parse_ok": False,
+                "advert_error": "exception",
+                "advert_error_detail": str(e),
+                "advert_payload_len": len(payload) if payload is not None else 0,
+            }
 
     def decode_and_publish_message(self, raw_data):
         """Decode message - matches Packet.cpp exactly"""
@@ -2651,6 +2661,12 @@ class PacketCapture:
 
             # MeshCore packs path_len byte: low 6 bits hop count, high 2 bits hash-size mode.
             path_byte_len, path_hash_bytes = self._decode_packed_path_length(path_len_byte)
+            if self.debug:
+                self.logger.debug(
+                    "Decoded path length: "
+                    f"path_len_byte=0x{path_len_byte:02X}, path_byte_len={path_byte_len}, "
+                    f"path_hash_bytes={path_hash_bytes}, offset_after_path_len={offset}"
+                )
             
             # Check if we have enough data for the full path
             if len(byte_data) < offset + path_byte_len:
@@ -2663,6 +2679,10 @@ class PacketCapture:
             
             # Remaining data is payload
             payload = byte_data[offset:]
+            if self.debug:
+                self.logger.debug(
+                    f"Packet layout: packet_len={len(byte_data)}, payload_offset={offset}, payload_len={len(payload)}"
+                )
             
             # Extract payload version (bits 6-7)
             payload_version = PayloadVersion((header >> 6) & 0x03)
@@ -2692,6 +2712,13 @@ class PacketCapture:
             payload_value = {}
             if payload_type is PayloadType.ADVERT:
                 payload_value = self.parse_advert(payload)
+                if not payload_value.get("advert_parse_ok", False):
+                    self.logger.warning(
+                        "Dropping malformed ADVERT packet: "
+                        f"{payload_value.get('advert_error', 'unknown_error')} "
+                        f"(payload_len={payload_value.get('advert_payload_len', len(payload))})"
+                    )
+                    return None
             
             if payload_type is PayloadType.ADVERT:
                 message.update(payload_value)
@@ -2720,13 +2747,31 @@ class PacketCapture:
 
         # Mode 3 => 4 bytes/hop is reserved in firmware; fallback to legacy interpretation.
         if bytes_per_hop == 4:
+            if self.debug:
+                self.logger.debug(
+                    "Path decode fallback to legacy length due to reserved hash-size mode: "
+                    f"path_len_byte=0x{path_len_byte:02X}"
+                )
             return path_len_byte, 1
 
         path_byte_len = hop_count * bytes_per_hop
         if path_byte_len > max_path_size:
             # Invalid packed value; fallback keeps compatibility with legacy one-byte parsing.
+            if self.debug:
+                self.logger.debug(
+                    "Path decode fallback to legacy length due to oversized packed path: "
+                    f"path_len_byte=0x{path_len_byte:02X}, hop_count={hop_count}, "
+                    f"bytes_per_hop={bytes_per_hop}, computed_path_byte_len={path_byte_len}, "
+                    f"max_path_size={max_path_size}"
+                )
             return path_len_byte, 1
 
+        if self.debug:
+            self.logger.debug(
+                "Path decode packed mode: "
+                f"path_len_byte=0x{path_len_byte:02X}, hop_count={hop_count}, "
+                f"bytes_per_hop={bytes_per_hop}, path_byte_len={path_byte_len}"
+            )
         return path_byte_len, bytes_per_hop
 
     def _split_path_hops(self, path_bytes: bytes, bytes_per_hop: int) -> list[str]:

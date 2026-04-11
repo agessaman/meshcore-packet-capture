@@ -125,7 +125,7 @@ Configuration is handled via environment variables and `.env` files. The install
 When enabled, status messages published to MQTT include a `stats` object with battery, uptime, queue depth, and radio runtime metrics refreshed at the configured cadence.
 
 #### MQTT Settings
-The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4). Each broker can be configured independently:
+The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4, MQTT5, MQTT6). Each broker can be configured independently:
 
 **Broker 1 (Primary):**
 - `PACKETCAPTURE_MQTT1_ENABLED`: Enable/disable MQTT broker 1
@@ -142,7 +142,7 @@ The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4). Each brok
 - `PACKETCAPTURE_MQTT1_RETAIN`: Retain messages
 - `PACKETCAPTURE_MQTT1_KEEPALIVE`: Keep-alive interval
 
-**Brokers 2-4:** Same pattern with `MQTT2_`, `MQTT3_`, `MQTT4_` prefixes
+**Brokers 2-6:** Same pattern with `MQTT2_`, `MQTT3_`, `MQTT4_`, `MQTT5_`, `MQTT6_` prefixes
 
 **Global MQTT Settings:**
 - `PACKETCAPTURE_MAX_MQTT_RETRIES`: Maximum MQTT connection retry attempts (0 = infinite)

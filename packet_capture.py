@@ -2234,8 +2234,8 @@ class PacketCapture:
 
     async def connect_mqtt(self):
         """Connect to all configured MQTT brokers"""
-        # Try to connect to MQTT1, MQTT2, MQTT3, MQTT4 (can expand if needed)
-        for broker_num in range(1, 5):
+        # Try to connect to MQTT1, MQTT2, MQTT3, MQTT4, MQTT5, MQTT6 (can expand if needed)
+        for broker_num in range(1, 7):
             client_info = await self.connect_mqtt_broker(broker_num)
             if client_info:
                 self.mqtt_clients.append(client_info)

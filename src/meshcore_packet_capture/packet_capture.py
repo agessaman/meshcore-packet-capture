@@ -847,7 +847,13 @@ class PacketCapture:
             return {"model": "unknown", "version": "unknown"}
     
     def resolve_topic_template(self, template, broker_num=None):
-        """Resolve topic template with {IATA}, {IATA_lower}, and {PUBLIC_KEY} placeholders"""
+        """Resolve topic template placeholders.
+
+        Supported placeholders:
+        - {IATA}, {IATA_lower}
+        - {PUBLIC_KEY}
+        - {TOKEN} (from PACKETCAPTURE_MQTT{n}_TOPIC_TOKEN or PACKETCAPTURE_TOPIC_TOKEN)
+        """
         if not template:
             return template
         
@@ -862,6 +868,12 @@ class PacketCapture:
         resolved = template.replace('{IATA}', iata.upper())  # Uppercase variant
         resolved = resolved.replace('{IATA_lower}', iata.lower())  # Lowercase variant
         resolved = resolved.replace('{PUBLIC_KEY}', self.device_public_key if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE')
+        topic_token = ""
+        if broker_num:
+            topic_token = self.get_env(f'MQTT{broker_num}_TOPIC_TOKEN', '')
+        if not topic_token:
+            topic_token = self.get_env('TOPIC_TOKEN', '')
+        resolved = resolved.replace('{TOKEN}', topic_token)
         return resolved
     
     def is_letsmesh_broker(self, broker_num=None) -> bool:

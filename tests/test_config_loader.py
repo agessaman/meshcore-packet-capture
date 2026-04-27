@@ -55,6 +55,24 @@ def test_flatten_brokers_to_mqtt_slots():
     assert env["PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE"] == "aud"
 
 
+def test_flatten_broker_topic_token():
+    cfg = {
+        "broker": [
+            {
+                "name": "meshrank",
+                "enabled": True,
+                "server": "meshrank.net",
+                "port": 8883,
+                "auth": {"method": "none", "topic_token": "abc123"},
+                "topics": {"packets": "meshrank/uplink/{TOKEN}/{PUBLIC_KEY}/packets"},
+            }
+        ]
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert env["PACKETCAPTURE_MQTT1_TOPIC_TOKEN"] == "abc123"
+    assert env["PACKETCAPTURE_MQTT1_TOPIC_PACKETS"] == "meshrank/uplink/{TOKEN}/{PUBLIC_KEY}/packets"
+
+
 def test_apply_config_respects_existing_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.delenv("PACKETCAPTURE_IATA", raising=False)
     base = tmp_path / "base.toml"

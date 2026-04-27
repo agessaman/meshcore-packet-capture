@@ -69,3 +69,11 @@ def test_decode_path_length_overflow_returns_none(capture: PacketCapture) -> Non
     # claim 10 hops with 1 byte/hop, but only provide 1 byte
     raw_hex = bytes([header, 0x0A, 0xAA]).hex()
     assert capture.decode_and_publish_message(raw_hex) is None
+
+
+def test_resolve_topic_template_replaces_token_placeholder(monkeypatch: pytest.MonkeyPatch, capture: PacketCapture) -> None:
+    capture.global_iata = "sea"
+    capture.device_public_key = "ABCDEF"
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_TOPIC_TOKEN", "tok123")
+    topic = capture.resolve_topic_template("meshrank/uplink/{TOKEN}/{PUBLIC_KEY}/packets", broker_num=1)
+    assert topic == "meshrank/uplink/tok123/ABCDEF/packets"

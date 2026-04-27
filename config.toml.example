@@ -81,3 +81,4 @@ rf_data_timeout = 15.0
 # method = "password"
 # username = ""
 # password = ""
+# topic_token = "" # Optional: used for {TOKEN} placeholder in broker.topics templates

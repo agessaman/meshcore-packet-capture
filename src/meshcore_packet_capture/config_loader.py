@@ -143,6 +143,8 @@ def _broker_to_env_slot(broker: dict[str, Any], slot: int) -> dict[str, str]:
 
     auth = broker.get("auth") or {}
     method = str(auth.get("method", "none")).lower()
+    if "topic_token" in auth:
+        out[prefix + "TOPIC_TOKEN"] = str(auth["topic_token"])
     if method == "token":
         out[prefix + "USE_AUTH_TOKEN"] = "true"
         if "audience" in auth:

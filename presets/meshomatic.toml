@@ -1,0 +1,17 @@
+[[broker]]
+name = "meshomatic"
+enabled = true
+server = "us-east.meshomatic.net"
+port = 443
+transport = "websockets"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "us-east.meshomatic.net"

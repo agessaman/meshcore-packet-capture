@@ -1,0 +1,14 @@
+[[broker]]
+name = "nashmesh"
+enabled = true
+server = "mqtt.nashme.sh"
+port = 1883
+transport = "tcp"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.auth]
+method = "password"
+username = "meshdev"
+password = "large4cats"

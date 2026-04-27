@@ -156,10 +156,33 @@ def enable_tcp_keepalive(transport, idle=10, interval=5, count=3):
 
 
 def load_env_files():
-    """Load environment variables from .env and .env.local files"""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    env_file = os.path.join(script_dir, '.env')
-    env_local_file = os.path.join(script_dir, '.env.local')
+    """Load environment variables from .env and .env.local in one directory.
+
+    Search order: ``MESHCORE_PACKETCAPTURE_ENV_DIR`` if set, else the first of
+    ``os.getcwd()``, the git repo root (parent of ``src/``), or the package
+    directory, that contains either file; if none, use the current working
+    directory (files may be absent).
+    """
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.normpath(os.path.join(pkg_dir, os.pardir, os.pardir))
+    explicit = os.environ.get("MESHCORE_PACKETCAPTURE_ENV_DIR", "").strip()
+    candidates: list[str] = []
+    if explicit:
+        candidates.append(os.path.expanduser(explicit))
+    for d in (os.getcwd(), repo_root, pkg_dir):
+        if d not in candidates:
+            candidates.append(d)
+    chosen = None
+    for d in candidates:
+        if os.path.isfile(os.path.join(d, ".env")) or os.path.isfile(
+            os.path.join(d, ".env.local")
+        ):
+            chosen = d
+            break
+    if chosen is None:
+        chosen = os.getcwd()
+    env_file = os.path.join(chosen, ".env")
+    env_local_file = os.path.join(chosen, ".env.local")
     
     def parse_env_file(filepath):
         """Parse a .env file and return a dictionary"""

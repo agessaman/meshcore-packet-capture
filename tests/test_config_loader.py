@@ -71,3 +71,31 @@ def test_topics_keys_uppercased():
     env = cl.flatten_config_to_env_dict(cfg)
     assert env["PACKETCAPTURE_TOPIC_STATUS"] == "s"
     assert env["PACKETCAPTURE_TOPIC_RAW"] == "r"
+
+
+def test_capture_extended_keys_mapped():
+    cfg = {
+        "capture": {
+            "connection_retry_delay_max": 30,
+            "connection_retry_backoff_multiplier": 1.5,
+            "drain_messages": False,
+            "tcp_keepalive": True,
+            "tcp_keepalive_idle": 60,
+            "binary_interface_enabled": True,
+            "binary_interface_host": "0.0.0.0",
+            "binary_interface_port": 5001,
+            "owner_public_key": "ABC",
+            "owner_email": "u@example.com",
+        }
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert env["PACKETCAPTURE_CONNECTION_RETRY_DELAY_MAX"] == "30"
+    assert env["PACKETCAPTURE_CONNECTION_RETRY_BACKOFF_MULTIPLIER"] == "1.5"
+    assert env["PACKETCAPTURE_DRAIN_MESSAGES"] == "false"
+    assert env["PACKETCAPTURE_TCP_KEEPALIVE_ENABLED"] == "true"
+    assert env["PACKETCAPTURE_TCP_KEEPALIVE_IDLE"] == "60"
+    assert env["PACKETCAPTURE_BINARY_INTERFACE_ENABLED"] == "true"
+    assert env["PACKETCAPTURE_BINARY_INTERFACE_HOST"] == "0.0.0.0"
+    assert env["PACKETCAPTURE_BINARY_INTERFACE_PORT"] == "5001"
+    assert env["PACKETCAPTURE_OWNER_PUBLIC_KEY"] == "ABC"
+    assert env["PACKETCAPTURE_OWNER_EMAIL"] == "u@example.com"

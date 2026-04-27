@@ -46,6 +46,20 @@ mqtt_retry_delay = 5
 jwt_renewal_interval = 3600
 jwt_renewal_threshold = 300
 rf_data_timeout = 15.0
+# Additional runtime controls (optional)
+# connection_retry_delay_max = 300
+# connection_retry_backoff_multiplier = 2.0
+# connection_retry_jitter = true
+# drain_messages = true
+# tcp_keepalive_enabled = true
+# tcp_keepalive_idle = 10
+# tcp_keepalive_interval = 5
+# tcp_keepalive_count = 3
+# binary_interface_enabled = false
+# binary_interface_host = "0.0.0.0"
+# binary_interface_port = 5001
+# owner_public_key = ""
+# owner_email = ""
 
 # [[broker]] blocks merge by name across files. See presets/letsmesh.toml.
 

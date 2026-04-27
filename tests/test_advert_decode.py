@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
 """Advert decode tests (migrated from repo root)."""
-import sys
-import types
 
 import pytest
-
-
-def _install_dependency_stubs() -> None:
-    if "meshcore" not in sys.modules:
-        meshcore_stub = types.ModuleType("meshcore")
-        meshcore_stub.EventType = type("EventType", (), {})
-        sys.modules["meshcore"] = meshcore_stub
-
-    if "paho" not in sys.modules:
-        paho_module = types.ModuleType("paho")
-        mqtt_module = types.ModuleType("paho.mqtt")
-        mqtt_client_module = types.ModuleType("paho.mqtt.client")
-        mqtt_module.client = mqtt_client_module
-        paho_module.mqtt = mqtt_module
-        sys.modules["paho"] = paho_module
-        sys.modules["paho.mqtt"] = mqtt_module
-        sys.modules["paho.mqtt.client"] = mqtt_client_module
-
-
-_install_dependency_stubs()
 
 from meshcore_packet_capture.enums import PayloadType, PayloadVersion, RouteType
 from meshcore_packet_capture.packet_capture import PacketCapture

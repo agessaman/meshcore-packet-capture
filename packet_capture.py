@@ -6,17 +6,20 @@ Captures packets from MeshCore radios and outputs to console, file, and MQTT.
 Compatible with both serial and BLE connections.
 
 Usage:
-    python packet_capture.py [--output output.json] [--verbose] [--debug] [--no-mqtt]
+    python packet_capture.py [--output output.json] [--verbose] [--debug] [--no-mqtt] [--config PATH ...]
 
 Options:
     --output     Output file for packet data
     --verbose    Show JSON packet data
     --debug      Show detailed debugging info
     --no-mqtt    Disable MQTT publishing
+    --config     TOML only (repeatable); default loads /etc/meshcore-packet-capture/
 
 The script captures packet metadata including SNR, RSSI, route type, payload type,
-and raw hex data. Configuration is done via environment variables and .env files.
+and raw hex data. Configuration is done via environment variables, .env files, and TOML under /etc.
 """
+
+__version__ = "2.0.0"
 
 import asyncio
 import json
@@ -46,6 +49,11 @@ except ImportError:
     exit(1)
 
 # Import auth token module
+try:
+    from config_loader import apply_config_to_environ
+except ImportError:
+    apply_config_to_environ = None  # type: ignore
+
 try:
     from auth_token import create_auth_token, create_auth_token_async, read_private_key_file
 except ImportError:
@@ -196,14 +204,26 @@ def load_env_files():
     return env_vars
 
 
-# Load environment configuration
-load_env_files()
+_environment_initialized = False
+
+
+def init_environment(config_paths: list[str] | None = None) -> None:
+    """Load .env files, then TOML (/etc or --config paths). Process env wins over files."""
+    global _environment_initialized
+    load_env_files()
+    if apply_config_to_environ is not None:
+        apply_config_to_environ(config_paths)
+    _environment_initialized = True
 
 
 class PacketCapture:
     """Standalone packet capture using meshcore package"""
     
     def __init__(self, output_file: Optional[str] = None, verbose: bool = False, debug: bool = False, enable_mqtt: bool = True, shutdown_event=None):
+        global _environment_initialized
+        if not _environment_initialized:
+            init_environment(None)
+
         self.output_file = output_file
         self.verbose = verbose
         self.debug = debug
@@ -415,10 +435,15 @@ class PacketCapture:
         """Get the path to the state file for persisting last_advert_time.
         
         Works across all installation methods:
+        - PACKETCAPTURE_DATA_DIR: explicit directory (FHS / systemd)
         - Docker: Uses /app/data/ (mounted volume)
         - NixOS: Uses cfg.dataDir (working directory)
         - Systemd: Uses script directory or data subdirectory
         """
+        configured = self.get_env('DATA_DIR', '').strip()
+        if configured:
+            return os.path.join(configured, 'advert_state.json')
+
         script_dir = os.path.dirname(os.path.abspath(__file__))
         
         # Try data subdirectory first (works for Docker and if created)
@@ -3482,9 +3507,17 @@ async def main():
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output (shows JSON packet data)')
     parser.add_argument('--debug', action='store_true', help='Enable debug output (shows all detailed debugging info)')
     parser.add_argument('--no-mqtt', action='store_true', help='Disable MQTT publishing')
-    
+    parser.add_argument(
+        '--config',
+        action='append',
+        dest='config_files',
+        metavar='PATH',
+        help='TOML config file (repeatable). If set, only these files are loaded, not /etc defaults.',
+    )
+
     args = parser.parse_args()
-    
+    init_environment(args.config_files if args.config_files else None)
+
     # Command line arguments will be handled after PacketCapture instantiation
     
     # Setup signal handlers for graceful shutdown

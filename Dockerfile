@@ -36,8 +36,11 @@ RUN mkdir -p "$NVM_DIR" && \
     && npm install -g @michaelhart/meshcore-decoder \
     && ln -s "$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node | head -1)/bin/"* /usr/local/bin/
 
-# Copy application files
-COPY --chown=meshcore:meshcore packet_capture.py enums.py auth_token.py ./
+# Copy application files and TOML defaults (env vars still override at runtime)
+COPY --chown=meshcore:meshcore packet_capture.py enums.py auth_token.py config_loader.py ./
+RUN mkdir -p /etc/meshcore-packet-capture/config.d
+COPY --chown=root:root config.toml.example /etc/meshcore-packet-capture/config.toml
+COPY presets/letsmesh.toml /etc/meshcore-packet-capture/config.d/10-letsmesh.toml
 
 # Create data directory for output files
 RUN mkdir -p /app/data && chown -R meshcore:meshcore /app
@@ -48,6 +51,7 @@ USER meshcore
 # Set default environment variables
 # Note: These are defaults - override in docker-compose.yml or .env.local
 ENV PACKETCAPTURE_CONNECTION_TYPE=serial \
+    PACKETCAPTURE_DATA_DIR=/app/data \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 

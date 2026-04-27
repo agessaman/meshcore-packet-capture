@@ -1,0 +1,1011 @@
+"""System operations: subprocess wrappers, user/service management, serial detection."""
+
+from __future__ import annotations
+
+import json
+import os
+import platform
+import pwd
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from . import parse_version_tuple
+from .ui import (
+    print_error,
+    print_header,
+    print_info,
+    print_success,
+    print_warning,
+    prompt_input,
+    prompt_yes_no,
+)
+
+if TYPE_CHECKING:
+    from . import InstallerContext
+
+
+# ---------------------------------------------------------------------------
+# Subprocess helpers
+# ---------------------------------------------------------------------------
+
+def run_cmd(
+    cmd: list[str] | str,
+    *,
+    check: bool = True,
+    capture: bool = False,
+    shell: bool = False,
+    **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command, optionally capturing output."""
+    return subprocess.run(
+        cmd,
+        check=check,
+        capture_output=capture,
+        text=True,
+        shell=shell,
+        **kwargs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Network helpers
+# ---------------------------------------------------------------------------
+
+def http_get(url: str, timeout: int = 30) -> bytes | None:
+    """Make an HTTP GET request and return the response body."""
+    import urllib.request
+    import urllib.error
+
+    req = urllib.request.Request(url, headers={"User-Agent": "meshcore-packet-capture-installer"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def check_piwheels_available(package_name: str) -> bool:
+    """Check if a wheel for the current platform is available on piwheels.org."""
+    import sys
+
+    url = f"https://www.piwheels.org/project/{package_name}/json/"
+    data_bytes = http_get(url)
+    if not data_bytes:
+        return False
+
+    try:
+        data = json.loads(data_bytes)
+        # Get major.minor version e.g. "3.11" -> "311"
+        py_ver = f"{sys.version_info.major}{sys.version_info.minor}"
+        uname = platform.uname()
+        system = uname.system.lower()
+        machine = uname.machine.lower()
+
+        # Construct target platform string (e.g., linux_armv7l, linux_armv6l, linux_aarch64)
+        target_platform = f"{system}_{machine}"
+
+        for version, ver_data in data.get("releases", {}).items():
+            files = ver_data.get("files", {})
+            for filename, file_info in files.items():
+                # Check for matching python version and platform tags
+                # Use metadata from file_info if available, else parse filename
+                file_abi = file_info.get("file_abi_tag", "")
+                file_platform = file_info.get("platform", "")
+
+                if not file_abi or not file_platform:
+                    # Fallback to filename parsing if metadata is missing
+                    if f"cp{py_ver}" in filename and target_platform in filename:
+                        return True
+                elif f"cp{py_ver}" == file_abi and target_platform == file_platform:
+                    return True
+    except (json.JSONDecodeError, KeyError):
+        pass
+
+    return False
+
+
+def detect_linux_distro() -> tuple[str | None, str | None]:
+    """Detect Linux distribution ID and ID_LIKE from /etc/os-release."""
+    os_release = Path("/etc/os-release")
+    if not os_release.exists():
+        return None, None
+
+    dist_id = None
+    dist_like = None
+    try:
+        content = os_release.read_text()
+        for line in content.splitlines():
+            if line.startswith("ID="):
+                dist_id = line.split("=")[1].strip('"').lower()
+            elif line.startswith("ID_LIKE="):
+                dist_like = line.split("=")[1].strip('"').lower()
+    except OSError:
+        pass
+    return dist_id, dist_like
+
+
+def install_os_build_deps() -> bool:
+    """Check for and optionally install OS build dependencies for C extensions."""
+    # Check if we already have the necessary tools
+    cc_present = shutil.which("cc") or shutil.which("gcc")
+    make_present = shutil.which("make")
+
+    if cc_present and make_present:
+        print_success("Build tools (C compiler and make) are already installed")
+        return True
+
+    print_warning("Build tools (C compiler and make) are missing")
+    print_info("These may be required to install ed25519-orlp.")
+
+    # Check for pre-compiled wheel fallback
+    if check_piwheels_available("ed25519-orlp"):
+        print_success("A pre-compiled wheel was found on piwheels.org for this platform, so build tools may not be needed")
+        if not prompt_yes_no("Install build tools anyway?", "n"):
+            print_info("Skipping toolchain installation (expecting pip to use pre-compiled wheel)")
+            return True
+
+    # Distro-specific package names
+    distro_deps = {
+        "debian": ("apt-get", ["build-essential", "python3-dev"]),
+        "ubuntu": ("apt-get", ["build-essential", "python3-dev"]),
+        "raspbian": ("apt-get", ["build-essential", "python3-dev"]),
+        "arch": ("pacman", ["-S", "--needed", "base-devel"]),
+        "fedora": ("dnf", ["install", "gcc", "python3-devel", "make"]),
+        "rhel": ("dnf", ["install", "gcc", "python3-devel", "make"]),
+        "centos": ("dnf", ["install", "gcc", "python3-devel", "make"]),
+        "alpine": ("apk", ["add", "--no-cache", "build-base", "python3-dev"]),
+    }
+
+    dist_id, dist_like = detect_linux_distro()
+
+    # Try ID first, then fall back to ID_LIKE
+    target_distro = None
+    if dist_id in distro_deps:
+        target_distro = dist_id
+    elif dist_like:
+        # ID_LIKE can be a space-separated list
+        for like in dist_like.split():
+            if like in distro_deps:
+                target_distro = like
+                break
+
+    if not target_distro:
+        # If we aren't on a recognized Linux distro, don't try to install anything
+        if platform.system() == "Linux":
+            print_warning(f"Unsupported or unrecognized distribution: {dist_id or 'unknown'} (like: {dist_like or 'none'})")
+
+        print_info("Please manually install a C toolchain and Python headers if the installation fails.")
+        return False
+
+    pkg_manager, args = distro_deps[target_distro]
+    pkg_list = " ".join(args)
+
+    print_info(f"Detected distribution: {dist_id or 'unknown'} (supported via: {target_distro})")
+    if prompt_yes_no(f"Install build dependencies ({pkg_list}) via {pkg_manager}?", "y"):
+        try:
+            if pkg_manager == "apt-get":
+                run_cmd(["apt-get", "update", "-qq"], check=True)
+                run_cmd(["apt-get", "install", "-y", "-qq"] + args, check=True)
+            elif pkg_manager == "pacman":
+                run_cmd(["pacman", "-Sy", "--noconfirm"] + args[1:], check=True)
+            else:
+                run_cmd([pkg_manager] + args + ["-y"], check=True)
+            print_success("Build dependencies installed successfully")
+            return True
+        except subprocess.CalledProcessError as e:
+            print_error(f"Failed to install build dependencies: {e}")
+            return False
+
+    return False
+
+
+def require_root() -> None:
+    """Verify the installer is running as root."""
+    if os.getuid() != 0:
+        print_error("This installer must be run as root.")
+        print_info("Re-run with: sudo python3 -m installer ...")
+        raise SystemExit(1)
+
+
+def chown_recursive(path: str, user: str, group: str) -> None:
+    """Recursively chown a directory tree."""
+    shutil.chown(path, user, group)
+    for dirpath, dirnames, filenames in os.walk(path):
+        for d in dirnames:
+            shutil.chown(os.path.join(dirpath, d), user, group)
+        for f in filenames:
+            shutil.chown(os.path.join(dirpath, f), user, group)
+
+
+# ---------------------------------------------------------------------------
+# File download
+# ---------------------------------------------------------------------------
+
+def download_file(url: str, dest: str, name: str) -> None:
+    """Download a file with curl and retry."""
+    print_info(f"Downloading {name}...")
+    run_cmd(
+        ["curl", "-fsSL", "--retry", "3", "--retry-delay", "2", url, "-o", dest],
+        check=True,
+    )
+
+
+def download_repo_archive(repo: str, branch: str, dest_dir: str) -> str:
+    """Download and extract a GitHub repo zip archive.
+
+    Downloads the archive from GitHub, extracts it, and returns the path
+    to the extracted repo root directory.
+
+    Args:
+        repo: GitHub repo in "owner/name" format.
+        branch: Branch or tag name to download.
+        dest_dir: Directory to extract into.
+
+    Returns:
+        Path to the extracted repo root (e.g., dest_dir/meshcoretomqtt-main/).
+    """
+    # TODO: Switch to downloading GitHub Releases once CI/CD is set up
+    # to create tagged releases. For now, download the branch archive.
+    archive_url = f"https://github.com/{repo}/archive/refs/heads/{branch}.zip"
+    zip_path = os.path.join(dest_dir, "repo.zip")
+
+    print_info(f"Downloading repository archive ({repo} @ {branch})...")
+    run_cmd(
+        ["curl", "-fsSL", "--retry", "3", "--retry-delay", "2",
+         "-o", zip_path, archive_url],
+        check=True,
+    )
+
+    print_info("Extracting archive...")
+    import zipfile
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(dest_dir)
+
+    os.unlink(zip_path)
+
+    # GitHub archives extract to {repo_name}-{branch}/ with '/' replaced by '-'
+    repo_name = repo.split("/")[-1]
+    branch_sanitized = branch.replace("/", "-")
+    extracted_dir = os.path.join(dest_dir, f"{repo_name}-{branch_sanitized}")
+    if not os.path.isdir(extracted_dir):
+        # Fallback: find the single extracted directory
+        entries = [
+            e for e in os.listdir(dest_dir)
+            if os.path.isdir(os.path.join(dest_dir, e))
+        ]
+        if len(entries) == 1:
+            extracted_dir = os.path.join(dest_dir, entries[0])
+        else:
+            raise RuntimeError(
+                f"Could not determine extracted directory in {dest_dir}: {entries}"
+            )
+
+    print_success("Repository archive extracted")
+    return extracted_dir
+
+
+# ---------------------------------------------------------------------------
+# Service user management
+# ---------------------------------------------------------------------------
+
+def detect_service_user(ctx: InstallerContext) -> str:
+    """Detect the service user for an existing installation.
+
+    For 1.1+ installs, reads the User= from the existing systemd unit
+    (the user chose that account in a previous 1.1+ install).
+    Also checks /etc/passwd for a user whose home directory matches the
+    install directory (how create_system_user sets up accounts).
+    For pre-1.1 installs, returns the default ('meshcore-packet-capture') since those
+    ran as the user's own account and should be migrated.
+    """
+    default = ctx.svc_user  # "meshcore-packet-capture"
+    unit_user: str | None = None
+    passwd_user: str | None = None
+
+    # Only inherit from existing unit if this is a 1.1+ install
+    version_info_path = Path(ctx.install_dir) / ".version_info"
+    if version_info_path.exists():
+        try:
+            info = json.loads(version_info_path.read_text())
+            installed_version = info.get("installer_version", "0")
+            if parse_version_tuple(installed_version) >= (1, 1):
+                unit_path = Path("/etc/systemd/system/meshcore-packet-capture.service")
+                if unit_path.exists():
+                    for line in unit_path.read_text().splitlines():
+                        if line.startswith("User="):
+                            unit_user = line.split("=", 1)[1].strip()
+                            break
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass  # Corrupted or unreadable — skip
+
+    # Check /etc/passwd for a user whose home dir matches the install dir
+    try:
+        for entry in pwd.getpwall():
+            if entry.pw_dir == ctx.install_dir:
+                passwd_user = entry.pw_name
+                break
+    except (KeyError, OSError):
+        pass
+
+    # Resolve: prefer unit_user, fall back to passwd_user, then default
+    if unit_user and passwd_user and unit_user != passwd_user:
+        if ctx.update_mode:
+            print_warning(
+                f"Systemd unit user '{unit_user}' differs from "
+                f"passwd user '{passwd_user}' — using '{passwd_user}'"
+            )
+            return passwd_user
+        choice = prompt_input(
+            f"Systemd unit user is '{unit_user}' but passwd user "
+            f"is '{passwd_user}'. Which should be used?",
+            passwd_user,
+        )
+        return choice
+
+    if unit_user:
+        return unit_user
+    if passwd_user:
+        return passwd_user
+    return default
+
+
+def prompt_service_user(ctx: InstallerContext) -> str:
+    """Prompt for the service account username and return it.
+
+    Uses detect_service_user() to determine the default, then prompts
+    the user to confirm or change it.
+    """
+    default = detect_service_user(ctx)
+
+    username = prompt_input("Service account username", default)
+    # Sanitize: lowercase, strip spaces
+    username = username.lower().replace(" ", "")
+    return username or default
+
+
+def create_system_user(svc_user: str, install_dir: str) -> None:
+    """Create a system user for the service (Linux only)."""
+    result = run_cmd(["getent", "group", svc_user], check=False, capture=True)
+    if result.returncode != 0:
+        print_info(f"Creating system group '{svc_user}'...")
+        run_cmd(["groupadd", "--system", svc_user])
+        print_success(f"System group '{svc_user}' created")
+
+    # Check if user already exists
+    result = run_cmd(["id", svc_user], check=False, capture=True)
+    if result.returncode == 0:
+        print_success(f"Service user '{svc_user}' already exists")
+    else:
+        print_info(f"Creating system user '{svc_user}'...")
+        run_cmd([
+            "useradd", "--system", "--no-create-home",
+            "--shell", "/usr/sbin/nologin",
+            "--home-dir", install_dir,
+            "--gid", svc_user,
+            svc_user,
+        ])
+        print_success(f"System user '{svc_user}' created")
+
+    # Add to serial device group
+    if platform.system() == "Linux":
+        is_arch = Path("/etc/arch-release").exists()
+        group = "uucp" if is_arch else "dialout"
+        # Check group exists
+        result = run_cmd(["getent", "group", group], check=False, capture=True)
+        if result.returncode == 0:
+            run_cmd(["usermod", "-aG", group, svc_user])
+            print_success(f"Added '{svc_user}' to '{group}' group (serial access)")
+
+
+# ---------------------------------------------------------------------------
+# Permissions
+# ---------------------------------------------------------------------------
+
+def set_permissions(install_dir: str, config_dir: str, svc_user: str) -> None:
+    """Set directory ownership and permissions."""
+    # /opt/meshcore-packet-capture owned by svc_user:svc_user
+    chown_recursive(install_dir, svc_user, svc_user)
+    print_success(f"{install_dir} owned by {svc_user}:{svc_user}")
+
+    # /etc/meshcore-packet-capture owned by root:svc_user, mode 755 (world-readable)
+    chown_recursive(config_dir, "root", svc_user)
+    os.chmod(config_dir, 0o755)
+    config_d = Path(config_dir) / "config.d"
+    if config_d.exists():
+        os.chmod(str(config_d), 0o755)
+
+    config_toml = Path(config_dir) / "config.toml"
+    if config_toml.exists():
+        os.chmod(str(config_toml), 0o644)
+
+    for override in config_d.glob("*.toml") if config_d.exists() else []:
+        os.chmod(str(override), 0o644)
+
+    print_success(f"Permissions set on {config_dir} (root:{svc_user}, 755/644)")
+
+
+# ---------------------------------------------------------------------------
+# Docker helpers
+# ---------------------------------------------------------------------------
+
+GHCR_IMAGE = "ghcr.io/agessaman/meshcore-packet-capture:latest"
+LOCAL_IMAGE = "meshcore-packet-capture:latest"
+
+
+def docker_cmd() -> str | None:
+    """Return 'docker' if the daemon is reachable, or None."""
+    result = run_cmd(["docker", "info"], check=False, capture=True)
+    if result.returncode == 0:
+        return "docker"
+    return None
+
+
+def pull_or_build_docker_image(ctx: InstallerContext) -> str | None:
+    """Pull image from GHCR or fall back to a local build. Returns image name or None."""
+    print_info("Attempting to pull image from registry...")
+    result = run_cmd(["docker", "pull", GHCR_IMAGE], check=False, capture=True)
+    if result.returncode == 0:
+        print_success("Image pulled successfully from registry")
+        run_cmd(["docker", "tag", GHCR_IMAGE, LOCAL_IMAGE], check=False)
+        return LOCAL_IMAGE
+
+    print_warning("Failed to pull image from registry (network issue or image not available)")
+    print_info("Falling back to local build...")
+
+    dockerfile_path = Path(ctx.install_dir) / "Dockerfile"
+    if not dockerfile_path.exists():
+        if ctx.repo_dir:
+            src = Path(ctx.repo_dir) / "Dockerfile"
+            if src.exists():
+                shutil.copy2(str(src), str(dockerfile_path))
+            else:
+                print_error("Dockerfile not found in repository archive")
+                return None
+        else:
+            print_error("No repository archive available for Dockerfile")
+            return None
+
+    print_info(f"Building {LOCAL_IMAGE} image...")
+    print()
+    result = run_cmd(["docker", "build", "-t", LOCAL_IMAGE, ctx.install_dir], check=False)
+    if result.returncode != 0:
+        print_error("Failed to build Docker image")
+        return None
+    print_success("Docker image built successfully")
+    print()
+    return LOCAL_IMAGE
+
+
+# ---------------------------------------------------------------------------
+# Serial device detection
+# ---------------------------------------------------------------------------
+
+def detect_serial_devices() -> list[str]:
+    """Detect available serial devices."""
+    devices: list[str] = []
+
+    if platform.system() == "Darwin":
+        # macOS: Use /dev/cu.* devices
+        for pattern in ("cu.usb*", "cu.wchusbserial*", "cu.SLAB_USBtoUART*"):
+            devices.extend(str(p) for p in sorted(Path("/dev").glob(pattern)))
+    else:
+        # Linux: Prefer /dev/serial/by-id/ for persistent naming
+        by_id = Path("/dev/serial/by-id")
+        if by_id.is_dir():
+            devices.extend(str(p) for p in sorted(by_id.iterdir()))
+
+        # Also check /dev/ttyACM* and /dev/ttyUSB*
+        resolved_existing = set()
+        for d in devices:
+            try:
+                resolved_existing.add(str(Path(d).resolve()))
+            except OSError:
+                pass
+
+        for pattern in ("ttyACM*", "ttyUSB*"):
+            for p in sorted(Path("/dev").glob(pattern)):
+                if str(p.resolve()) not in resolved_existing:
+                    devices.append(str(p))
+
+    return devices
+
+
+def select_serial_device() -> str:
+    """Interactive device selection. Returns selected path."""
+    devices = detect_serial_devices()
+
+    print()
+    print_header("Serial Device Selection")
+    print()
+
+    if not devices:
+        print_warning("No serial devices detected")
+        print()
+        print("  1) Enter path manually")
+        print()
+        prompt_input("Select option [1]", "1")
+        return prompt_input("Enter serial device path", "/dev/ttyACM0")
+
+    label = "1 serial device" if len(devices) == 1 else f"{len(devices)} serial devices"
+    print_info(f"Found {label}:")
+    print()
+
+    for i, device in enumerate(devices, 1):
+        if platform.system() != "Darwin" and device.startswith("/dev/serial/by-id/"):
+            try:
+                resolved = str(Path(device).resolve())
+                info = f"{device} -> {resolved}"
+            except OSError:
+                info = device
+        else:
+            info = device
+        print(f"  {i}) {info}")
+
+    manual_idx = len(devices) + 1
+    print(f"  {manual_idx}) Enter path manually")
+    print()
+
+    while True:
+        choice = prompt_input(f"Select device [1-{manual_idx}]", "1")
+        if choice.isdigit() and 1 <= int(choice) <= manual_idx:
+            idx = int(choice)
+            if idx == manual_idx:
+                return prompt_input("Enter serial device path", "/dev/ttyACM0")
+            return devices[idx - 1]
+        print_error(f"Invalid selection. Please enter a number between 1 and {manual_idx}")
+
+
+# ---------------------------------------------------------------------------
+# System type detection
+# ---------------------------------------------------------------------------
+
+def detect_system_type(install_dir: str) -> str:
+    """Detect installation type from marker file or running services."""
+    marker = Path(install_dir) / ".install_type"
+    if marker.exists():
+        return marker.read_text().strip()
+
+    # Fallback: detect from running services
+    docker = docker_cmd()
+    if docker:
+        result = run_cmd(
+            ["docker", "ps", "-a"],
+            check=False, capture=True,
+        )
+        if result.returncode == 0 and "meshcore-packet-capture" in result.stdout:
+            return "docker"
+
+    # systemd
+    result = run_cmd(
+        ["systemctl", "is-active", "--quiet", "meshcore-packet-capture.service"],
+        check=False,
+    )
+    if result.returncode == 0:
+        return "systemd"
+    if Path("/etc/systemd/system/meshcore-packet-capture.service").exists():
+        return "systemd"
+
+    # launchd
+    if platform.system() == "Darwin":
+        result = run_cmd(["launchctl", "list"], check=False, capture=True)
+        if result.returncode == 0 and "com.meshcore.meshcore_packet_capture" in result.stdout:
+            return "launchd"
+        if Path("/Library/LaunchDaemons/com.meshcore.meshcore_packet_capture.plist").exists():
+            return "launchd"
+
+    # Native fallback
+    if shutil.which("systemctl"):
+        return "systemd"
+    if platform.system() == "Darwin":
+        return "launchd"
+    return "unknown"
+
+
+def detect_system_type_native() -> str:
+    """Detect native system type (ignores existing Docker/services)."""
+    if shutil.which("systemctl"):
+        return "systemd"
+    if platform.system() == "Darwin":
+        return "launchd"
+    return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Service health check
+# ---------------------------------------------------------------------------
+
+def check_service_health(service_type: str) -> None:
+    """Wait briefly and check if the service started successfully."""
+    import time
+
+    print_info("Waiting for service to start...")
+    time.sleep(5)
+
+    if service_type == "docker":
+        result = run_cmd(["docker", "logs", "meshcore-packet-capture"], check=False, capture=True)
+        ps_result = run_cmd(["docker", "ps"], check=False, capture=True)
+        if ps_result.returncode == 0 and "meshcore-packet-capture" in ps_result.stdout:
+            if "connected to" in result.stdout.lower() or "connected to" in result.stderr.lower():
+                print_success("Container started and connected successfully")
+            else:
+                print_warning("Container started but may not be connected yet")
+        print()
+        print_info("Recent logs:")
+        # Show last 10 lines
+        lines = (result.stdout + result.stderr).strip().splitlines()[-10:]
+        for line in lines:
+            print(f"  {line}")
+
+    elif service_type == "systemd":
+        result = run_cmd(
+            ["systemctl", "is-active", "--quiet", "meshcore-packet-capture.service"],
+            check=False,
+        )
+        log_result = run_cmd(
+            ["journalctl", "-u", "meshcore-packet-capture.service", "-n", "10", "--no-pager"],
+            check=False, capture=True,
+        )
+        if result.returncode == 0 and "connected to" in log_result.stdout.lower():
+            print_success("Service started and connected successfully")
+        else:
+            print_warning("Service started but may not be connected yet")
+        print()
+        print_info("Recent logs:")
+        for line in log_result.stdout.strip().splitlines()[-10:]:
+            print(f"  {line}")
+
+    elif service_type == "launchd":
+        result = run_cmd(["launchctl", "list"], check=False, capture=True)
+        if "com.meshcore.meshcore_packet_capture" in result.stdout:
+            print_success("Service started successfully")
+        else:
+            print_error("Service may not be running")
+        print()
+        print_info("Recent logs:")
+        log_path = Path("/var/log/meshcore-packet-capture.log")
+        if log_path.exists():
+            lines = log_path.read_text().strip().splitlines()[-10:]
+            for line in lines:
+                print(f"  {line}")
+        else:
+            print_info("No logs available yet")
+
+
+# ---------------------------------------------------------------------------
+# Service installation
+# ---------------------------------------------------------------------------
+
+def install_systemd_service(
+    install_dir: str,
+    config_dir: str,
+    svc_user: str,
+    *,
+    is_update: bool = False,
+    auto: bool = False,
+    service_name: str = "meshcore-packet-capture",
+) -> bool:
+    """Install/update a systemd service. Returns True if installed."""
+    print_info("Installing systemd service...")
+
+    unit_file = f"{service_name}.service"
+    service_exists = False
+    service_was_enabled = False
+    service_was_running = False
+    unit_path = Path(f"/etc/systemd/system/{unit_file}")
+
+    if unit_path.exists():
+        service_exists = True
+        print_info("Existing service detected - will update")
+
+        r = run_cmd(["systemctl", "is-enabled", unit_file], check=False, capture=True)
+        service_was_enabled = r.returncode == 0
+
+        r = run_cmd(["systemctl", "is-active", unit_file], check=False, capture=True)
+        if r.returncode == 0:
+            service_was_running = True
+            print_info("Stopping running service...")
+            run_cmd(["systemctl", "stop", unit_file])
+
+    # Generate unit file from template or from scratch
+    template_path = Path(install_dir) / "meshcore-packet-capture.service"
+
+    if template_path.exists():
+        content = template_path.read_text()
+        import re
+        content = re.sub(r"^User=.*$", f"User={svc_user}", content, flags=re.MULTILINE)
+        content = re.sub(r"^Group=.*$", f"Group={svc_user}", content, flags=re.MULTILINE)
+        print_info(f"Generated systemd unit from template (User={svc_user})")
+    else:
+        content = f"""[Unit]
+Description=MeshCore Packet Capture
+After=time-sync.target network-online.target
+Wants=time-sync.target network-online.target
+
+[Service]
+Type=exec
+User={svc_user}
+Group={svc_user}
+WorkingDirectory={install_dir}
+ExecStart={install_dir}/venv/bin/python3 {install_dir}/packet_capture.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={install_dir} /var/lib/meshcore-packet-capture
+
+[Install]
+WantedBy=multi-user.target
+"""
+        print_info(f"Generated systemd unit (User={svc_user})")
+
+    print_info("Installing service file...")
+    try:
+        unit_path.write_text(content)
+    except OSError:
+        print_error("Failed to install service file")
+        return False
+
+    run_cmd(["systemctl", "daemon-reload"])
+
+    if service_exists:
+        if service_was_enabled:
+            run_cmd(["systemctl", "enable", unit_file])
+            print_success("Service re-enabled")
+        if service_was_running:
+            print_info("Restarting service...")
+            run_cmd(["systemctl", "start", unit_file])
+            check_service_health("systemd")
+        print_success("Systemd service updated")
+    else:
+        if auto or prompt_yes_no("Enable service to start on boot?", "y"):
+            run_cmd(["systemctl", "enable", unit_file])
+            print_success("Service enabled")
+        if auto or prompt_yes_no("Start service now?", "y"):
+            run_cmd(["systemctl", "start", unit_file])
+            check_service_health("systemd")
+        print_success("Systemd service installed")
+
+    return True
+
+
+def install_launchd_service(
+    install_dir: str,
+    config_dir: str,
+    *,
+    is_update: bool = False,
+    auto: bool = False,
+    plist_label: str = "com.meshcore.meshcore_packet_capture",
+) -> bool:
+    """Install a launchd service (macOS). Returns True if installed."""
+    print_info("Installing launchd service...")
+
+    plist_dest = f"/Library/LaunchDaemons/{plist_label}.plist"
+    template = Path(install_dir) / "com.meshcore.meshcore_packet_capture.plist"
+
+    if template.exists():
+        print_info("Installing plist from template...")
+        shutil.copy2(str(template), plist_dest)
+    else:
+        plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{plist_label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{install_dir}/venv/bin/python3</string>
+        <string>{install_dir}/packet_capture.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{install_dir}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/meshcore-packet-capture.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/meshcore-packet-capture-error.log</string>
+</dict>
+</plist>
+"""
+        Path(plist_dest).write_text(plist_content)
+
+    shutil.chown(plist_dest, "root", "wheel")
+    os.chmod(plist_dest, 0o644)
+
+    if auto or prompt_yes_no("Load service now?", "y"):
+        run_cmd(["launchctl", "load", plist_dest])
+        print_success("Service loaded")
+
+    print_success("Launchd service installed to /Library/LaunchDaemons/")
+    return True
+
+
+def install_docker_service(ctx: InstallerContext) -> bool:
+    """Install Docker container. Returns True if installed."""
+    print_info("Setting up Docker installation...")
+
+    if not shutil.which("docker"):
+        print_error("Docker is not installed. Please install Docker first:")
+        print("  macOS: https://docs.docker.com/desktop/install/mac-install/")
+        print("  Linux: https://docs.docker.com/engine/install/")
+        return False
+
+    docker = docker_cmd()
+    if docker is None:
+        print_error("Docker daemon is not running. Please start Docker and try again.")
+        return False
+
+    result = run_cmd(["docker", "--version"], capture=True)
+    print_success(f"Docker found: {result.stdout.strip()}")
+
+    print_header("Docker Image Setup")
+
+    image = pull_or_build_docker_image(ctx)
+    if image is None:
+        return False
+
+    # Get serial device from the user override file
+    serial_device = "/dev/ttyACM0"
+    user_toml = Path(ctx.config_dir) / "config.d" / "99-user.toml"
+    if not user_toml.exists():
+        user_toml = Path(ctx.config_dir) / "config.d" / "00-user.toml"
+    if user_toml.exists():
+        import re
+        match = re.search(r'^\s*ports\s*=\s*\["([^"]+)"', user_toml.read_text(), re.MULTILINE)
+        if match:
+            serial_device = match.group(1)
+
+    # Build docker run command
+    parts = [
+        "docker", "run", "-d", "--name", "meshcore-packet-capture", "--restart", "unless-stopped",
+        "-v", f"{ctx.config_dir}:/etc/meshcore-packet-capture:ro",
+    ]
+    if Path(serial_device).exists():
+        parts.append(f"--device={serial_device}")
+    else:
+        print_warning(f"Serial device {serial_device} not found - container will start but may not connect")
+    parts.append(image)
+
+    print()
+    print_info("Docker run command:")
+    print(f"  {' '.join(parts)}")
+    print()
+
+    if prompt_yes_no("Start Docker container now?", "y"):
+        # Remove existing container if present
+        ps_result = run_cmd(["docker", "ps", "-a"], check=False, capture=True)
+        if ps_result.returncode == 0 and "meshcore-packet-capture" in ps_result.stdout:
+            print_info("Removing existing meshcore-packet-capture container...")
+            run_cmd(["docker", "rm", "-f", "meshcore-packet-capture"], check=False)
+
+        result = run_cmd(parts, check=False)
+        if result.returncode == 0:
+            print_success("Docker container started")
+            check_service_health("docker")
+        else:
+            print_error("Failed to start Docker container")
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Python venv
+# ---------------------------------------------------------------------------
+
+def cleanup_legacy_nvm(install_dir: str) -> None:
+    """Offer to remove the legacy .nvm/ directory left behind by pre-1.2 installs.
+
+    Older installers ran meshcore-decoder via Node.js and placed NVM under
+    {install_dir}/.nvm/. The Python ed25519-orlp replacement makes that
+    tree obsolete; prompt the user before deleting it.
+    """
+    nvm_dir = Path(install_dir) / ".nvm"
+    if not nvm_dir.is_dir():
+        return
+
+    print_info(f"Legacy Node.js/NVM directory found at {nvm_dir}")
+    print_info("This is no longer used (meshcore-decoder was replaced by ed25519-orlp).")
+    if prompt_yes_no(f"Remove {nvm_dir}?", "y"):
+        shutil.rmtree(str(nvm_dir), ignore_errors=True)
+        if nvm_dir.exists():
+            print_warning(f"Failed to fully remove {nvm_dir} - please remove manually")
+        else:
+            print_success(f"Removed {nvm_dir}")
+    else:
+        print_info(f"Keeping {nvm_dir}")
+
+
+def create_venv(install_dir: str, svc_user: str) -> None:
+    """Create Python virtual environment and install dependencies."""
+    venv_dir = f"{install_dir}/venv"
+    venv_python = f"{venv_dir}/bin/python3"
+
+    # Check if existing venv already has required packages
+    if not os.environ.get("INSTALL_REBUILD_VENV"):
+        try:
+            result = run_cmd(
+                [venv_python, "-c", "import meshcore, paho.mqtt.client, bleak"],
+                check=False, capture=True,
+            )
+            if result.returncode == 0:
+                print_success("Using existing virtual environment")
+                return
+        except FileNotFoundError:
+            pass  # venv doesn't exist yet — create it below
+    else:
+        print_info("INSTALL_REBUILD_VENV set - forcing virtual environment rebuild")
+
+    # Create new venv
+    shutil.rmtree(venv_dir, ignore_errors=True)
+
+    if svc_user:
+        # Ensure install_dir is owned by the service user so venv creation succeeds
+        shutil.chown(install_dir, svc_user, svc_user)
+        result = run_cmd(
+            ["sudo", "-u", svc_user, "python3", "-m", "venv", venv_dir],
+            check=False,
+        )
+        if result.returncode != 0:
+            run_cmd(["python3", "-m", "venv", venv_dir])
+    else:
+        run_cmd(["python3", "-m", "venv", venv_dir])
+
+    print_success(f"Virtual environment created at {venv_dir}")
+
+    # In case ed25519-orlp needs to be built from source
+    install_os_build_deps()
+
+    print_info("Installing Python dependencies...")
+    req = Path(install_dir) / "requirements.txt"
+    run_cmd([f"{venv_dir}/bin/pip", "install", "--quiet", "--upgrade", "pip"])
+    if req.exists():
+        run_cmd([f"{venv_dir}/bin/pip", "install", "--quiet", "-r", str(req)])
+        print_success("Python dependencies installed from requirements.txt")
+    else:
+        run_cmd([
+            f"{venv_dir}/bin/pip", "install", "--quiet",
+            "meshcore>=2.2.31", "paho-mqtt", "bleak", "pyserial-asyncio", "pexpect", "pynacl",
+        ])
+        print_success("Python dependencies installed (meshcore stack)")
+
+
+# ---------------------------------------------------------------------------
+# Version info
+# ---------------------------------------------------------------------------
+
+def create_version_info(ctx: InstallerContext) -> None:
+    """Create .version_info JSON file with installer metadata."""
+    import urllib.request
+    import urllib.error
+
+    git_hash = "unknown"
+    api_url = f"https://api.github.com/repos/{ctx.repo}/commits/{ctx.branch}"
+    try:
+        req = urllib.request.Request(api_url, headers={"User-Agent": "meshcore-packet-capture-installer"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            git_hash = data.get("sha", "unknown")[:7]
+    except (urllib.error.URLError, json.JSONDecodeError, KeyError, OSError):
+        pass
+
+    info = {
+        "installer_version": ctx.script_version,
+        "git_hash": git_hash,
+        "git_branch": ctx.branch,
+        "git_repo": ctx.repo,
+        "install_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+    version_path = Path(ctx.install_dir) / ".version_info"
+    version_path.write_text(json.dumps(info, indent=2) + "\n")
+
+    print_info(f"Version info saved: {ctx.script_version}-{git_hash} ({ctx.repo}@{ctx.branch})")

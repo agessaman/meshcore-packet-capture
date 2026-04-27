@@ -29,8 +29,9 @@ services:
     volumes:
       # Persistent data storage
       - ./data:/app/data
-      # Configuration files (optional - can use environment variables instead)
-      # Copy .env.local.example to .env.local and customize for your setup
+      # Optional: TOML under /etc/meshcore-packet-capture (overrides image defaults when not using env)
+      # - ./meshcore-etc:/etc/meshcore-packet-capture:ro
+      # Legacy: local .env.local next to app dir
       - ./.env.local:/app/.env.local:ro
       # Logs directory (optional - uncomment to mount logs separately from data)
       # - ./logs:/app/logs

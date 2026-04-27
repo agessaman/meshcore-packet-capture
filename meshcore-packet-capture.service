@@ -1,0 +1,22 @@
+[Unit]
+Description=MeshCore Packet Capture
+After=time-sync.target network-online.target bluetooth.target
+Wants=time-sync.target network-online.target
+
+[Service]
+Type=exec
+User=meshcore-capture
+Group=meshcore-capture
+WorkingDirectory=/opt/meshcore-packet-capture
+ExecStart=/opt/meshcore-packet-capture/venv/bin/python3 /opt/meshcore-packet-capture/packet_capture.py
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/meshcore-packet-capture /var/lib/meshcore-packet-capture
+
+[Install]
+WantedBy=multi-user.target

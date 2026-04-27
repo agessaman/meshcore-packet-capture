@@ -48,7 +48,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 
 ## Requirements
 
-- Python 3.7+
+- Python 3.11+ (installer and recommended runtime)
 - `meshcore` package (official MeshCore Python library) version 2.2.2 or later (required for stats support)
 - `paho-mqtt` package (for MQTT functionality)
 
@@ -84,19 +84,45 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 
 ## Configuration
 
-The script uses environment files for configuration.
+Configuration is loaded in this order (later sources do not override variables already set in the process environment):
 
-### Environment Files
+1. **`.env`** then **`.env.local`** next to `packet_capture.py` (development / manual installs)
+2. **TOML**: `/etc/meshcore-packet-capture/config.toml` plus every `*.toml` in `/etc/meshcore-packet-capture/config.d/` (sorted). Broker entries use the same `[[broker]]` shape as [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt). See `config.toml.example` and bundled `presets/letsmesh.toml` (LetsMesh Packet Analyzer defaults).
+3. **`--config PATH`** (repeatable): if set, only these files are merged, in order (no automatic `/etc` scan).
 
-The script loads configuration from:
+Values are applied as `PACKETCAPTURE_*` environment variables. See `.env` for the flat variable names that correspond to each TOML section.
+
+### Python installer (recommended for Linux/macOS)
+
+From a repo checkout (requires root):
+
+```bash
+export LOCAL_INSTALL=/path/to/meshcore-packet-capture
+sudo bash install.sh
+```
+
+Or bootstrap via curl (downloads the branch and runs `python3 -m installer install`). The installer installs under `/opt/meshcore-packet-capture`, configuration under `/etc/meshcore-packet-capture`, and offers bundled presets (default selection: LetsMesh).
+
+### Environment Files (local development)
+
+The script also loads:
 1. `.env` - Default configuration (committed to repository)
 2. `.env.local` - Local overrides (not committed, for your specific setup)
 
-All environment variables are prefixed with `PACKETCAPTURE_`. See the `.env` file for all available options.
+All logical keys use the `PACKETCAPTURE_` prefix. See the `.env` file for options.
 
 ### Configuration Variables
 
-Configuration is handled via environment variables and `.env` files. The installer will create a `.env.local` file with your settings.
+For systemd installs, prefer editing `/etc/meshcore-packet-capture/config.d/99-user.toml`. Legacy `~/.meshcore-packet-capture` installs can be migrated with `sudo python3 -m installer migrate` from a checkout.
+
+### Unit tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+CI-ready tests live under `unit_tests/`. Ad-hoc scripts under `tests/` are not part of the default pytest run.
 
 
 ### Environment Variables

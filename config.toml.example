@@ -1,0 +1,69 @@
+# =============================================================================
+# MeshCore Packet Capture - Configuration Reference
+# =============================================================================
+# Load order (default):
+#   1. /etc/meshcore-packet-capture/config.toml
+#   2. /etc/meshcore-packet-capture/config.d/*.toml (sorted)
+#
+# Put local overrides in config.d/99-user.toml. Presets install as 10-*.toml.
+# Use --config PATH (repeatable) to load only those files, in order.
+# =============================================================================
+
+[general]
+iata = "LOC"
+log_level = "INFO"
+
+[topics]
+status = "meshcore/{IATA}/{PUBLIC_KEY}/status"
+packets = "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+# raw = "meshcore/{IATA}/{PUBLIC_KEY}/raw"
+
+[serial]
+ports = ["/dev/ttyUSB0"]
+baud_rate = 115200
+timeout = 2
+
+[update]
+repo = "agessaman/meshcore-packet-capture"
+branch = "main"
+
+# Connection and runtime options (packet capture specific)
+[capture]
+connection_type = "ble"
+timeout = 30
+tcp_host = "localhost"
+tcp_port = 5000
+# ble_address = "XX:XX:XX:XX:XX:XX"
+# ble_device_name = "MeshCore Device"
+advert_interval_hours = 1
+# State directory for advert_state.json (installer creates and chowns this path)
+data_dir = "/var/lib/meshcore-packet-capture/data"
+max_connection_retries = 5
+connection_retry_delay = 5
+health_check_interval = 30
+max_mqtt_retries = 5
+mqtt_retry_delay = 5
+jwt_renewal_interval = 3600
+jwt_renewal_threshold = 300
+rf_data_timeout = 15.0
+
+# [[broker]] blocks merge by name across files. See presets/letsmesh.toml.
+
+# [[broker]]
+# name = "example"
+# enabled = false
+# server = "mqtt.example.com"
+# port = 1883
+# transport = "tcp"
+# keepalive = 60
+# qos = 0
+# retain = true
+#
+# [broker.tls]
+# enabled = false
+# verify = true
+#
+# [broker.auth]
+# method = "password"
+# username = ""
+# password = ""

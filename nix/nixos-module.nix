@@ -146,6 +146,7 @@
       ++ lib.optional (cfg.healthCheckInterval != null) "PACKETCAPTURE_HEALTH_CHECK_INTERVAL=${toString cfg.healthCheckInterval}";
 
       otherEnvVars = [
+        "PACKETCAPTURE_DATA_DIR=${cfg.dataDir}"
         "PACKETCAPTURE_LOG_LEVEL=${cfg.logLevel}"
       ] ++ lib.optional (cfg.iata != null) "PACKETCAPTURE_IATA=${cfg.iata}"
       ++ lib.optional (cfg.origin != null) "PACKETCAPTURE_ORIGIN=${cfg.origin}"

@@ -50,6 +50,7 @@
           # Copy Python scripts from unpacked source
           # The source is unpacked to the current directory
           cp ${../packet_capture.py} $out/lib/meshcore-packet-capture/packet_capture.py
+          cp ${../config_loader.py} $out/lib/meshcore-packet-capture/config_loader.py
           cp ${../enums.py} $out/lib/meshcore-packet-capture/enums.py
           cp ${../auth_token.py} $out/lib/meshcore-packet-capture/auth_token.py
           cp ${../ble_pairing_helper.py} $out/lib/meshcore-packet-capture/ble_pairing_helper.py

@@ -81,20 +81,23 @@ detect_system_type() {
 
 # Remove systemd service
 remove_systemd_service() {
-    if [ -f /etc/systemd/system/meshcore-capture.service ]; then
-        print_info "Stopping and removing systemd service (requires sudo)..."
-        
-        if sudo systemctl is-active --quiet meshcore-capture.service; then
-            sudo systemctl stop meshcore-capture.service
-            print_success "Service stopped"
+    local found=false
+    for unit in meshcore-capture.service meshcore-packet-capture.service; do
+        if [ -f "/etc/systemd/system/$unit" ]; then
+            found=true
+            print_info "Stopping and removing systemd service $unit (requires sudo)..."
+            if sudo systemctl is-active --quiet "$unit"; then
+                sudo systemctl stop "$unit"
+                print_success "Service stopped"
+            fi
+            if sudo systemctl is-enabled --quiet "$unit"; then
+                sudo systemctl disable "$unit"
+                print_success "Service disabled"
+            fi
+            sudo rm -f "/etc/systemd/system/$unit"
         fi
-        
-        if sudo systemctl is-enabled --quiet meshcore-capture.service; then
-            sudo systemctl disable meshcore-capture.service
-            print_success "Service disabled"
-        fi
-        
-        sudo rm -f /etc/systemd/system/meshcore-capture.service
+    done
+    if [ "$found" = true ]; then
         sudo systemctl daemon-reload
         print_success "Service removed"
     else
@@ -130,8 +133,8 @@ remove_launchd_service() {
 
 # Remove Docker container and images
 remove_docker_installation() {
-    local container_name="meshcore-capture"
-    local image_name="meshcore-capture"
+    local container_name="meshcore-packet-capture"
+    local image_name="meshcore-packet-capture"
     
     print_info "Checking for Docker installation..."
     
@@ -166,12 +169,13 @@ remove_docker_installation() {
 # Main uninstallation
 main() {
     print_header "MeshCore Packet Capture Uninstaller"
-    
+    KEEP_CONFIG=false
+
     echo "This will remove MeshCore Packet Capture from your system."
     echo ""
     
     # Determine installation directory
-    DEFAULT_INSTALL_DIR="$HOME/.meshcore-packet-capture"
+    DEFAULT_INSTALL_DIR="/opt/meshcore-packet-capture"
     INSTALL_DIR=$(prompt_input "Installation directory" "$DEFAULT_INSTALL_DIR")
     INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"  # Expand tilde
     
@@ -276,13 +280,29 @@ main() {
     print_header "System Cleanup"
     
     # Remove any remaining log files
-    if [ -f "/var/log/meshcore-capture.log" ]; then
-        if prompt_yes_no "Remove system log file /var/log/meshcore-capture.log?" "y"; then
-            sudo rm -f "/var/log/meshcore-capture.log" 2>/dev/null || true
-            print_success "System log file removed"
+    for logf in /var/log/meshcore-capture.log /var/log/meshcore-packet-capture.log /var/log/meshcore-packet-capture-error.log; do
+        if [ -f "$logf" ]; then
+            if prompt_yes_no "Remove system log file $logf?" "y"; then
+                sudo rm -f "$logf" 2>/dev/null || true
+                print_success "Removed $logf"
+            fi
+        fi
+    done
+
+    if [ -d "/etc/meshcore-packet-capture" ]; then
+        if prompt_yes_no "Remove system configuration /etc/meshcore-packet-capture?" "y"; then
+            sudo rm -rf /etc/meshcore-packet-capture
+            print_success "System configuration removed"
         fi
     fi
-    
+
+    if [ -d "/var/lib/meshcore-packet-capture" ]; then
+        if prompt_yes_no "Remove state directory /var/lib/meshcore-packet-capture?" "y"; then
+            sudo rm -rf /var/lib/meshcore-packet-capture
+            print_success "State directory removed"
+        fi
+    fi
+
     # Final message
     print_header "Uninstallation Complete"
     

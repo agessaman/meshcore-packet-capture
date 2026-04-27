@@ -8,7 +8,7 @@ Type=exec
 User=meshcore-capture
 Group=meshcore-capture
 WorkingDirectory=/opt/meshcore-packet-capture
-ExecStart=/opt/meshcore-packet-capture/venv/bin/python3 /opt/meshcore-packet-capture/packet_capture.py
+ExecStart=/opt/meshcore-packet-capture/venv/bin/python3 -m meshcore_packet_capture
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 Restart=always
 RestartSec=10

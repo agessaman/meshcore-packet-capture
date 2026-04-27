@@ -25,8 +25,8 @@ def _install_dependency_stubs() -> None:
 
 _install_dependency_stubs()
 
-from enums import PayloadType, PayloadVersion, RouteType
-from packet_capture import PacketCapture
+from meshcore_packet_capture.enums import PayloadType, PayloadVersion, RouteType
+from meshcore_packet_capture.packet_capture import PacketCapture
 
 
 def _build_packet_hex(

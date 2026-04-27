@@ -25,10 +25,12 @@
       ];
 
       shellHook = ''
+        export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
         echo "MeshCore Packet Capture Development Environment"
         echo "Python: $(python --version)"
         echo "Node.js: $(node --version)"
         echo ""
+        echo "Run: python -m meshcore_packet_capture"
         echo "To run meshcore-decoder, use: npx -y @michaelhart/meshcore-decoder"
         echo ""
       '';

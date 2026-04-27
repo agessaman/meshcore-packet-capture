@@ -729,7 +729,7 @@ Type=exec
 User={svc_user}
 Group={svc_user}
 WorkingDirectory={install_dir}
-ExecStart={install_dir}/venv/bin/python3 {install_dir}/packet_capture.py
+ExecStart={install_dir}/venv/bin/python3 -m meshcore_packet_capture
 Restart=always
 RestartSec=10
 NoNewPrivileges=true
@@ -800,7 +800,8 @@ def install_launchd_service(
     <key>ProgramArguments</key>
     <array>
         <string>{install_dir}/venv/bin/python3</string>
-        <string>{install_dir}/packet_capture.py</string>
+        <string>-m</string>
+        <string>meshcore_packet_capture</string>
     </array>
     <key>WorkingDirectory</key>
     <string>{install_dir}</string>
@@ -976,6 +977,19 @@ def create_venv(install_dir: str, svc_user: str) -> None:
             "meshcore>=2.2.31", "paho-mqtt", "bleak", "pyserial-asyncio", "pexpect", "pynacl",
         ])
         print_success("Python dependencies installed (meshcore stack)")
+
+
+def pip_install_project(install_dir: str, *, upgrade: bool = False) -> None:
+    """Install or refresh the meshcore-packet-capture package in install_dir's venv."""
+    venv_pip = f"{install_dir}/venv/bin/pip"
+    if not Path(venv_pip).is_file():
+        print_error("pip not found in virtual environment")
+        raise SystemExit(1)
+    args = [venv_pip, "install", "--quiet"]
+    if upgrade:
+        args.append("--upgrade")
+    args.append(install_dir)
+    run_cmd(args, check=True)
 
 
 # ---------------------------------------------------------------------------

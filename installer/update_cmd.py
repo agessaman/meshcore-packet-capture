@@ -29,6 +29,7 @@ from .system import (
     detect_system_type,
     download_repo_archive,
     install_systemd_service,
+    pip_install_project,
     pull_or_build_docker_image,
     run_cmd,
     set_permissions,
@@ -48,8 +49,17 @@ if TYPE_CHECKING:
 def run_update(ctx: InstallerContext) -> None:
     """Update an existing installation."""
 
-    # Verify installation exists
-    if not Path(ctx.install_dir, "packet_capture.py").exists():
+    venv_py = Path(ctx.install_dir, "venv", "bin", "python3")
+    has_pkg = False
+    if venv_py.is_file():
+        r = run_cmd(
+            [str(venv_py), "-m", "pip", "show", "meshcore-packet-capture"],
+            check=False,
+            capture=True,
+        )
+        has_pkg = r.returncode == 0
+    legacy_flat = Path(ctx.install_dir, "packet_capture.py").exists()
+    if not (has_pkg or legacy_flat):
         print_error(f"No installation found at {ctx.install_dir}")
         print_info("Run the installer to create a new installation.")
         raise SystemExit(1)
@@ -71,12 +81,11 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
 
     ctx.repo_dir = repo_dir
 
-    # Copy packet_capture.py to extract version
-    script_tmp = os.path.join(tmp_dir, "packet_capture.py")
-    shutil.copy2(os.path.join(repo_dir, "packet_capture.py"), script_tmp)
-
-    # Extract version
-    ctx.script_version = extract_version_from_file(script_tmp)
+    ver_src = os.path.join(repo_dir, "src", "meshcore_packet_capture", "__init__.py")
+    if not os.path.isfile(ver_src):
+        print_error("Repository missing package (expected src/meshcore_packet_capture/__init__.py)")
+        raise SystemExit(1)
+    ctx.script_version = extract_version_from_file(ver_src)
 
     print_header(f"MeshCore Packet Capture Updater v{ctx.script_version}")
     print_info(f"Installation directory: {ctx.install_dir}")
@@ -101,31 +110,45 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
     else:
         print_info(f"Installing from GitHub ({ctx.repo} @ {ctx.branch})...")
 
-    shutil.copy2(os.path.join(repo_dir, "auth_token.py"), os.path.join(tmp_dir, "auth_token.py"))
-    shutil.copy2(os.path.join(repo_dir, "config_loader.py"), os.path.join(tmp_dir, "config_loader.py"))
+    shutil.copy2(os.path.join(repo_dir, "pyproject.toml"), os.path.join(tmp_dir, "pyproject.toml"))
+    src_from = os.path.join(repo_dir, "src")
+    src_tmp = os.path.join(tmp_dir, "src")
+    if os.path.isdir(src_tmp):
+        shutil.rmtree(src_tmp)
+    shutil.copytree(src_from, src_tmp)
     shutil.copy2(os.path.join(repo_dir, "config.toml.example"), os.path.join(tmp_dir, "config.toml.example"))
     shutil.copy2(os.path.join(repo_dir, "uninstall.sh"), os.path.join(tmp_dir, "uninstall.sh"))
-    for f in ("meshcore-packet-capture.service", "com.meshcore.meshcore_packet_capture.plist"):
-        src = os.path.join(repo_dir, f)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(tmp_dir, f))
+    req_src = os.path.join(repo_dir, "requirements.txt")
+    if os.path.isfile(req_src):
+        shutil.copy2(req_src, os.path.join(tmp_dir, "requirements.txt"))
+
+    for svc_name in ("meshcore-packet-capture.service", "com.meshcore.meshcore_packet_capture.plist"):
+        for candidate in (
+            os.path.join(repo_dir, "packaging", "systemd", svc_name),
+            os.path.join(repo_dir, "packaging", "launchd", svc_name),
+            os.path.join(repo_dir, svc_name),
+        ):
+            if os.path.isfile(candidate):
+                shutil.copy2(candidate, os.path.join(tmp_dir, svc_name))
+                break
+
     print_success("Files ready")
 
-    # Verify syntax
     print_info("Verifying Python syntax...")
-    result = run_cmd(["python3", "-m", "py_compile", script_tmp], check=False, capture=True)
+    src_pkg = os.path.join(tmp_dir, "src", "meshcore_packet_capture")
+    result = run_cmd(["python3", "-m", "compileall", "-q", src_pkg], check=False, capture=True)
     if result.returncode != 0:
-        print_error("Syntax errors in packet_capture.py")
+        print_error("Syntax errors in meshcore_packet_capture package")
         raise SystemExit(1)
 
-    # Install files
-    shutil.copy2(script_tmp, f"{ctx.install_dir}/")
-    shutil.copy2(os.path.join(tmp_dir, "auth_token.py"), f"{ctx.install_dir}/")
-    shutil.copy2(os.path.join(tmp_dir, "config_loader.py"), f"{ctx.install_dir}/")
-    for extra in ("enums.py", "ble_pairing_helper.py", "requirements.txt"):
-        src_e = os.path.join(repo_dir, extra)
-        if os.path.exists(src_e):
-            shutil.copy2(src_e, os.path.join(ctx.install_dir, extra))
+    dest_src = os.path.join(ctx.install_dir, "src")
+    if os.path.isdir(dest_src):
+        shutil.rmtree(dest_src)
+    shutil.copytree(os.path.join(tmp_dir, "src"), dest_src)
+    shutil.copy2(os.path.join(tmp_dir, "pyproject.toml"), os.path.join(ctx.install_dir, "pyproject.toml"))
+    tmp_req = os.path.join(tmp_dir, "requirements.txt")
+    if os.path.isfile(tmp_req):
+        shutil.copy2(tmp_req, os.path.join(ctx.install_dir, "requirements.txt"))
     presets_src = os.path.join(repo_dir, "presets")
     presets_dest = os.path.join(ctx.install_dir, "presets")
     if os.path.isdir(presets_src):
@@ -137,7 +160,6 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
         src = os.path.join(tmp_dir, f)
         if os.path.exists(src):
             shutil.copy2(src, f"{ctx.install_dir}/")
-    os.chmod(f"{ctx.install_dir}/packet_capture.py", 0o755)
     os.chmod(f"{ctx.install_dir}/uninstall.sh", 0o755)
 
     # Update base config (overwrite config.toml, preserve user overrides)
@@ -152,6 +174,8 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
         print_header("Updating Dependencies")
         create_venv(ctx.install_dir, ctx.svc_user)
         cleanup_legacy_nvm(ctx.install_dir)
+        print_info("Upgrading application package in virtual environment...")
+        pip_install_project(ctx.install_dir, upgrade=True)
 
     # ---------------------------------------------------------------------------
     # Configuration

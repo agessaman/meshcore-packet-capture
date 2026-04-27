@@ -86,7 +86,7 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 
 Configuration is loaded in this order (later sources do not override variables already set in the process environment):
 
-1. **`.env`** then **`.env.local`** next to `packet_capture.py` (development / manual installs)
+1. **`.env`** then **`.env.local`** in the working directory (repo root, `/opt/meshcore-packet-capture`, or `/app` in Docker) for development / manual installs
 2. **TOML**: `/etc/meshcore-packet-capture/config.toml` plus every `*.toml` in `/etc/meshcore-packet-capture/config.d/` (sorted). Broker entries use the same `[[broker]]` shape as [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt). See `config.toml.example` and bundled `presets/letsmesh.toml` (LetsMesh Packet Analyzer defaults).
 3. **`--config PATH`** (repeatable): if set, only these files are merged, in order (no automatic `/etc` scan).
 
@@ -122,7 +122,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-CI-ready tests live under `unit_tests/`. Ad-hoc scripts under `tests/` are not part of the default pytest run.
+Tests live under `tests/`. Legacy experiments belong in `old/` (gitignored). Optional developer scripts are in `devtools/`.
 
 
 ### Environment Variables
@@ -277,20 +277,21 @@ PACKETCAPTURE_UPLOAD_PACKET_TYPES=0,1,2
 ### Local Usage
 
 ```bash
-# Basic usage
+# Basic usage (after: pip install -e .  or  PYTHONPATH=src)
+python -m meshcore_packet_capture
+
+# From repo root without install:
 python packet_capture.py
 
 # Save output to file
-python packet_capture.py --output packets.json
+python -m meshcore_packet_capture --output packets.json
 
 # Disable MQTT publishing
-python packet_capture.py --no-mqtt
+python -m meshcore_packet_capture --no-mqtt
 
-# Enable verbose output (shows JSON packet data)
-python packet_capture.py --verbose
-
-# Enable debug output (shows all detailed debugging info)
-python packet_capture.py --debug
+# Verbose / debug
+python -m meshcore_packet_capture --verbose
+python -m meshcore_packet_capture --debug
 ```
 
 ## Docker Deployment
@@ -458,7 +459,7 @@ Captured packets are output in JSON format with the following structure:
 
 Enable debug mode for detailed logging:
 ```bash
-python packet_capture.py --debug
+python -m meshcore_packet_capture --debug
 ```
 
 This will show:
@@ -467,15 +468,16 @@ This will show:
 - Detailed packet parsing information
 - MQTT connection status
 
-## Files
+## Layout
 
-- `packet_capture.py`: Main capture script
-- `enums.py`: Packet type and flag definitions
-- `install.sh`: Installation script
-- `uninstall.sh`: Uninstallation script
-- `scan_meshcore_network.py`: Network scanner for MeshCore nodes
+- `src/meshcore_packet_capture/`: Installable Python package (run with `python -m meshcore_packet_capture`)
+- `packet_capture.py`: Repo-root launcher (adds `src` to `PYTHONPATH` for quick runs)
+- `pyproject.toml`: Package metadata and dependencies
+- `packaging/`: systemd and launchd unit templates
+- `devtools/`: Optional BLE/network/migration helpers (not installed to `/opt` by default)
+- `install.sh` / `install.ps1` / `uninstall.sh`: Installation scripts
 - `.env`: Default configuration template
-- `.env.local`: Local configuration (created by installer)
+- `.env.local`: Local configuration (created by installer or for Docker bind-mount)
 
 ## Contributing
 

@@ -46,24 +46,13 @@
         installPhase = ''
           mkdir -p $out/bin
           mkdir -p $out/lib/meshcore-packet-capture
+          cp -r ${../src} $out/lib/meshcore-packet-capture/src
 
-          # Copy Python scripts from unpacked source
-          # The source is unpacked to the current directory
-          cp ${../packet_capture.py} $out/lib/meshcore-packet-capture/packet_capture.py
-          cp ${../config_loader.py} $out/lib/meshcore-packet-capture/config_loader.py
-          cp ${../enums.py} $out/lib/meshcore-packet-capture/enums.py
-          cp ${../auth_token.py} $out/lib/meshcore-packet-capture/auth_token.py
-          cp ${../ble_pairing_helper.py} $out/lib/meshcore-packet-capture/ble_pairing_helper.py
-          cp ${../ble_scan_helper.py} $out/lib/meshcore-packet-capture/ble_scan_helper.py
-          cp ${../scan_meshcore_network.py} $out/lib/meshcore-packet-capture/scan_meshcore_network.py
-          cp ${../debug_ble_connection.py} $out/lib/meshcore-packet-capture/debug_ble_connection.py
-          cp ${../migrate_config.py} $out/lib/meshcore-packet-capture/migrate_config.py
-
-          # Create wrapper script for the main application
           makeWrapper ${pythonEnv}/bin/python $out/bin/meshcore-packet-capture \
             --set PATH "${pkgs.lib.makeBinPath [pkgs.nodejs_20 pkgs.nodePackages.npm]}:$PATH" \
-            --add-flags "$out/lib/meshcore-packet-capture/packet_capture.py" \
-            --prefix PYTHONPATH : "$out/lib/meshcore-packet-capture:${pythonEnv}/${pythonEnv.sitePackages}"
+            --prefix PYTHONPATH : "$out/lib/meshcore-packet-capture/src:${pythonEnv}/${pythonEnv.sitePackages}" \
+            --add-flags "-m" \
+            --add-flags "meshcore_packet_capture"
 
           # Create a helper script for meshcore-decoder
           # This will use npx to run it, which handles installation automatically

@@ -47,10 +47,10 @@ ENV/
 ehthumbs.db
 Thumbs.db
 
-# Documentation and README files
-README.md
-*.md
+# Documentation (README.md is required for `pip install .` in the image)
 docs/
+NIXOS.md
+DOCKER.md
 
 # Test files and directories
 tests/

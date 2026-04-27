@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import config_loader as cl
+import meshcore_packet_capture.config_loader as cl
 
 
 def test_deep_merge_nested():

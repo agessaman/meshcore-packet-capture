@@ -7,7 +7,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>/opt/meshcore-packet-capture/venv/bin/python3</string>
-        <string>/opt/meshcore-packet-capture/packet_capture.py</string>
+        <string>-m</string>
+        <string>meshcore_packet_capture</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/opt/meshcore-packet-capture</string>

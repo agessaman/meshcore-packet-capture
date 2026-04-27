@@ -73,7 +73,5 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Ad-hoc scripts under tests/ (pytest uses unit_tests/ for CI)
-tests/
 nixos-test/
 local-docs/

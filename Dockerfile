@@ -16,14 +16,6 @@ WORKDIR /app
 # Create non-root user for security (do this early to avoid permission issues)
 RUN useradd -m -u 1000 meshcore
 
-# Copy requirements first for better Docker layer caching
-COPY requirements.txt .
-
-# Install Python dependencies with optimizations
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt \
-    && pip cache purge
-
 # Install Node.js via nvm and meshcore-decoder for auth token support
 ENV NVM_DIR=/opt/nvm
 ENV NODE_VERSION=lts/*
@@ -36,8 +28,12 @@ RUN mkdir -p "$NVM_DIR" && \
     && npm install -g @michaelhart/meshcore-decoder \
     && ln -s "$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node | head -1)/bin/"* /usr/local/bin/
 
-# Copy application files and TOML defaults (env vars still override at runtime)
-COPY --chown=meshcore:meshcore packet_capture.py enums.py auth_token.py config_loader.py ./
+# Application package and TOML defaults (env vars still override at runtime)
+COPY --chown=meshcore:meshcore pyproject.toml README.md ./
+COPY --chown=meshcore:meshcore src ./src
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir . \
+    && pip cache purge
 RUN mkdir -p /etc/meshcore-packet-capture/config.d
 COPY --chown=root:root config.toml.example /etc/meshcore-packet-capture/config.toml
 COPY presets/letsmesh.toml /etc/meshcore-packet-capture/config.d/10-letsmesh.toml
@@ -60,4 +56,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import meshcore; print('OK')" || exit 1
 
 # Default command
-CMD ["python", "packet_capture.py"]
+CMD ["python", "-m", "meshcore_packet_capture"]

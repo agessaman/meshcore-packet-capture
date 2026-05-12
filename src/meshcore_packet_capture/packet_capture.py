@@ -1083,7 +1083,7 @@ class PacketCapture:
     
     
     
-    async def create_jwt_with_private_key(self, audience: str = None) -> Optional[str]:
+    async def create_jwt_with_private_key(self, audience: str = None, expiry_seconds: int = 86400) -> Optional[str]:
         """Create JWT using on-device signing (preferred) or private key from device"""
         try:
             if not create_auth_token_async and not create_auth_token:
@@ -1135,6 +1135,7 @@ class PacketCapture:
                     jwt_token = await create_auth_token_async(
                         self.device_public_key,
                         meshcore_instance=self.meshcore,
+                        expiry_seconds=expiry_seconds,
                         **claims
                     )
                     self.logger.info("✓ JWT created using on-device signing")
@@ -1200,11 +1201,11 @@ class PacketCapture:
                 self.logger.error(f"Error creating JWT: {e}", exc_info=True)
             return None
     
-    async def create_auth_token_jwt(self, audience: str = None, broker_num: int = None) -> Optional[str]:
+    async def create_auth_token_jwt(self, audience: str = None, broker_num: int = None, expiry_seconds: int = 86400) -> Optional[str]:
         """Create JWT token using on-device signing or private key from device"""
         # Use on-device signing (preferred) or private key method (fallback)
         # The create_jwt_with_private_key() method already logs which method was used
-        jwt_token = await self.create_jwt_with_private_key(audience)
+        jwt_token = await self.create_jwt_with_private_key(audience, expiry_seconds)
         if jwt_token:
             # Store token with expiry time if broker_num is provided
             if broker_num is not None:
@@ -1219,7 +1220,7 @@ class PacketCapture:
                         # Decode payload to get expiry
                         payload_data = base64.urlsafe_b64decode(parts[1] + '==')
                         payload = json.loads(payload_data)
-                        expires_at = payload.get('exp', time.time() + 86400)  # Default 24h if not found
+                        expires_at = payload.get('exp', time.time() + expiry_seconds)  # Default 24h if not found
                         
                         self.jwt_tokens[broker_num] = {
                             'token': jwt_token,
@@ -1259,11 +1260,12 @@ class PacketCapture:
             
             token_info = self.jwt_tokens[broker_num]
             audience = token_info.get('audience')
+            expiry_seconds = token_info.get('expiry_seconds', 86400)
             
             self.logger.info(f"Renewing JWT token for broker {broker_num}...")
             
             # Create new token
-            new_token = await self.create_auth_token_jwt(audience, broker_num)
+            new_token = await self.create_auth_token_jwt(audience, broker_num, expiry_seconds)
             if new_token:
                 self.logger.info(f"✓ JWT token renewed for broker {broker_num}")
                 # Reset failure count on success
@@ -2185,14 +2187,16 @@ class PacketCapture:
                 try:
                     username = f"v1_{self.device_public_key.upper()}"
                     audience = self.get_env(f'MQTT{broker_num}_TOKEN_AUDIENCE', "")
+                    expiry_seconds = self.get_env_int(f'MQTT{broker_num}_TOKEN_EXPIRY', 86400) # Default to 24 hours if not set
                     
                     if audience:
-                        self.logger.info(f"MQTT{broker_num}: Using JWT authentication [aud: {audience}]")
+                        self.logger.info(f"MQTT{broker_num}: Using JWT authentication [aud: {audience}, exp: {expiry_seconds}s]")
                     else:
-                        self.logger.info(f"MQTT{broker_num}: Using JWT authentication")
+                        self.logger.info(f"MQTT{broker_num}: Using JWT authentication [exp: {expiry_seconds}s]")
+
                     
                     # Use the JWT creation method with private key from device
-                    password = await self.create_auth_token_jwt(audience, broker_num)
+                    password = await self.create_auth_token_jwt(audience, broker_num, expiry_seconds)
                     if not password:
                         self.logger.error(f"MQTT{broker_num}: Failed to generate JWT token")
                         return None

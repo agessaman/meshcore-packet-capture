@@ -1,7 +1,7 @@
 [[broker]]
-name = "waev"
+name = "waev-a"
 enabled = true
-server = "mqtt.waev.app"
+server = "mqtt-a.waev.app"
 port = 443
 transport = "websockets"
 keepalive = 55
@@ -14,4 +14,24 @@ verify = true
 
 [broker.auth]
 method = "token"
-audience = "mqtt.waev.app"
+audience = "mqtt-a.waev.app"
+expiry = 3300
+
+[[broker]]
+name = "waev-b"
+enabled = true
+server = "mqtt-b.waev.app"
+port = 443
+transport = "websockets"
+keepalive = 55
+qos = 0
+retain = false
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt-b.waev.app"
+expiry = 3300

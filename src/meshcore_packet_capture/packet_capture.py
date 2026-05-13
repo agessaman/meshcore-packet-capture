@@ -1225,7 +1225,8 @@ class PacketCapture:
                         self.jwt_tokens[broker_num] = {
                             'token': jwt_token,
                             'expires_at': expires_at,
-                            'audience': audience
+                            'audience': audience,
+                            'expiry_seconds': expiry_seconds,
                         }
                         
                         if self.debug:
@@ -1262,17 +1263,17 @@ class PacketCapture:
             audience = token_info.get('audience')
             expiry_seconds = token_info.get('expiry_seconds', 86400)
             
-            self.logger.info(f"Renewing JWT token for broker {broker_num}...")
+            self.logger.info(f"Renewing JWT token for broker {broker_num} [aud: {audience}, exp: {expiry_seconds}s]...")
             
             # Create new token
             new_token = await self.create_auth_token_jwt(audience, broker_num, expiry_seconds)
             if new_token:
-                self.logger.info(f"✓ JWT token renewed for broker {broker_num}")
+                self.logger.info(f"✓ JWT token renewed for broker {broker_num} [aud: {audience}, exp: {expiry_seconds}s]")
                 # Reset failure count on success
                 self.jwt_failure_count = 0
                 return True
             else:
-                self.logger.error(f"Failed to renew JWT token for broker {broker_num}")
+                self.logger.error(f"Failed to renew JWT token for broker {broker_num} [aud: {audience}, exp: {expiry_seconds}s]")
                 # Increment failure count
                 self.jwt_failure_count += 1
                 self.jwt_circuit_breaker_reset_time = time.time()

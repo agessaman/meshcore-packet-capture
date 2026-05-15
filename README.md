@@ -40,7 +40,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 - **Packet Analysis**: Parses packet headers, routes, payloads, and metadata
 - **RF Data**: Captures signal quality metrics (SNR, RSSI)
 - **Status Telemetry Stats**:  MQTT status messages optionally contain battery/uptime/radio metrics
-- **Multi-Broker MQTT**: Supports up to 4 MQTT brokers simultaneously
+- **Multi-Broker MQTT**: Supports sequentially numbered MQTT brokers discovered from environment variables
 - **Auth Token Authentication**: JWT-based authentication using device private key
 - **TLS/WebSocket Support**: Secure connections with TLS/SSL and WebSocket transport
 - **Topic Templates**: Per-broker topic templates
@@ -125,7 +125,7 @@ Configuration is handled via environment variables and `.env` files. The install
 When enabled, status messages published to MQTT include a `stats` object with battery, uptime, queue depth, and radio runtime metrics refreshed at the configured cadence.
 
 #### MQTT Settings
-The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4, MQTT5, MQTT6). Each broker can be configured independently:
+The script discovers MQTT brokers sequentially starting at `MQTT1` and continues until `PACKETCAPTURE_MQTT<n>_ENABLED` is no longer defined. Each broker can be configured independently:
 
 **Broker 1 (Primary):**
 - `PACKETCAPTURE_MQTT1_ENABLED`: Enable/disable MQTT broker 1
@@ -142,7 +142,7 @@ The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4, MQTT5, MQT
 - `PACKETCAPTURE_MQTT1_RETAIN`: Retain messages
 - `PACKETCAPTURE_MQTT1_KEEPALIVE`: Keep-alive interval
 
-**Brokers 2-6:** Same pattern with `MQTT2_`, `MQTT3_`, `MQTT4_`, `MQTT5_`, `MQTT6_` prefixes
+**Additional brokers:** Use the same pattern with `MQTT2_`, `MQTT3_`, and higher sequential prefixes as needed
 
 **Global MQTT Settings:**
 - `PACKETCAPTURE_MAX_MQTT_RETRIES`: Maximum MQTT connection retry attempts (0 = infinite)

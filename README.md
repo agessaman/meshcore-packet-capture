@@ -165,6 +165,37 @@ Examples:
 - `meshcore/{IATA}/packets` becomes `meshcore/SEA/packets`
 - `meshcore/{IATA_lower}/packets` becomes `meshcore/sea/packets`
 
+#### Per-Broker Topic Overrides
+You can override topics for a specific broker by setting broker-prefixed topic variables.
+Broker-specific topic variables take precedence over global topic variables.
+
+Supported per-broker topic keys:
+- `PACKETCAPTURE_MQTT<n>_TOPIC_STATUS`
+- `PACKETCAPTURE_MQTT<n>_TOPIC_PACKETS`
+- `PACKETCAPTURE_MQTT<n>_TOPIC_DECODED`
+- `PACKETCAPTURE_MQTT<n>_TOPIC_DEBUG`
+- `PACKETCAPTURE_MQTT<n>_TOPIC_RAW`
+
+Global fallbacks (used when broker-specific topic is not set):
+- `PACKETCAPTURE_TOPIC_STATUS`
+- `PACKETCAPTURE_TOPIC_PACKETS`
+- `PACKETCAPTURE_TOPIC_DECODED`
+- `PACKETCAPTURE_TOPIC_DEBUG`
+- `PACKETCAPTURE_TOPIC_RAW`
+
+Examples:
+```bash
+# MQTT8 status topic set to a fixed literal topic (no template placeholders)
+PACKETCAPTURE_MQTT1_TOPIC_STATUS=custom/status/topic/{PUBLIC_KEY}/status
+
+# MQTT8 packets topic using template placeholders
+PACKETCAPTURE_MQTT1_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets
+
+# Keep global defaults for other brokers
+PACKETCAPTURE_TOPIC_STATUS=meshcore/{IATA}/{PUBLIC_KEY}/status
+PACKETCAPTURE_TOPIC_PACKETS=meshcore/{IATA}/{PUBLIC_KEY}/packets
+```
+
 #### Authentication Methods
 
 **Username/Password Authentication:**

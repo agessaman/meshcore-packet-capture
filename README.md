@@ -137,6 +137,7 @@ The script discovers MQTT brokers sequentially starting at `MQTT1` and continues
 - `PACKETCAPTURE_MQTT1_TLS_VERIFY`: Verify TLS certificates (default: true)
 - `PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN`: Use auth token authentication
 - `PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE`: Token audience for auth token
+- `PACKETCAPTURE_MQTT1_JWT_EXPIRE_SECONDS`: JWT lifetime in seconds for broker 1 (overrides global, default: `86400`)
 - `PACKETCAPTURE_MQTT1_CLIENT_ID_PREFIX`: Client ID prefix
 - `PACKETCAPTURE_MQTT1_QOS`: Quality of Service level
 - `PACKETCAPTURE_MQTT1_RETAIN`: Retain messages
@@ -208,6 +209,7 @@ PACKETCAPTURE_MQTT1_PASSWORD=your_password
 ```bash
 PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN=true
 PACKETCAPTURE_MQTT1_TOKEN_AUDIENCE=mqtt.example.com
+PACKETCAPTURE_MQTT1_JWT_EXPIRE_SECONDS=3600
 PACKETCAPTURE_PRIVATE_KEY=your_private_key_here
 # OR
 PACKETCAPTURE_PRIVATE_KEY_FILE=/path/to/private_key_file

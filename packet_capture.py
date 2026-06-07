@@ -25,7 +25,7 @@ import hashlib
 import time
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 import argparse
@@ -2169,7 +2169,7 @@ class PacketCapture:
             lwt_topic = self.get_topic("status", broker_num)
             lwt_payload = json.dumps({
                 "status": "offline",
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "origin": self.device_name,
                 "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE'
             })
@@ -2282,7 +2282,7 @@ class PacketCapture:
         firmware_info = await self.get_firmware_info()
         status_msg = {
             "status": status,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "origin": self.device_name,
             "origin_id": self.device_public_key.upper() if self.device_public_key and self.device_public_key != 'Unknown' else 'DEVICE',
             "model": firmware_info.get('model', 'unknown'),
@@ -2848,7 +2848,7 @@ class PacketCapture:
     
     def format_packet_data(self, raw_hex: str, rf_data: Optional[Dict] = None) -> Dict[str, Any]:
         """Format packet data to match mctomqtt.py exactly"""
-        current_time = datetime.now()
+        current_time = datetime.now(timezone.utc)
         timestamp = current_time.isoformat()
         
         # Decode packet using the same logic as mctomqtt.py

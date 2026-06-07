@@ -84,13 +84,13 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 
 ## Configuration
 
-Configuration is loaded in this order (later sources do not override variables already set in the process environment):
+**TOML under `/etc/meshcore-packet-capture/` is the primary configuration source**, matching [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt). Configuration is resolved with this precedence (highest first):
 
-1. **`.env`** then **`.env.local`** in the working directory (repo root, `/opt/meshcore-packet-capture`, or `/app` in Docker) for development / manual installs
-2. **TOML**: `/etc/meshcore-packet-capture/config.toml` plus every `*.toml` in `/etc/meshcore-packet-capture/config.d/` (sorted). Broker entries use the same `[[broker]]` shape as [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt). See `config.toml.example` and bundled `presets/letsmesh.toml` (LetsMesh Packet Analyzer defaults).
-3. **`--config PATH`** (repeatable): if set, only these files are merged, in order (no automatic `/etc` scan).
+1. **Process environment** — `PACKETCAPTURE_*` variables already set in the environment (e.g. from a systemd unit, Docker `-e`, or your shell) always win.
+2. **TOML**: `/etc/meshcore-packet-capture/config.toml` plus every `*.toml` in `/etc/meshcore-packet-capture/config.d/` (sorted). Broker entries use the same `[[broker]]` shape as meshcoretomqtt. See `config.toml.example` and bundled `presets/letsmesh.toml` (LetsMesh Packet Analyzer defaults). With **`--config PATH`** (repeatable) only those files are merged, in order, and the automatic `/etc` scan is skipped.
+3. **Legacy `.env` / `.env.local`** (see below) — a development/manual-install convenience, loaded from the working directory. These are overridden by TOML, so they only take effect for keys the TOML config does not set.
 
-Values are applied as `PACKETCAPTURE_*` environment variables. See `.env` for the flat variable names that correspond to each TOML section.
+Values are applied as `PACKETCAPTURE_*` environment variables. See `config.toml.example` for every TOML key, or `.env` for the equivalent flat variable names.
 
 ### Python installer (recommended for Linux/macOS)
 
@@ -103,13 +103,17 @@ sudo bash install.sh
 
 Or bootstrap via curl (downloads the branch and runs `python3 -m installer install`). The installer installs under `/opt/meshcore-packet-capture`, configuration under `/etc/meshcore-packet-capture`, and offers bundled presets (default selection: LetsMesh).
 
-### Environment Files (local development)
+### Legacy environment files (local development)
 
-The script also loads:
+For development and manual installs, two flat key/value files are still read from the
+working directory (repo root, `/opt/meshcore-packet-capture`, or `/app` in Docker):
+
 1. `.env` - Default configuration (committed to repository)
-2. `.env.local` - Local overrides (not committed, for your specific setup)
+2. `.env.local` - Local overrides (not committed, for your specific setup; `.env.local` wins over `.env`)
 
-All logical keys use the `PACKETCAPTURE_` prefix. See the `.env` file for options.
+All logical keys use the `PACKETCAPTURE_` prefix. These files are **legacy**: the TOML
+config under `/etc/meshcore-packet-capture/` takes precedence over them. For service
+installs, configure via TOML (`config.d/99-user.toml`) instead.
 
 ### Configuration Variables
 
@@ -311,10 +315,13 @@ The project includes Docker support for deployment.
    cd meshcore-packet-capture
    ```
 
-2. **Create configuration** (optional):
+2. **Configure** (optional): edit the `environment:` block in `docker-compose.yml`
+   (the recommended approach — `PACKETCAPTURE_*` variables), or bind-mount a TOML
+   config directory at `/etc/meshcore-packet-capture` (uncomment the
+   `./meshcore-etc:/etc/meshcore-packet-capture:ro` volume). A legacy `.env.local`
+   bind-mount is also supported — copy the committed `.env` as a starting point:
    ```bash
-   # Create .env.local file with your settings
-   cp .env.example .env.local
+   cp .env .env.local
    # Edit .env.local with your configuration
    ```
 
@@ -364,7 +371,10 @@ docker run \
 
 ### Configuration in Docker
 
-Configuration can be provided via environment variables or volume-mounted `.env.local` files.
+Configuration can be provided three ways, in precedence order: `PACKETCAPTURE_*`
+environment variables (`-e` / the compose `environment:` block) win, then a
+volume-mounted TOML config at `/etc/meshcore-packet-capture` (recommended for
+non-trivial setups), then a legacy volume-mounted `.env.local`.
 
 ### Platform Considerations
 
@@ -474,10 +484,12 @@ This will show:
 - `packet_capture.py`: Repo-root launcher (adds `src` to `PYTHONPATH` for quick runs)
 - `pyproject.toml`: Package metadata and dependencies
 - `packaging/`: systemd and launchd unit templates
-- `devtools/`: Optional BLE/network/migration helpers (not installed to `/opt` by default)
+- `devtools/`: Optional BLE/network debugging helpers (not installed to `/opt` by default)
+- `config.toml.example`: Annotated reference for the TOML config under `/etc`
+- `presets/`: Bundled `[[broker]]` presets installed to `config.d/10-*.toml`
 - `install.sh` / `install.ps1` / `uninstall.sh`: Installation scripts
-- `.env`: Default configuration template
-- `.env.local`: Local configuration (created by installer or for Docker bind-mount)
+- `.env`: Legacy default configuration template (TOML takes precedence)
+- `.env.local`: Legacy local configuration (for dev or Docker bind-mount)
 
 ## Contributing
 

@@ -291,10 +291,22 @@ def apply_config_to_environ(
     *,
     base_path: str = DEFAULT_CONFIG_FILE,
     config_d: str = DEFAULT_CONFIG_D,
+    protected: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Load TOML and set os.environ for PACKETCAPTURE_* keys not already set."""
+    """Load TOML and apply it to os.environ as PACKETCAPTURE_* keys.
+
+    Precedence: TOML wins over values that were only sourced from ``.env`` files,
+    but never overrides the real process environment. Pass ``protected`` with the
+    set of keys present in ``os.environ`` *before* any ``.env`` files were loaded
+    (the genuine process env). Those keys are left untouched; every other key is
+    overwritten by the TOML value. When ``protected`` is ``None`` the legacy
+    behavior is used: only keys absent from ``os.environ`` are set.
+    """
     cfg = load_config(config_paths, base_path=base_path, config_d=config_d)
     for key, value in flatten_config_to_env_dict(cfg).items():
-        if key not in os.environ:
+        if protected is None:
+            if key not in os.environ:
+                os.environ[key] = value
+        elif key not in protected:
             os.environ[key] = value
     return cfg

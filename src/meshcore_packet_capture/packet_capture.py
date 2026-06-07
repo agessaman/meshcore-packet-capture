@@ -229,11 +229,18 @@ _environment_initialized = False
 
 
 def init_environment(config_paths: list[str] | None = None) -> None:
-    """Load .env files, then TOML (/etc or --config paths). Process env wins over files."""
+    """Load config into os.environ.
+
+    Precedence (highest first): real process env > TOML (/etc + config.d, or
+    --config paths) > .env.local > .env. The genuine process environment is
+    snapshotted before any files are read so TOML may overwrite values that came
+    only from .env files, while never clobbering real environment variables.
+    """
     global _environment_initialized
+    preexisting = set(os.environ)
     load_env_files()
     if apply_config_to_environ is not None:
-        apply_config_to_environ(config_paths)
+        apply_config_to_environ(config_paths, protected=preexisting)
     _environment_initialized = True
 
 

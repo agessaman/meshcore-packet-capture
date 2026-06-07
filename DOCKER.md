@@ -7,19 +7,15 @@
 
 ## Quick Start
 
-1. **Download configuration files**:
+1. **Download the compose file**:
    ```bash
-   # Download docker-compose.yml and .env.local.example
    curl -O https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/docker-compose.yml
-   curl -O https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/.env.local.example
    ```
 
-2. **Configure**:
-   ```bash
-   # Copy example configuration
-   cp .env.local.example .env.local
-   # Edit .env.local with your settings (IATA code, MQTT broker, etc.)
-   ```
+2. **Configure**: edit the `environment:` block in `docker-compose.yml` (the
+   recommended approach — set your IATA code, MQTT broker, etc. as `PACKETCAPTURE_*`
+   variables). For larger configs, bind-mount a TOML config directory at
+   `/etc/meshcore-packet-capture` instead (see [Configuration](#configuration)).
 
 3. **Start the container**:
    ```bash
@@ -84,12 +80,17 @@ The container path defaults to `/dev/ttyUSB0`, so no additional configuration is
 
 ## Configuration
 
-Configuration is provided via:
+Configuration is provided via the following sources, in precedence order (highest first):
 
-1. **Environment variables** in `docker-compose.yml`
-2. **`.env.local` file** mounted as a volume (recommended)
-
-The `.env.local` file supports all configuration options. See `.env.local.example` for available settings.
+1. **Environment variables** in `docker-compose.yml` (`PACKETCAPTURE_*`) — always win.
+2. **TOML config** bind-mounted at `/etc/meshcore-packet-capture` — recommended for
+   non-trivial setups. Uncomment the
+   `./meshcore-etc:/etc/meshcore-packet-capture:ro` volume in `docker-compose.yml`
+   and drop a `config.toml` (and optional `config.d/*.toml`) into `./meshcore-etc`.
+   See `config.toml.example` and the bundled `presets/`.
+3. **Legacy `.env.local`** mounted as a volume — overridden by the TOML config above.
+   The committed `.env` lists every available `PACKETCAPTURE_*` key; copy it to
+   `.env.local` as a starting point.
 
 ### Required Settings
 

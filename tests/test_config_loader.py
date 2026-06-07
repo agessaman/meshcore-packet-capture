@@ -84,6 +84,26 @@ def test_apply_config_respects_existing_env(monkeypatch: pytest.MonkeyPatch, tmp
     assert os.environ.get("PACKETCAPTURE_IATA") == "FROMENV"
 
 
+def test_toml_overrides_env_sourced_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """With ``protected`` given, TOML overwrites a key that only came from .env
+    but never overwrites a key from the real process env."""
+    base = tmp_path / "base.toml"
+    base.write_text('[general]\niata = "FROMTOML"\n')
+
+    # Snapshot real process env, then simulate a .env-sourced key.
+    monkeypatch.delenv("PACKETCAPTURE_IATA", raising=False)
+    preexisting = set(os.environ)
+    monkeypatch.setenv("PACKETCAPTURE_IATA", "FROMDOTENV")
+    cl.apply_config_to_environ([str(base)], protected=preexisting)
+    assert os.environ.get("PACKETCAPTURE_IATA") == "FROMTOML"
+
+    # A real process env var (present in the snapshot) is protected from TOML.
+    monkeypatch.setenv("PACKETCAPTURE_IATA", "FROMENV")
+    protected_with_env = set(os.environ)
+    cl.apply_config_to_environ([str(base)], protected=protected_with_env)
+    assert os.environ.get("PACKETCAPTURE_IATA") == "FROMENV"
+
+
 def test_topics_keys_uppercased():
     cfg = {"topics": {"status": "s", "raw": "r"}}
     env = cl.flatten_config_to_env_dict(cfg)

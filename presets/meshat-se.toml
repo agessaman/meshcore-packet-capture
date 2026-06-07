@@ -1,5 +1,5 @@
 [[broker]]
-name = "meshat.se"
+name = "meshat-se"
 enabled = true
 server = "mqtt.meshat.se"
 port = 8883

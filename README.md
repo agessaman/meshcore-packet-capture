@@ -23,10 +23,30 @@ Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt)
 
 ## Quick Start
 
-### Install
+### Install the app (recommended)
+
+Install the CLI from PyPI with [pipx](https://pipx.pypa.io) (keeps it in its own isolated environment):
+
+```bash
+pipx install meshcore-packet-capture
+meshcore-packet-capture --help
+```
+
+This gives you the `meshcore-packet-capture` command for manual runs and development.
+It does **not** create a background service — see below to run it as a managed
+systemd/launchd service.
+
+### Install as a managed service (systemd / launchd)
+
+For a turnkey install that creates a service account, installs a systemd (Linux) or
+launchd (macOS) unit, and writes config under `/etc`, use the bootstrap installer:
+
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh)
 ```
+
+> **Note:** the bootstrap installer is a secondary install path and is slated for
+> deprecation in a future release as the PyPI-based workflow matures.
 
 ### Uninstall
 ```bash
@@ -56,11 +76,20 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 
 ## Installation
 
-### Local Installation
+### From PyPI (recommended)
 
 ```bash
-pip install meshcore paho-mqtt
+# Isolated CLI install (recommended)
+pipx install meshcore-packet-capture
+
+# …or into the current environment
+pip install meshcore-packet-capture
 ```
+
+This installs the `meshcore-packet-capture` command and all dependencies. Use this for
+manual runs, development, or when you manage the process yourself. To run it as a
+managed background service, use the bootstrap installer (see [Quick Start](#quick-start)
+and [Managed-service installer](#managed-service-installer-linux-and-macos) below).
 
 ### Docker Installation
 
@@ -92,7 +121,13 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 
 Values are applied as `PACKETCAPTURE_*` environment variables. See `config.toml.example` for every TOML key, or `.env` for the equivalent flat variable names.
 
-### Python installer (recommended for Linux/macOS)
+### Managed-service installer (Linux and macOS)
+
+This is the secondary install path (slated for deprecation as the PyPI workflow
+matures). Use it when you want a managed background service rather than just the CLI:
+it installs under `/opt/meshcore-packet-capture`, writes configuration under
+`/etc/meshcore-packet-capture`, creates a service account and a systemd (Linux) or
+launchd (macOS) unit, and offers bundled presets (default selection: LetsMesh).
 
 From a repo checkout (requires root):
 
@@ -101,7 +136,7 @@ export LOCAL_INSTALL=/path/to/meshcore-packet-capture
 sudo bash install.sh
 ```
 
-Or bootstrap via curl (downloads the branch and runs `python3 -m installer install`). The installer installs under `/opt/meshcore-packet-capture`, configuration under `/etc/meshcore-packet-capture`, and offers bundled presets (default selection: LetsMesh).
+Or bootstrap via curl (downloads the branch and runs `python3 -m installer install`).
 
 ### Legacy environment files (local development)
 

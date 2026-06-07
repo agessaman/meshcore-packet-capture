@@ -1,0 +1,91 @@
+name: release
+
+# Publishes the package to PyPI via Trusted Publishing (OIDC — no API tokens).
+#
+# One-time setup on pypi.org (project owner):
+#   PyPI -> project "meshcore-packet-capture" -> Publishing -> add a trusted
+#   publisher: owner=agessaman, repo=meshcore-packet-capture,
+#   workflow=release.yml, environment=pypi. Configure the matching publisher on
+#   test.pypi.org with environment=testpypi for the dry-run path.
+#
+# Usage:
+#   - Real release: push a tag like `v2.0.0` (must match __version__).
+#   - Dry run:      Actions -> release -> "Run workflow" (publishes to TestPyPI).
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          pkg_version="$(grep -E '^__version__' src/meshcore_packet_capture/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')"
+          tag_version="${GITHUB_REF_NAME#v}"
+          echo "package=$pkg_version tag=$tag_version"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "::error::Tag $tag_version does not match __version__ $pkg_version"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Check distribution metadata
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/meshcore-packet-capture
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/meshcore-packet-capture
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

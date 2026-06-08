@@ -1090,8 +1090,12 @@ class PacketCapture:
     
     
     
-    async def create_jwt_with_private_key(self, audience: str = None) -> Optional[str]:
-        """Create JWT using on-device signing (preferred) or private key from device"""
+    async def create_jwt_with_private_key(self, audience: str = None, expiry_seconds: int = 86400) -> Optional[str]:
+        """Create JWT using on-device signing (preferred) or private key from device.
+
+        ``expiry_seconds`` sets the JWT lifetime (default 24h); pass a smaller value
+        for brokers that require shorter-lived tokens.
+        """
         try:
             if not create_auth_token_async and not create_auth_token:
                 return None
@@ -1142,6 +1146,7 @@ class PacketCapture:
                     jwt_token = await create_auth_token_async(
                         self.device_public_key,
                         meshcore_instance=self.meshcore,
+                        expiry_seconds=expiry_seconds,
                         **claims
                     )
                     self.logger.info("✓ JWT created using on-device signing")
@@ -1191,10 +1196,14 @@ class PacketCapture:
                 jwt_token = await create_auth_token_async(
                     self.device_public_key,
                     private_key_hex=private_key,
+                    expiry_seconds=expiry_seconds,
                     **claims
                 )
             else:
-                jwt_token = create_auth_token(self.device_public_key, private_key, **claims)
+                jwt_token = create_auth_token(
+                    self.device_public_key, private_key,
+                    expiry_seconds=expiry_seconds, **claims
+                )
             
             self.logger.info("✓ JWT created using private key from device")
             return jwt_token
@@ -1209,9 +1218,13 @@ class PacketCapture:
     
     async def create_auth_token_jwt(self, audience: str = None, broker_num: int = None) -> Optional[str]:
         """Create JWT token using on-device signing or private key from device"""
+        # Per-broker JWT lifetime override (seconds); defaults to 24h.
+        expiry_seconds = 86400
+        if broker_num is not None:
+            expiry_seconds = self.get_env_int(f'MQTT{broker_num}_TOKEN_TTL', 86400)
         # Use on-device signing (preferred) or private key method (fallback)
         # The create_jwt_with_private_key() method already logs which method was used
-        jwt_token = await self.create_jwt_with_private_key(audience)
+        jwt_token = await self.create_jwt_with_private_key(audience, expiry_seconds=expiry_seconds)
         if jwt_token:
             # Store token with expiry time if broker_num is provided
             if broker_num is not None:
@@ -3511,24 +3524,50 @@ class PacketCapture:
                 if await self.wait_with_shutdown(60):
                     break  # Shutdown was requested
     
+    def seconds_until_next_renewal(self) -> float:
+        """Seconds to sleep before the next JWT renewal check.
+
+        Driven by the soonest token's expiry (``expires_at - jwt_renewal_threshold``)
+        so short-lived tokens (e.g. a 1h broker) are renewed in time regardless of
+        the configured interval, while long-lived tokens don't wake us needlessly.
+        Clamped to ``[5s, jwt_renewal_interval]``: the lower bound avoids a busy
+        loop when a token is already due, and the upper bound keeps a periodic
+        safety-net check (and is the fallback when no tokens are tracked yet).
+        """
+        cap = self.jwt_renewal_interval if self.jwt_renewal_interval > 0 else 3600
+        soonest_renew_at = None
+        for info in self.jwt_tokens.values():
+            expires_at = info.get('expires_at')
+            if expires_at is None:
+                continue
+            renew_at = expires_at - self.jwt_renewal_threshold
+            if soonest_renew_at is None or renew_at < soonest_renew_at:
+                soonest_renew_at = renew_at
+        if soonest_renew_at is None:
+            return float(cap)
+        return max(5.0, min(soonest_renew_at - time.time(), float(cap)))
+
     async def jwt_renewal_scheduler(self):
         """Background task to check and renew JWT tokens"""
         if self.jwt_renewal_interval <= 0:
             if self.debug:
                 self.logger.debug("JWT renewal scheduling disabled (interval = 0)")
             return
-        
+
         if self.debug:
-            self.logger.debug(f"Starting JWT renewal scheduler with {self.jwt_renewal_interval} second interval")
-        
+            self.logger.debug(f"Starting JWT renewal scheduler (expiry-driven, max {self.jwt_renewal_interval}s between checks)")
+
         while not self.should_exit:
             try:
-                if await self.wait_with_shutdown(self.jwt_renewal_interval):
+                sleep_for = self.seconds_until_next_renewal()
+                if self.debug:
+                    self.logger.debug(f"JWT renewal: next check in {sleep_for:.0f}s")
+                if await self.wait_with_shutdown(sleep_for):
                     break  # Shutdown was requested
-                
+
                 # Check and renew JWT tokens
                 await self.check_and_renew_jwt_tokens()
-                    
+
             except asyncio.CancelledError:
                 if self.debug:
                     self.logger.debug("JWT renewal scheduler cancelled")

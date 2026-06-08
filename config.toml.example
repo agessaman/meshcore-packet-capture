@@ -82,3 +82,7 @@ rf_data_timeout = 15.0
 # username = ""
 # password = ""
 # topic_token = "" # Optional: used for {TOKEN} placeholder in broker.topics templates
+#
+# For method = "token" brokers:
+# audience = "mqtt.example.com"
+# token_ttl = 3600  # Optional: JWT lifetime in seconds (default 86400 = 24h)

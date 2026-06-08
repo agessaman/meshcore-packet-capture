@@ -3,6 +3,7 @@ config.ini
 .env.*
 old/
 advert_state.json
+mytest.toml
 
 # Python
 __pycache__/

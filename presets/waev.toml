@@ -15,3 +15,5 @@ verify = true
 [broker.auth]
 method = "token"
 audience = "mqtt.waev.app"
+# WAEV requires a shorter-lived JWT than the 24h default (value in seconds).
+token_ttl = 3600

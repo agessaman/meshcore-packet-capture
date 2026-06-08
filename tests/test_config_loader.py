@@ -55,6 +55,46 @@ def test_flatten_brokers_to_mqtt_slots():
     assert env["PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE"] == "aud"
 
 
+def test_flatten_broker_token_ttl():
+    cfg = {
+        "broker": [
+            {
+                "name": "waev",
+                "enabled": True,
+                "server": "mqtt.waev.app",
+                "port": 443,
+                "auth": {"method": "token", "audience": "mqtt.waev.app", "token_ttl": 3600},
+            },
+            # token broker without token_ttl -> no TOKEN_TTL emitted (uses default later)
+            {
+                "name": "letsmesh-us",
+                "enabled": True,
+                "server": "mqtt-us-v1.letsmesh.net",
+                "auth": {"method": "token", "audience": "mqtt-us-v1.letsmesh.net"},
+            },
+        ]
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert env["PACKETCAPTURE_MQTT1_TOKEN_TTL"] == "3600"
+    assert "PACKETCAPTURE_MQTT2_TOKEN_TTL" not in env
+
+
+def test_flatten_token_ttl_ignored_for_non_token_auth():
+    cfg = {
+        "broker": [
+            {
+                "name": "pw",
+                "enabled": True,
+                "server": "mqtt.example.com",
+                # token_ttl is meaningless for password auth and must not be emitted
+                "auth": {"method": "password", "username": "u", "password": "p", "token_ttl": 60},
+            }
+        ]
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert "PACKETCAPTURE_MQTT1_TOKEN_TTL" not in env
+
+
 def test_flatten_broker_topic_token():
     cfg = {
         "broker": [

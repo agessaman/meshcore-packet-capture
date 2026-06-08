@@ -282,8 +282,6 @@ def flatten_config_to_env_dict(config: dict[str, Any]) -> dict[str, str]:
         for k, v in _broker_to_env_slot(broker, slot).items():
             env["PACKETCAPTURE_" + k] = v
         slot += 1
-        if slot > 6:
-            break
 
     return env
 

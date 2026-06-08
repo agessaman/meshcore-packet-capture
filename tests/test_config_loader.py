@@ -55,6 +55,19 @@ def test_flatten_brokers_to_mqtt_slots():
     assert env["PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE"] == "aud"
 
 
+def test_flatten_supports_more_than_six_brokers():
+    cfg = {
+        "broker": [
+            {"name": f"b{i}", "enabled": True, "server": f"mqtt{i}.example", "port": 1883}
+            for i in range(1, 9)  # 8 enabled brokers
+        ]
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    # No fixed 6-broker cap: slots 7 and 8 must be emitted too.
+    assert env["PACKETCAPTURE_MQTT7_SERVER"] == "mqtt7.example"
+    assert env["PACKETCAPTURE_MQTT8_SERVER"] == "mqtt8.example"
+
+
 def test_flatten_broker_token_ttl():
     cfg = {
         "broker": [

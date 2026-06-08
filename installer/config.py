@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import tomllib
 import time
@@ -119,22 +120,210 @@ def _companions_to_toml_array(csv: str) -> str:
 # TOML generation helpers
 # ---------------------------------------------------------------------------
 
-def write_user_toml_base(dest: str, iata: str, serial_device: str, repo: str, branch: str) -> None:
-    """Write the initial user TOML with general settings and serial config."""
-    content = f"""# MeshCore Packet Capture - User Configuration
-# This file contains your local overrides to the defaults in config.toml
+def write_user_toml_base(
+    dest: str,
+    iata: str,
+    repo: str,
+    branch: str,
+    connection: dict[str, Any] | None = None,
+) -> None:
+    """Write the initial user TOML with general settings and the chosen connection.
 
-[general]
-iata = "{toml_escape(iata)}"
+    ``connection`` describes the device link and is one of:
+      {"type": "serial", "serial_device": "/dev/ttyUSB0"}
+      {"type": "ble", "ble_address": "...", "ble_device_name": "..."}
+      {"type": "tcp", "tcp_host": "host", "tcp_port": 5000}
+    Defaults to serial on /dev/ttyUSB0 when not provided.
+    """
+    if connection is None:
+        connection = {"type": "serial", "serial_device": "/dev/ttyUSB0"}
+    ctype = connection.get("type", "serial")
 
-[serial]
-ports = ["{toml_escape(serial_device)}"]
+    lines = [
+        "# MeshCore Packet Capture - User Configuration",
+        "# This file contains your local overrides to the defaults in config.toml",
+        "",
+        "[general]",
+        f'iata = "{toml_escape(iata)}"',
+        "",
+        "[capture]",
+        f'connection_type = "{toml_escape(ctype)}"',
+    ]
+    if ctype == "ble":
+        if connection.get("ble_address"):
+            lines.append(f'ble_address = "{toml_escape(connection["ble_address"])}"')
+        if connection.get("ble_device_name"):
+            lines.append(f'ble_device_name = "{toml_escape(connection["ble_device_name"])}"')
+    elif ctype == "tcp":
+        lines.append(f'tcp_host = "{toml_escape(connection.get("tcp_host", "localhost"))}"')
+        lines.append(f"tcp_port = {int(connection.get('tcp_port', 5000))}")
+    lines.append("")
 
-[update]
-repo = "{toml_escape(repo)}"
-branch = "{toml_escape(branch)}"
-"""
-    Path(dest).write_text(content)
+    if ctype == "serial":
+        lines.append("[serial]")
+        lines.append(f'ports = ["{toml_escape(connection.get("serial_device", "/dev/ttyUSB0"))}"]')
+        lines.append("")
+
+    lines.append("[update]")
+    lines.append(f'repo = "{toml_escape(repo)}"')
+    lines.append(f'branch = "{toml_escape(branch)}"')
+    lines.append("")
+    Path(dest).write_text("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Device connection configuration (serial / BLE / TCP)
+# ---------------------------------------------------------------------------
+
+def _venv_python(ctx: InstallerContext) -> str:
+    """Path to the venv python (has bleak/meshcore); falls back to system python3."""
+    candidate = os.path.join(ctx.install_dir, "venv", "bin", "python3")
+    return candidate if os.path.isfile(candidate) else "python3"
+
+
+def _devtools_helper(ctx: InstallerContext, name: str) -> str | None:
+    """Locate a bundled devtools helper in the source tree available at config time."""
+    repo_dir = ctx.repo_dir or ctx.local_install
+    if not repo_dir:
+        return None
+    path = os.path.join(repo_dir, "devtools", name)
+    return path if os.path.isfile(path) else None
+
+
+def scan_and_select_ble_device(ctx: InstallerContext) -> tuple[str | None, str | None]:
+    """Scan for MeshCore BLE devices and let the user pick one.
+
+    Returns (address, name); falls back to manual entry when scanning is
+    unavailable or finds nothing. Returns (None, None) if the user enters nothing.
+    """
+    helper = _devtools_helper(ctx, "ble_scan_helper.py")
+    devices: list[dict[str, Any]] = []
+    if helper:
+        try:
+            print_info("Scanning for nearby BLE devices (~10s)...")
+            result = subprocess.run(
+                [_venv_python(ctx), helper],
+                capture_output=True, text=True, timeout=45,
+            )
+            if result.stdout.strip():
+                devices = json.loads(result.stdout.strip().splitlines()[-1])
+        except (subprocess.SubprocessError, json.JSONDecodeError, OSError) as e:
+            print_warning(f"BLE scan failed: {e}")
+    else:
+        print_warning("BLE scan helper not available; enter the device manually.")
+
+    if devices:
+        print_success(f"Found {len(devices)} MeshCore BLE device(s):")
+        for i, dev in enumerate(devices, 1):
+            print(f"  {i}) {dev.get('name', 'Unknown')} ({dev.get('address', '?')})")
+        print(f"  {len(devices) + 1}) Enter manually")
+        print()
+        choice = prompt_input(f"Select device [1-{len(devices) + 1}]", "1")
+        try:
+            idx = int(choice)
+        except ValueError:
+            idx = 1
+        if 1 <= idx <= len(devices):
+            dev = devices[idx - 1]
+            return dev.get("address"), dev.get("name")
+
+    # Manual entry
+    address = prompt_input("Enter BLE device MAC address / UUID", "").strip()
+    name = prompt_input("Enter device name (optional)", "").strip()
+    return (address or None), (name or None)
+
+
+def pair_ble_device(ctx: InstallerContext, address: str, name: str) -> bool:
+    """Best-effort BLE pairing via the bundled helper. Never blocks the install.
+
+    Returns True if paired / already paired / pairing was skipped; False only when
+    the user explicitly gives up after a failure.
+    """
+    helper = _devtools_helper(ctx, "ble_pairing_helper.py")
+    if not helper:
+        print_info("BLE pairing helper not available; skipping automatic pairing.")
+        return True
+
+    pin: str | None = None
+    while True:
+        cmd = [_venv_python(ctx), helper, address, name or address]
+        if pin:
+            cmd.append(pin)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except subprocess.SubprocessError as e:
+            print_warning(f"Pairing check failed to run: {e}; continuing without pairing.")
+            return True
+
+        status = "unknown"
+        if result.stdout.strip():
+            try:
+                status = json.loads(result.stdout.strip().splitlines()[-1]).get("status", "unknown")
+            except json.JSONDecodeError:
+                pass
+
+        if status == "paired" or result.returncode == 0 and status in ("paired", "unknown"):
+            print_success(f"BLE device ready: {name or address} ({address})")
+            return True
+        if status == "not_paired":
+            pin = prompt_input("Device requires pairing. Enter PIN (blank to skip)", "").strip()
+            if not pin:
+                print_warning("Skipping pairing; you may need to pair the device manually.")
+                return True
+            continue
+        # not_found / error
+        print_warning(f"Could not pair with {address} (status: {status}).")
+        if not prompt_yes_no("Retry pairing?", "n"):
+            return True
+
+
+def configure_tcp_connection() -> dict[str, Any]:
+    """Prompt for TCP host/port (e.g. a ser2net bridge)."""
+    host = prompt_input("Enter TCP host (IP or hostname)", "localhost").strip() or "localhost"
+    port_raw = prompt_input("Enter TCP port", "5000").strip()
+    try:
+        port = int(port_raw)
+    except ValueError:
+        print_warning(f"Invalid port '{port_raw}'; using 5000.")
+        port = 5000
+    return {"type": "tcp", "tcp_host": host, "tcp_port": port}
+
+
+def select_connection_type(ctx: InstallerContext) -> dict[str, Any]:
+    """Interactive device-connection selection (BLE / serial / TCP).
+
+    Returns a connection dict suitable for write_user_toml_base().
+    """
+    print()
+    print_header("Device Connection Configuration")
+    print()
+    print_info("How would you like to connect to your MeshCore device?")
+    print("  1) Bluetooth Low Energy (BLE) - wireless; T1000e and compatible devices")
+    print("  2) Serial - direct USB/serial cable")
+    print("  3) TCP - network bridge (e.g. ser2net)")
+    print()
+
+    while True:
+        choice = prompt_input("Select connection type [1-3]", "1")
+        if choice == "1":
+            print_info("Selected: Bluetooth Low Energy (BLE)")
+            address, name = (None, None)
+            if prompt_yes_no("Scan for nearby BLE devices?", "y"):
+                address, name = scan_and_select_ble_device(ctx)
+            else:
+                address = prompt_input("Enter BLE device MAC address / UUID", "").strip() or None
+                name = prompt_input("Enter device name (optional)", "").strip() or None
+            if address:
+                pair_ble_device(ctx, address, name or "")
+            return {"type": "ble", "ble_address": address or "", "ble_device_name": name or ""}
+        if choice == "2":
+            print_info("Selected: Serial Connection")
+            from .system import select_serial_device
+            return {"type": "serial", "serial_device": select_serial_device()}
+        if choice == "3":
+            print_info("Selected: TCP Connection")
+            return configure_tcp_connection()
+        print_error("Invalid choice. Please enter 1, 2, or 3.")
 
 
 def append_disabled_broker_toml(dest: str, broker_name: str) -> None:
@@ -1007,11 +1196,10 @@ def configure_mqtt_brokers(ctx: InstallerContext) -> None:
     user_toml_path = migrate_user_config_filename(ctx.config_dir)
     user_toml = str(user_toml_path)
 
-    # Ensure 99-user.toml exists with base settings
+    # Ensure 99-user.toml exists with base settings (device connection + general)
     if not Path(user_toml).exists():
-        from .system import select_serial_device
-        serial_device = select_serial_device()
-        write_user_toml_base(user_toml, "XXX", serial_device, ctx.repo, ctx.branch)
+        connection = select_connection_type(ctx)
+        write_user_toml_base(user_toml, "XXX", ctx.repo, ctx.branch, connection)
 
     added_brokers = False
     had_existing_brokers = _config_dir_has_broker(ctx.config_dir)

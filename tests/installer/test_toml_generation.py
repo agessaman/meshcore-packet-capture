@@ -25,9 +25,10 @@ def _parse(path: Path) -> dict:
 
 def test_write_user_toml_base(tmp_path: Path):
     dest = tmp_path / "99-user.toml"
-    write_user_toml_base(str(dest), "SEA", "/dev/ttyUSB0", "agessaman/x", "main")
+    write_user_toml_base(str(dest), "SEA", "agessaman/x", "main", {"type": "serial", "serial_device": "/dev/ttyUSB0"})
     data = _parse(dest)
     assert data["general"]["iata"] == "SEA"
+    assert data["capture"]["connection_type"] == "serial"
     assert data["serial"]["ports"] == ["/dev/ttyUSB0"]
     assert data["update"]["repo"] == "agessaman/x"
     assert data["update"]["branch"] == "main"
@@ -35,7 +36,7 @@ def test_write_user_toml_base(tmp_path: Path):
 
 def test_base_plus_disabled_broker(tmp_path: Path):
     dest = tmp_path / "99-user.toml"
-    write_user_toml_base(str(dest), "SEA", "/dev/ttyUSB0", "agessaman/x", "main")
+    write_user_toml_base(str(dest), "SEA", "agessaman/x", "main", {"type": "serial", "serial_device": "/dev/ttyUSB0"})
     append_disabled_broker_toml(str(dest), "letsmesh-eu")
     data = _parse(dest)
     assert data["broker"][0] == {"name": "letsmesh-eu", "enabled": False}
@@ -43,7 +44,7 @@ def test_base_plus_disabled_broker(tmp_path: Path):
 
 def test_base_plus_letsmesh_broker(tmp_path: Path):
     dest = tmp_path / "99-user.toml"
-    write_user_toml_base(str(dest), "SEA", "/dev/ttyUSB0", "agessaman/x", "main")
+    write_user_toml_base(str(dest), "SEA", "agessaman/x", "main", {"type": "serial", "serial_device": "/dev/ttyUSB0"})
     append_letsmesh_broker_toml(
         str(dest), "letsmesh-us", "mqtt-us-v1.letsmesh.net",
         "mqtt-us-v1.letsmesh.net", "A" * 64, "u@example.com",
@@ -58,7 +59,7 @@ def test_base_plus_letsmesh_broker(tmp_path: Path):
 
 def test_custom_broker_password_and_remote_serial(tmp_path: Path):
     dest = tmp_path / "99-user.toml"
-    write_user_toml_base(str(dest), "SEA", "/dev/ttyUSB0", "agessaman/x", "main")
+    write_user_toml_base(str(dest), "SEA", "agessaman/x", "main", {"type": "serial", "serial_device": "/dev/ttyUSB0"})
     append_custom_broker_toml(
         str(dest), "mybroker", "mqtt.example.com", "1883", "tcp",
         "true", "false", "password", username="u", password="p",

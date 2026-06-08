@@ -146,20 +146,6 @@ def env_to_toml(env: dict[str, str]) -> str:
         lines.extend(cap_lines)
         lines.append("")
 
-    # Remote serial
-    rs_enabled = env.get("PACKETCAPTURE_REMOTE_SERIAL_ENABLED", "false")
-    rs_companions = env.get("PACKETCAPTURE_REMOTE_SERIAL_ALLOWED_COMPANIONS", "")
-    if rs_enabled == "true" or rs_companions:
-        lines.append("[remote_serial]")
-        lines.append(f"enabled = {rs_enabled}")
-        if rs_companions:
-            companion_list = [c.strip() for c in rs_companions.split(",") if c.strip()]
-            comp_str = ", ".join(f'"{c}"' for c in companion_list)
-            lines.append(f"allowed_companions = [{comp_str}]")
-        else:
-            lines.append("allowed_companions = []")
-        lines.append("")
-
     # Brokers
     for broker_num in range(1, 5):
         prefix = f"PACKETCAPTURE_MQTT{broker_num}_"

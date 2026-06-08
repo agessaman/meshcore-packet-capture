@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from installer.config import (
-    _companions_to_toml_array,
     toml_escape,
     validate_email,
     validate_meshcore_pubkey,
@@ -54,12 +53,3 @@ def test_email_invalid(email):
 
 def test_toml_escape_quotes_and_backslashes():
     assert toml_escape(r'a"b\c') == r'a\"b\\c'
-
-
-def test_companions_array_empty():
-    assert _companions_to_toml_array("") == "[]"
-    assert _companions_to_toml_array("  , ,") == "[]"
-
-
-def test_companions_array_multiple():
-    assert _companions_to_toml_array("K1, K2 ,K3") == '["K1", "K2", "K3"]'

@@ -208,13 +208,7 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
                 if email_match and email_match.group(1):
                     print_info(f"Current email: {email_match.group(1)}")
 
-                # Show remote serial config
-                rs_match = re.search(r'\[remote_serial\]\s*\n\s*enabled\s*=\s*(\w+)', content)
-                rs_status = rs_match.group(1) if rs_match else "not configured"
-                print()
-                print(f"  Remote Serial: {rs_status}")
-
-                if prompt_yes_no("Update owner information or remote serial configuration?", "n"):
+                if prompt_yes_no("Update owner information?", "n"):
                     update_owner_info(ctx.config_dir)
     else:
         configure_mqtt_brokers(ctx)

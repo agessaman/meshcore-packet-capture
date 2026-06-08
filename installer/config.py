@@ -106,16 +106,6 @@ def toml_escape(val: str) -> str:
     return val
 
 
-def _companions_to_toml_array(csv: str) -> str:
-    """Convert comma-separated companion keys to a TOML array string."""
-    if not csv:
-        return "[]"
-    keys = [k.strip() for k in csv.split(",") if k.strip()]
-    if not keys:
-        return "[]"
-    return "[" + ", ".join(f'"{k}"' for k in keys) + "]"
-
-
 # ---------------------------------------------------------------------------
 # TOML generation helpers
 # ---------------------------------------------------------------------------
@@ -464,20 +454,6 @@ def append_custom_broker_toml(
         f.write("\n".join(lines))
 
 
-def append_remote_serial_toml(dest: str, companions_csv: str) -> None:
-    """Append remote serial config to a TOML file."""
-    companions_array = _companions_to_toml_array(companions_csv)
-    enabled = "true" if companions_csv else "false"
-
-    block = f"""
-[remote_serial]
-enabled = {enabled}
-allowed_companions = {companions_array}
-"""
-    with open(dest, "a") as f:
-        f.write(block)
-
-
 def append_token_owner_overrides_toml(
     dest: str,
     broker_names: list[str],
@@ -689,41 +665,6 @@ def _toml_dumps(data: dict[str, Any]) -> str:
     lines: list[str] = []
     _emit_table(lines, [], data)
     return "\n".join(lines).rstrip() + "\n"
-
-
-def _set_remote_serial(user_toml: str | Path, companions_csv: str) -> None:
-    """Set [remote_serial] enabled/allowed_companions, replacing any existing block."""
-    path = Path(user_toml)
-    data = _load_user_toml(path)
-
-    companions = [k.strip() for k in companions_csv.split(",") if k.strip()]
-    rs = data.get("remote_serial")
-    if not isinstance(rs, dict):
-        rs = {}
-        data["remote_serial"] = rs
-    rs["enabled"] = bool(companions)
-    rs["allowed_companions"] = companions
-
-    _write_user_toml(path, data)
-
-
-def _read_remote_serial_companions(user_toml: str | Path) -> str:
-    """Return CSV of currently-configured remote_serial allowed_companions."""
-    path = Path(user_toml)
-    if not path.exists():
-        return ""
-    try:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return ""
-    rs = data.get("remote_serial")
-    if not isinstance(rs, dict):
-        return ""
-    companions = rs.get("allowed_companions", [])
-    if not isinstance(companions, list):
-        return ""
-    return ",".join(str(c) for c in companions if c)
 
 
 # ---------------------------------------------------------------------------
@@ -1112,57 +1053,6 @@ def prompt_owner_pubkey(existing: str = "") -> str:
             return ""
 
 
-def prompt_allowed_companions(existing: str = "") -> str:
-    """Prompt for remote serial allowed companions. Returns comma-separated keys or empty."""
-    print()
-    print_header("Remote Serial Access (Experimental)")
-    print()
-    print_info("Remote Serial allows you to execute serial commands on your node")
-    print_info("remotely via the LetsMesh Packet Analyzer web interface.")
-    print()
-    print_info("You must specify which companion devices (by public key) are")
-    print_info("authorized to send commands. Commands are cryptographically signed.")
-    print()
-
-    if existing:
-        print_info("Current allowed companions:")
-        for key in existing.split(","):
-            key = key.strip()
-            if key:
-                print(f"  - {key}")
-        print()
-
-    if not prompt_yes_no("Configure remote serial access?", "n"):
-        return existing
-
-    print()
-    print_info("Enter companion public keys (64 hex chars each)")
-    print_info("Enter one key at a time. Leave empty when done.")
-    print()
-
-    keys: list[str] = []
-    key_num = 1
-
-    while True:
-        key = prompt_input(f"Companion {key_num} public key (empty to finish)")
-
-        if not key:
-            break
-
-        validated = validate_meshcore_pubkey(key)
-        if validated is not None:
-            keys.append(validated)
-            print_success(f"Added: {validated}")
-            key_num += 1
-        else:
-            print_error("Invalid public key format. Must be 64 hex characters.")
-
-    if not keys:
-        return ""
-
-    return ",".join(keys)
-
-
 # ---------------------------------------------------------------------------
 # Configure custom broker (interactive)
 # ---------------------------------------------------------------------------
@@ -1383,16 +1273,6 @@ def _configure_token_preset_overrides(config_dir: str) -> None:
         _rewrite_token_owner_overrides_toml(user_toml, broker_names, owner_pubkey, owner_email)
         print_success(f"Owner info updated for {preset_path.name}")
 
-    existing_companions = _read_remote_serial_companions(user_toml)
-    new_companions = prompt_allowed_companions(existing_companions)
-    if new_companions != existing_companions:
-        _set_remote_serial(user_toml, new_companions)
-        if new_companions:
-            count = len([k for k in new_companions.split(",") if k.strip()])
-            print_success(f"Remote serial access enabled with {count} companion(s)")
-        else:
-            print_success("Remote serial access disabled")
-
 
 def _shared_metadata_default(metadata: dict[str, tuple[str, str]], idx: int) -> str:
     """Return the shared existing owner/email value if all brokers agree."""
@@ -1567,24 +1447,12 @@ def update_owner_info(config_dir: str) -> None:
         content = re.sub(r'^(email\s*=\s*).*$', f'\\1"{new_email}"', content, flags=re.MULTILINE)
     Path(user_toml).write_text(content)
 
-    # Prompt for remote serial companions
-    existing_companions = _read_remote_serial_companions(user_toml)
-    new_companions = prompt_allowed_companions(existing_companions)
-    if new_companions != existing_companions:
-        _set_remote_serial(user_toml, new_companions)
-
     # Summary
     changes = []
     if new_owner:
         changes.append(f"owner: {new_owner}")
     if new_email:
         changes.append(f"email: {new_email}")
-    if new_companions != existing_companions:
-        if new_companions:
-            count = len([k for k in new_companions.split(",") if k.strip()])
-            changes.append(f"remote serial: enabled with {count} companion(s)")
-        else:
-            changes.append("remote serial: disabled")
 
     if changes:
         print_success(f"Updated configuration: {', '.join(changes)}")

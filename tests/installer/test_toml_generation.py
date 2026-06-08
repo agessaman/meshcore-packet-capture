@@ -13,7 +13,6 @@ from installer.config import (
     append_custom_broker_toml,
     append_disabled_broker_toml,
     append_letsmesh_broker_toml,
-    append_remote_serial_toml,
     write_user_toml_base,
 )
 
@@ -57,21 +56,18 @@ def test_base_plus_letsmesh_broker(tmp_path: Path):
     assert broker["auth"]["owner"] == "A" * 64
 
 
-def test_custom_broker_password_and_remote_serial(tmp_path: Path):
+def test_custom_broker_password(tmp_path: Path):
     dest = tmp_path / "99-user.toml"
     write_user_toml_base(str(dest), "SEA", "agessaman/x", "main", {"type": "serial", "serial_device": "/dev/ttyUSB0"})
     append_custom_broker_toml(
         str(dest), "mybroker", "mqtt.example.com", "1883", "tcp",
         "true", "false", "password", username="u", password="p",
     )
-    append_remote_serial_toml(str(dest), "KEY1,KEY2")
     data = _parse(dest)
     broker = data["broker"][0]
     assert broker["port"] == 1883
     assert broker["tls"]["verify"] is False
     assert broker["auth"] == {"method": "password", "username": "u", "password": "p"}
-    assert data["remote_serial"]["enabled"] is True
-    assert data["remote_serial"]["allowed_companions"] == ["KEY1", "KEY2"]
 
 
 # --- _toml_dumps round-trip -----------------------------------------------
@@ -80,7 +76,8 @@ def test_toml_dumps_roundtrips_nested_and_arrays():
     doc = {
         "general": {"iata": "SEA", "log_level": "DEBUG"},
         "serial": {"ports": ["/dev/ttyUSB0", "/dev/ttyACM0"], "baud_rate": 115200},
-        "remote_serial": {"enabled": True, "allowed_companions": []},
+        # exercise a nested table with a bool and an empty array
+        "misc": {"flag": True, "items": []},
         "broker": [
             {
                 "name": "letsmesh-us",

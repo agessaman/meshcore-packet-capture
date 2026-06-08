@@ -102,24 +102,6 @@ def test_capture_numeric_vs_string():
     assert data["capture"]["advert_interval_hours"] == 11
 
 
-# --- remote serial ---------------------------------------------------------
-
-def test_remote_serial_enabled_with_companions():
-    data = _roundtrip(
-        {
-            "PACKETCAPTURE_REMOTE_SERIAL_ENABLED": "true",
-            "PACKETCAPTURE_REMOTE_SERIAL_ALLOWED_COMPANIONS": "KEY1, KEY2",
-        }
-    )
-    assert data["remote_serial"]["enabled"] is True
-    assert data["remote_serial"]["allowed_companions"] == ["KEY1", "KEY2"]
-
-
-def test_remote_serial_absent_when_default():
-    data = _roundtrip({"PACKETCAPTURE_REMOTE_SERIAL_ENABLED": "false"})
-    assert "remote_serial" not in data
-
-
 # --- brokers ---------------------------------------------------------------
 
 def test_letsmesh_us_broker_token_auth():

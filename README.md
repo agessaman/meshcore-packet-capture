@@ -230,6 +230,30 @@ Examples:
 - `meshcore/{IATA}/packets` becomes `meshcore/SEA/packets`
 - `meshcore/{IATA_lower}/packets` becomes `meshcore/sea/packets`
 
+#### Per-Broker Topic Overrides
+Topics can be set globally (under `[topics]`) or overridden per broker. A broker's own
+topic takes precedence over the global value; brokers without an override fall back to
+the global topic. The same template variables apply.
+
+In TOML, set them under the broker's `[broker.topics]` table:
+```toml
+[[broker]]
+name = "analyzer"
+enabled = true
+server = "mqtt.example.com"
+
+[broker.topics]
+# This broker's packets go to a custom topic; status/raw fall back to [topics].
+packets = "custom/{IATA}/{PUBLIC_KEY}/packets"
+
+[topics]
+packets = "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+status  = "meshcore/{IATA}/{PUBLIC_KEY}/status"
+```
+These flatten to `PACKETCAPTURE_MQTT<n>_TOPIC_<NAME>` (per broker) and
+`PACKETCAPTURE_TOPIC_<NAME>` (global fallback) — supported names: `STATUS`,
+`PACKETS`, `DECODED`, `DEBUG`, `RAW`.
+
 #### Authentication Methods
 
 **Username/Password Authentication:**

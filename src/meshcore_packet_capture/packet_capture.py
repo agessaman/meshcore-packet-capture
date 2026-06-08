@@ -1216,12 +1216,39 @@ class PacketCapture:
                 self.logger.error(f"Error creating JWT: {e}", exc_info=True)
             return None
     
+    def resolve_token_ttl(self, broker_num: int = None, default: int = 86400) -> int:
+        """Resolve the JWT lifetime (seconds) for a broker.
+
+        Reads PACKETCAPTURE_MQTT{n}_TOKEN_TTL, falling back to ``default`` (24h)
+        when unset, non-integer, or <= 0, and warns on invalid values. The
+        validation/warning behaviour is adapted from Garrett Bartley's
+        MQTT{n}_JWT_EXPIRE_SECONDS handling in #30.
+        """
+        if broker_num is None:
+            return default
+        raw = self.get_env(f'MQTT{broker_num}_TOKEN_TTL', '').strip()
+        if not raw:
+            return default
+        try:
+            ttl = int(raw)
+        except ValueError:
+            self.logger.warning(
+                f"Invalid PACKETCAPTURE_MQTT{broker_num}_TOKEN_TTL='{raw}'; must be an integer. "
+                f"Using default ({default}s)."
+            )
+            return default
+        if ttl <= 0:
+            self.logger.warning(
+                f"Invalid PACKETCAPTURE_MQTT{broker_num}_TOKEN_TTL={ttl}; must be > 0. "
+                f"Using default ({default}s)."
+            )
+            return default
+        return ttl
+
     async def create_auth_token_jwt(self, audience: str = None, broker_num: int = None) -> Optional[str]:
         """Create JWT token using on-device signing or private key from device"""
         # Per-broker JWT lifetime override (seconds); defaults to 24h.
-        expiry_seconds = 86400
-        if broker_num is not None:
-            expiry_seconds = self.get_env_int(f'MQTT{broker_num}_TOKEN_TTL', 86400)
+        expiry_seconds = self.resolve_token_ttl(broker_num)
         # Use on-device signing (preferred) or private key method (fallback)
         # The create_jwt_with_private_key() method already logs which method was used
         jwt_token = await self.create_jwt_with_private_key(audience, expiry_seconds=expiry_seconds)
@@ -1239,7 +1266,7 @@ class PacketCapture:
                         # Decode payload to get expiry
                         payload_data = base64.urlsafe_b64decode(parts[1] + '==')
                         payload = json.loads(payload_data)
-                        expires_at = payload.get('exp', time.time() + 86400)  # Default 24h if not found
+                        expires_at = payload.get('exp', time.time() + expiry_seconds)  # Fall back to this broker's TTL
                         
                         self.jwt_tokens[broker_num] = {
                             'token': jwt_token,

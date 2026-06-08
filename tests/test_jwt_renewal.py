@@ -67,6 +67,47 @@ def test_disabled_interval_uses_default_cap():
     assert _next_renewal({}, interval=0) == 3600.0
 
 
+class _FakeCap:
+    """Minimal stand-in exposing get_env + logger for resolve_token_ttl."""
+
+    def __init__(self, env: dict):
+        self._env = env
+        self.warnings: list[str] = []
+        self.logger = SimpleNamespace(warning=lambda msg, *a, **k: self.warnings.append(msg))
+
+    def get_env(self, key: str, default: str = "") -> str:
+        return self._env.get(key, default)
+
+
+def _resolve_ttl(env: dict, broker_num=1):
+    cap = _FakeCap(env)
+    return PacketCapture.resolve_token_ttl(cap, broker_num), cap.warnings
+
+
+def test_token_ttl_valid_value():
+    ttl, warns = _resolve_ttl({"MQTT1_TOKEN_TTL": "3600"})
+    assert ttl == 3600 and warns == []
+
+
+def test_token_ttl_unset_uses_default():
+    ttl, warns = _resolve_ttl({})
+    assert ttl == 86400 and warns == []
+
+
+def test_token_ttl_none_broker_uses_default():
+    assert PacketCapture.resolve_token_ttl(_FakeCap({}), None) == 86400
+
+
+def test_token_ttl_non_integer_warns_and_defaults():
+    ttl, warns = _resolve_ttl({"MQTT1_TOKEN_TTL": "abc"})
+    assert ttl == 86400 and len(warns) == 1
+
+
+def test_token_ttl_non_positive_warns_and_defaults():
+    ttl, warns = _resolve_ttl({"MQTT1_TOKEN_TTL": "0"})
+    assert ttl == 86400 and len(warns) == 1
+
+
 def test_payload_carries_custom_exp():
     iat = 1_000_000
     ttl = 3600

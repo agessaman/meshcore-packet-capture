@@ -2040,6 +2040,13 @@ class PacketCapture:
         client_id = self.get_env("CLIENT_ID_PREFIX", "meshcore_client_") + name.replace(" ", "_")
         client_id = re.sub(r"[^a-zA-Z0-9_-]", "", client_id)
         return client_id[:23]
+
+    def iter_configured_mqtt_brokers(self):
+        """Yield sequential MQTT broker numbers until the next ENABLED variable is absent."""
+        broker_num = 1
+        while os.getenv(f'PACKETCAPTURE_MQTT{broker_num}_ENABLED') is not None:
+            yield broker_num
+            broker_num += 1
     
     def on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
         broker_name = userdata.get('name', 'unknown') if userdata else 'unknown'
@@ -2312,8 +2319,8 @@ class PacketCapture:
 
     async def connect_mqtt(self):
         """Connect to all configured MQTT brokers"""
-        # Try to connect to MQTT1, MQTT2, MQTT3, MQTT4, MQTT5, MQTT6 (can expand if needed)
-        for broker_num in range(1, 7):
+        # Discover brokers sequentially from MQTT1 until the first undefined ENABLED var.
+        for broker_num in self.iter_configured_mqtt_brokers():
             client_info = await self.connect_mqtt_broker(broker_num)
             if client_info:
                 self.mqtt_clients.append(client_info)

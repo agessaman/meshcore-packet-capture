@@ -127,6 +127,74 @@ def detect_linux_distro() -> tuple[str | None, str | None]:
     return dist_id, dist_like
 
 
+def _start_bluetooth_service() -> None:
+    """Best-effort enable+start of the systemd bluetooth service (BlueZ needs it)."""
+    if not shutil.which("systemctl"):
+        return
+    run_cmd(["systemctl", "enable", "--now", "bluetooth"], check=False)
+
+
+def ensure_bluez() -> bool:
+    """Ensure the BlueZ stack (bluetoothctl) is available on Linux for BLE.
+
+    No-op on non-Linux (macOS CoreBluetooth needs nothing extra). If bluetoothctl
+    is missing, installs the distro's 'bluez' package and enables the service.
+    Best-effort: returns False with guidance if it can't, so the caller can fall
+    back to manual BLE configuration rather than failing the install.
+    """
+    if platform.system() != "Linux":
+        return True
+    if shutil.which("bluetoothctl"):
+        _start_bluetooth_service()
+        return True
+
+    distro_pkg = {
+        "debian": ("apt-get", ["bluez"]),
+        "ubuntu": ("apt-get", ["bluez"]),
+        "raspbian": ("apt-get", ["bluez"]),
+        "arch": ("pacman", ["bluez", "bluez-utils"]),
+        "fedora": ("dnf", ["bluez"]),
+        "rhel": ("dnf", ["bluez"]),
+        "centos": ("dnf", ["bluez"]),
+        "alpine": ("apk", ["bluez"]),
+    }
+    dist_id, dist_like = detect_linux_distro()
+    target = dist_id if dist_id in distro_pkg else None
+    if not target and dist_like:
+        for like in dist_like.split():
+            if like in distro_pkg:
+                target = like
+                break
+
+    if not target:
+        print_warning(f"BlueZ (bluetoothctl) is missing and distro '{dist_id or 'unknown'}' isn't recognized.")
+        print_info("Install the 'bluez' package manually to enable BLE scanning/pairing.")
+        return False
+
+    pkg_manager, pkgs = distro_pkg[target]
+    if not prompt_yes_no(f"BLE needs BlueZ. Install '{' '.join(pkgs)}' via {pkg_manager}?", "y"):
+        print_warning("Skipping BlueZ install; BLE scanning/pairing may not work.")
+        return False
+
+    try:
+        if pkg_manager == "apt-get":
+            run_cmd(["apt-get", "update", "-qq"], check=True)
+            run_cmd(["apt-get", "install", "-y", "-qq"] + pkgs, check=True)
+        elif pkg_manager == "pacman":
+            run_cmd(["pacman", "-Sy", "--noconfirm"] + pkgs, check=True)
+        elif pkg_manager == "apk":
+            run_cmd(["apk", "add", "--no-cache"] + pkgs, check=True)
+        else:
+            run_cmd([pkg_manager, "install", "-y"] + pkgs, check=True)
+        print_success("BlueZ installed")
+        _start_bluetooth_service()
+        return True
+    except subprocess.CalledProcessError as e:
+        print_error(f"Failed to install BlueZ: {e}")
+        print_info("Install the 'bluez' package manually to enable BLE scanning/pairing.")
+        return False
+
+
 def install_os_build_deps() -> bool:
     """Check for and optionally install OS build dependencies for C extensions."""
     # Check if we already have the necessary tools

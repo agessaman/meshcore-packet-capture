@@ -102,3 +102,64 @@ def test_tcp_invalid_port_defaults(monkeypatch: pytest.MonkeyPatch):
     ))
     conn = cfg.configure_tcp_connection()
     assert conn["tcp_port"] == 5000
+
+
+# --- half-configured TOML detection + repair ----------------------------------
+
+def test_has_connection_true_and_false(tmp_path: Path):
+    has = tmp_path / "has.toml"
+    has.write_text('[capture]\nconnection_type = "ble"\n')
+    assert cfg._user_toml_has_connection(has) is True
+
+    without = tmp_path / "without.toml"
+    without.write_text('[general]\niata = "PAE"\n')  # aborted: no connection
+    assert cfg._user_toml_has_connection(without) is False
+
+    assert cfg._user_toml_has_connection(tmp_path / "missing.toml") is False
+
+
+def test_apply_connection_preserves_existing_keys(tmp_path: Path):
+    # Simulate a half-written config: IATA + a broker, but no connection.
+    dest = tmp_path / "99-user.toml"
+    dest.write_text(
+        '[general]\niata = "PAE"\n\n'
+        '[[broker]]\nname = "waev"\nenabled = true\nserver = "mqtt.waev.app"\n'
+    )
+    cfg.apply_connection_to_user_toml(dest, {
+        "type": "ble", "ble_address": "AA:BB:CC:DD:EE:FF", "ble_device_name": "MeshCore-X",
+    })
+    data = _parse(dest)
+    # Connection added…
+    assert data["capture"]["connection_type"] == "ble"
+    assert data["capture"]["ble_address"] == "AA:BB:CC:DD:EE:FF"
+    # …and existing keys preserved.
+    assert data["general"]["iata"] == "PAE"
+    assert data["broker"][0]["name"] == "waev"
+
+
+def test_apply_connection_switch_clears_stale_keys(tmp_path: Path):
+    dest = tmp_path / "99-user.toml"
+    dest.write_text(
+        '[general]\niata = "PAE"\n\n'
+        '[capture]\nconnection_type = "ble"\nble_address = "AA:BB:CC:DD:EE:FF"\n'
+    )
+    cfg.apply_connection_to_user_toml(dest, {"type": "serial", "serial_device": "/dev/ttyUSB0"})
+    data = _parse(dest)
+    assert data["capture"]["connection_type"] == "serial"
+    assert "ble_address" not in data["capture"]  # stale BLE key removed
+    assert data["serial"]["ports"] == ["/dev/ttyUSB0"]
+
+
+def test_ensure_bluez_noop_off_linux(monkeypatch: pytest.MonkeyPatch):
+    from installer import system as sysmod
+    monkeypatch.setattr(sysmod.platform, "system", lambda: "Darwin")
+    assert sysmod.ensure_bluez() is True
+
+
+def test_ensure_bluez_present_starts_service(monkeypatch: pytest.MonkeyPatch):
+    from installer import system as sysmod
+    monkeypatch.setattr(sysmod.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(sysmod.shutil, "which", lambda name: "/usr/bin/bluetoothctl" if name == "bluetoothctl" else None)
+    calls = []
+    monkeypatch.setattr(sysmod, "run_cmd", lambda cmd, **k: calls.append(cmd))
+    assert sysmod.ensure_bluez() is True  # already present -> no install prompt

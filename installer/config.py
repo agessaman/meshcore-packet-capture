@@ -255,23 +255,26 @@ def pair_ble_device(ctx: InstallerContext, address: str, name: str) -> bool:
             print_warning(f"Pairing check failed to run: {e}; continuing without pairing.")
             return True
 
-        status = "unknown"
+        # Helper emits a JSON status line: paired | not_paired | not_found |
+        # timeout | pairing_failed | error (see devtools/ble_pairing_helper.py).
+        status = "error"
         if result.stdout.strip():
             try:
-                status = json.loads(result.stdout.strip().splitlines()[-1]).get("status", "unknown")
+                status = json.loads(result.stdout.strip().splitlines()[-1]).get("status", "error")
             except json.JSONDecodeError:
                 pass
 
-        if status == "paired" or result.returncode == 0 and status in ("paired", "unknown"):
+        if status == "paired":
             print_success(f"BLE device ready: {name or address} ({address})")
             return True
         if status == "not_paired":
+            # Linux/PIN-based devices need a PIN; macOS shows a system dialog instead.
             pin = prompt_input("Device requires pairing. Enter PIN (blank to skip)", "").strip()
             if not pin:
                 print_warning("Skipping pairing; you may need to pair the device manually.")
                 return True
             continue
-        # not_found / error
+        # not_found / timeout / pairing_failed / error
         print_warning(f"Could not pair with {address} (status: {status}).")
         if not prompt_yes_no("Retry pairing?", "n"):
             return True
@@ -307,6 +310,8 @@ def select_connection_type(ctx: InstallerContext) -> dict[str, Any]:
         choice = prompt_input("Select connection type [1-3]", "1")
         if choice == "1":
             print_info("Selected: Bluetooth Low Energy (BLE)")
+            from .system import ensure_bluez
+            ensure_bluez()
             address, name = (None, None)
             if prompt_yes_no("Scan for nearby BLE devices?", "y"):
                 address, name = scan_and_select_ble_device(ctx)
@@ -324,6 +329,44 @@ def select_connection_type(ctx: InstallerContext) -> dict[str, Any]:
             print_info("Selected: TCP Connection")
             return configure_tcp_connection()
         print_error("Invalid choice. Please enter 1, 2, or 3.")
+
+
+def _user_toml_has_connection(path: str | Path) -> bool:
+    """True if the user TOML already declares a [capture] connection_type."""
+    try:
+        data = _load_user_toml(path)
+    except (tomllib.TOMLDecodeError, OSError):
+        return False
+    return bool((data.get("capture") or {}).get("connection_type"))
+
+
+def apply_connection_to_user_toml(path: str | Path, connection: dict[str, Any]) -> None:
+    """Merge a connection selection into an existing user TOML, preserving other keys.
+
+    Used to repair a half-written config (e.g. from an aborted install) without
+    clobbering an already-set IATA, [update], or broker blocks.
+    """
+    data = _load_user_toml(path)
+    ctype = connection.get("type", "serial")
+    capture = dict(data.get("capture") or {})
+    capture["connection_type"] = ctype
+    # Drop any stale keys from a previously-selected connection type.
+    for stale in ("ble_address", "ble_device_name", "tcp_host", "tcp_port"):
+        capture.pop(stale, None)
+    if ctype == "ble":
+        if connection.get("ble_address"):
+            capture["ble_address"] = connection["ble_address"]
+        if connection.get("ble_device_name"):
+            capture["ble_device_name"] = connection["ble_device_name"]
+    elif ctype == "tcp":
+        capture["tcp_host"] = connection.get("tcp_host", "localhost")
+        capture["tcp_port"] = int(connection.get("tcp_port", 5000))
+    data["capture"] = capture
+    if ctype == "serial":
+        data["serial"] = {"ports": [connection.get("serial_device", "/dev/ttyUSB0")]}
+    else:
+        data.pop("serial", None)
+    _write_user_toml(path, data)
 
 
 def append_disabled_broker_toml(dest: str, broker_name: str) -> None:
@@ -1196,10 +1239,22 @@ def configure_mqtt_brokers(ctx: InstallerContext) -> None:
     user_toml_path = migrate_user_config_filename(ctx.config_dir)
     user_toml = str(user_toml_path)
 
-    # Ensure 99-user.toml exists with base settings (device connection + general)
+    # Ensure 99-user.toml exists with a device connection. A previous aborted
+    # install can leave a partial file with no [capture] connection_type — repair
+    # it (preserving any existing keys) rather than silently assuming serial.
     if not Path(user_toml).exists():
         connection = select_connection_type(ctx)
         write_user_toml_base(user_toml, "XXX", ctx.repo, ctx.branch, connection)
+    elif not _user_toml_has_connection(user_toml):
+        print_warning(
+            "Existing configuration has no device connection set "
+            "(likely a previous aborted install) — let's configure it."
+        )
+        connection = select_connection_type(ctx)
+        try:
+            apply_connection_to_user_toml(user_toml, connection)
+        except (tomllib.TOMLDecodeError, OSError):
+            write_user_toml_base(user_toml, "XXX", ctx.repo, ctx.branch, connection)
 
     added_brokers = False
     had_existing_brokers = _config_dir_has_broker(ctx.config_dir)

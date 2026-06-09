@@ -282,11 +282,14 @@ def configure_tcp_connection() -> dict[str, Any]:
     return {"type": "tcp", "tcp_host": host, "tcp_port": port}
 
 
-def select_connection_type(ctx: InstallerContext) -> dict[str, Any]:
+def select_connection_type(ctx: InstallerContext, default_type: str = "ble") -> dict[str, Any]:
     """Interactive device-connection selection (BLE / serial / TCP).
 
-    Returns a connection dict suitable for write_user_toml_base().
+    ``default_type`` (ble/serial/tcp) pre-selects the menu default — pass the
+    current connection when reconfiguring. Returns a connection dict suitable for
+    write_user_toml_base().
     """
+    default_choice = {"ble": "1", "serial": "2", "tcp": "3"}.get(default_type, "1")
     print()
     print_header("Device Connection Configuration")
     print()
@@ -297,7 +300,7 @@ def select_connection_type(ctx: InstallerContext) -> dict[str, Any]:
     print()
 
     while True:
-        choice = prompt_input("Select connection type [1-3]", "1")
+        choice = prompt_input("Select connection type [1-3]", default_choice)
         if choice == "1":
             print_info("Selected: Bluetooth Low Energy (BLE)")
             from .system import ensure_bluez
@@ -321,13 +324,18 @@ def select_connection_type(ctx: InstallerContext) -> dict[str, Any]:
         print_error("Invalid choice. Please enter 1, 2, or 3.")
 
 
-def _user_toml_has_connection(path: str | Path) -> bool:
-    """True if the user TOML already declares a [capture] connection_type."""
+def _user_toml_connection_type(path: str | Path) -> str:
+    """Return the configured [capture] connection_type, or '' if unset/unreadable."""
     try:
         data = _load_user_toml(path)
     except (tomllib.TOMLDecodeError, OSError):
-        return False
-    return bool((data.get("capture") or {}).get("connection_type"))
+        return ""
+    return str((data.get("capture") or {}).get("connection_type") or "")
+
+
+def _user_toml_has_connection(path: str | Path) -> bool:
+    """True if the user TOML already declares a [capture] connection_type."""
+    return bool(_user_toml_connection_type(path))
 
 
 def apply_connection_to_user_toml(path: str | Path, connection: dict[str, Any]) -> None:
@@ -357,6 +365,42 @@ def apply_connection_to_user_toml(path: str | Path, connection: dict[str, Any]) 
     else:
         data.pop("serial", None)
     _write_user_toml(path, data)
+
+
+def _persist_connection(ctx: InstallerContext, user_toml: str, connection: dict[str, Any]) -> None:
+    """Write a connection selection: full base for a new file, merge for an existing one
+    (overwriting only if the existing file is unreadable)."""
+    if not Path(user_toml).exists():
+        write_user_toml_base(user_toml, "XXX", ctx.repo, ctx.branch, connection)
+        return
+    try:
+        apply_connection_to_user_toml(user_toml, connection)
+    except (tomllib.TOMLDecodeError, OSError):
+        write_user_toml_base(user_toml, "XXX", ctx.repo, ctx.branch, connection)
+
+
+def configure_device_connection(ctx: InstallerContext, user_toml: str) -> None:
+    """Ensure a device connection is configured; offer to change an existing one.
+
+    - No file / no connection set: prompt and write (mandatory).
+    - Connection already set: show it and offer to reconfigure (default: keep).
+    """
+    if not Path(user_toml).exists():
+        _persist_connection(ctx, user_toml, select_connection_type(ctx))
+        return
+
+    current = _user_toml_connection_type(user_toml)
+    if not current:
+        print_warning(
+            "Existing configuration has no device connection set "
+            "(likely a previous aborted install) — let's configure it."
+        )
+        _persist_connection(ctx, user_toml, select_connection_type(ctx))
+        return
+
+    print_info(f"Device connection is currently: {current}")
+    if prompt_yes_no("Reconfigure the device connection?", "n"):
+        _persist_connection(ctx, user_toml, select_connection_type(ctx, default_type=current))
 
 
 def append_disabled_broker_toml(dest: str, broker_name: str) -> None:
@@ -1129,22 +1173,9 @@ def configure_mqtt_brokers(ctx: InstallerContext) -> None:
     user_toml_path = migrate_user_config_filename(ctx.config_dir)
     user_toml = str(user_toml_path)
 
-    # Ensure 99-user.toml exists with a device connection. A previous aborted
-    # install can leave a partial file with no [capture] connection_type — repair
-    # it (preserving any existing keys) rather than silently assuming serial.
-    if not Path(user_toml).exists():
-        connection = select_connection_type(ctx)
-        write_user_toml_base(user_toml, "XXX", ctx.repo, ctx.branch, connection)
-    elif not _user_toml_has_connection(user_toml):
-        print_warning(
-            "Existing configuration has no device connection set "
-            "(likely a previous aborted install) — let's configure it."
-        )
-        connection = select_connection_type(ctx)
-        try:
-            apply_connection_to_user_toml(user_toml, connection)
-        except (tomllib.TOMLDecodeError, OSError):
-            write_user_toml_base(user_toml, "XXX", ctx.repo, ctx.branch, connection)
+    # Device connection: prompt+write when missing (incl. aborted-install repair),
+    # or show the current connection and offer to change it.
+    configure_device_connection(ctx, user_toml)
 
     added_brokers = False
     had_existing_brokers = _config_dir_has_broker(ctx.config_dir)

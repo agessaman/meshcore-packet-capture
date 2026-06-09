@@ -69,7 +69,10 @@ def test_write_base_default_is_serial(tmp_path: Path):
 # --- select_connection_type dispatch (interactive bits mocked) -----------------
 
 def _ctx(tmp_path: Path):
-    return SimpleNamespace(install_dir=str(tmp_path), repo_dir="", local_install="")
+    return SimpleNamespace(
+        install_dir=str(tmp_path), repo_dir="", local_install="",
+        repo="agessaman/meshcore-packet-capture", branch="main",
+    )
 
 
 def test_select_serial(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -148,6 +151,50 @@ def test_apply_connection_switch_clears_stale_keys(tmp_path: Path):
     assert data["capture"]["connection_type"] == "serial"
     assert "ble_address" not in data["capture"]  # stale BLE key removed
     assert data["serial"]["ports"] == ["/dev/ttyUSB0"]
+
+
+def test_connection_type_helper(tmp_path: Path):
+    p = tmp_path / "u.toml"
+    p.write_text('[capture]\nconnection_type = "tcp"\n')
+    assert cfg._user_toml_connection_type(p) == "tcp"
+    assert cfg._user_toml_connection_type(tmp_path / "missing.toml") == ""
+
+
+def test_configure_device_connection_writes_when_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    dest = tmp_path / "99-user.toml"  # does not exist
+    monkeypatch.setattr(cfg, "select_connection_type",
+                        lambda ctx, default_type="ble": {"type": "tcp", "tcp_host": "h", "tcp_port": 5000})
+    cfg.configure_device_connection(_ctx(tmp_path), str(dest))
+    assert _parse(dest)["capture"]["connection_type"] == "tcp"
+
+
+def test_configure_device_connection_keeps_when_declined(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    dest = tmp_path / "99-user.toml"
+    dest.write_text('[general]\niata = "PAE"\n\n[capture]\nconnection_type = "serial"\n\n[serial]\nports = ["/dev/ttyUSB0"]\n')
+    monkeypatch.setattr(cfg, "prompt_yes_no", lambda *a, **k: False)  # decline reconfigure
+    called = []
+    monkeypatch.setattr(cfg, "select_connection_type", lambda *a, **k: called.append(1) or {})
+    cfg.configure_device_connection(_ctx(tmp_path), str(dest))
+    assert called == []  # never prompted for a new connection
+    assert _parse(dest)["capture"]["connection_type"] == "serial"  # unchanged
+
+
+def test_configure_device_connection_reconfigures_when_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    dest = tmp_path / "99-user.toml"
+    dest.write_text('[general]\niata = "PAE"\n\n[capture]\nconnection_type = "serial"\n\n[serial]\nports = ["/dev/ttyUSB0"]\n')
+    monkeypatch.setattr(cfg, "prompt_yes_no", lambda *a, **k: True)  # accept reconfigure
+    seen_default = {}
+    def _sel(ctx, default_type="ble"):
+        seen_default["v"] = default_type
+        return {"type": "ble", "ble_address": "AA:BB:CC:DD:EE:FF", "ble_device_name": "X"}
+    monkeypatch.setattr(cfg, "select_connection_type", _sel)
+    cfg.configure_device_connection(_ctx(tmp_path), str(dest))
+    data = _parse(dest)
+    assert data["capture"]["connection_type"] == "ble"
+    assert data["capture"]["ble_address"] == "AA:BB:CC:DD:EE:FF"
+    assert "serial" not in data  # serial section dropped on switch
+    assert data["general"]["iata"] == "PAE"  # preserved
+    assert seen_default["v"] == "serial"  # menu defaulted to the current type
 
 
 def test_ensure_bluez_noop_off_linux(monkeypatch: pytest.MonkeyPatch):

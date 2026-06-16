@@ -270,10 +270,10 @@ def pair_ble_device(ctx: InstallerContext, address: str, name: str) -> bool:
             return True
 
 
-def configure_tcp_connection() -> dict[str, Any]:
+def configure_tcp_connection(host_default: str = "localhost", port_default: str = "5000") -> dict[str, Any]:
     """Prompt for TCP host/port (e.g. a ser2net bridge)."""
-    host = prompt_input("Enter TCP host (IP or hostname)", "localhost").strip() or "localhost"
-    port_raw = prompt_input("Enter TCP port", "5000").strip()
+    host = prompt_input("Enter TCP host (IP or hostname)", host_default).strip() or host_default
+    port_raw = prompt_input("Enter TCP port", port_default).strip()
     try:
         port = int(port_raw)
     except ValueError:
@@ -282,13 +282,19 @@ def configure_tcp_connection() -> dict[str, Any]:
     return {"type": "tcp", "tcp_host": host, "tcp_port": port}
 
 
-def select_connection_type(ctx: InstallerContext, default_type: str = "ble") -> dict[str, Any]:
+def select_connection_type(
+    ctx: InstallerContext,
+    default_type: str = "ble",
+    current: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Interactive device-connection selection (BLE / serial / TCP).
 
-    ``default_type`` (ble/serial/tcp) pre-selects the menu default — pass the
-    current connection when reconfiguring. Returns a connection dict suitable for
-    write_user_toml_base().
+    ``default_type`` (ble/serial/tcp) pre-selects the menu default and
+    ``current`` supplies existing sub-field values (BLE address/name, TCP
+    host/port) as prompt defaults — pass both when reconfiguring. Returns a
+    connection dict suitable for write_user_toml_base().
     """
+    current = current or {}
     default_choice = {"ble": "1", "serial": "2", "tcp": "3"}.get(default_type, "1")
     print()
     print_header("Device Connection Configuration")
@@ -309,8 +315,10 @@ def select_connection_type(ctx: InstallerContext, default_type: str = "ble") -> 
             if prompt_yes_no("Scan for nearby BLE devices?", "y"):
                 address, name = scan_and_select_ble_device(ctx)
             else:
-                address = prompt_input("Enter BLE device MAC address / UUID", "").strip() or None
-                name = prompt_input("Enter device name (optional)", "").strip() or None
+                addr_default = str(current.get("ble_address") or "")
+                name_default = str(current.get("ble_device_name") or "")
+                address = prompt_input("Enter BLE device MAC address / UUID", addr_default).strip() or None
+                name = prompt_input("Enter device name (optional)", name_default).strip() or None
             if address:
                 pair_ble_device(ctx, address, name or "")
             return {"type": "ble", "ble_address": address or "", "ble_device_name": name or ""}
@@ -320,7 +328,10 @@ def select_connection_type(ctx: InstallerContext, default_type: str = "ble") -> 
             return {"type": "serial", "serial_device": select_serial_device()}
         if choice == "3":
             print_info("Selected: TCP Connection")
-            return configure_tcp_connection()
+            return configure_tcp_connection(
+                str(current.get("tcp_host") or "localhost"),
+                str(current.get("tcp_port") or "5000"),
+            )
         print_error("Invalid choice. Please enter 1, 2, or 3.")
 
 
@@ -331,6 +342,25 @@ def _user_toml_connection_type(path: str | Path) -> str:
     except (tomllib.TOMLDecodeError, OSError):
         return ""
     return str((data.get("capture") or {}).get("connection_type") or "")
+
+
+def _user_toml_connection_details(path: str | Path) -> dict[str, Any]:
+    """Return the existing connection sub-fields (BLE address/name, TCP host/port)."""
+    try:
+        data = _load_user_toml(path)
+    except (tomllib.TOMLDecodeError, OSError):
+        return {}
+    capture = data.get("capture") or {}
+    serial = data.get("serial") or {}
+    ports = serial.get("ports") if isinstance(serial, dict) else None
+    return {
+        "type": str(capture.get("connection_type") or ""),
+        "ble_address": str(capture.get("ble_address") or ""),
+        "ble_device_name": str(capture.get("ble_device_name") or ""),
+        "tcp_host": str(capture.get("tcp_host") or ""),
+        "tcp_port": str(capture.get("tcp_port") or ""),
+        "serial_device": str(ports[0]) if isinstance(ports, list) and ports else "",
+    }
 
 
 def _user_toml_has_connection(path: str | Path) -> bool:
@@ -400,7 +430,11 @@ def configure_device_connection(ctx: InstallerContext, user_toml: str) -> None:
 
     print_info(f"Device connection is currently: {current}")
     if prompt_yes_no("Reconfigure the device connection?", "n"):
-        _persist_connection(ctx, user_toml, select_connection_type(ctx, default_type=current))
+        details = _user_toml_connection_details(user_toml)
+        _persist_connection(
+            ctx, user_toml,
+            select_connection_type(ctx, default_type=current, current=details),
+        )
 
 
 def append_disabled_broker_toml(dest: str, broker_name: str) -> None:
@@ -583,10 +617,16 @@ def _remove_broker_overrides_toml(dest: str | Path, broker_names: list[str]) -> 
         return
 
     remove_names = set(broker_names)
-    data["broker"] = [
+    remaining = [
         broker for broker in brokers
         if not isinstance(broker, dict) or broker.get("name") not in remove_names
     ]
+    if remaining:
+        data["broker"] = remaining
+    else:
+        # Drop the key entirely rather than emitting `broker = []`, which would
+        # otherwise clash with a later text-appended [[broker]] block.
+        data.pop("broker", None)
     _write_user_toml(path, data)
 
 
@@ -1101,26 +1141,89 @@ def prompt_owner_pubkey(existing: str = "") -> str:
 # Configure custom broker (interactive)
 # ---------------------------------------------------------------------------
 
-def configure_custom_broker(broker_num: int, config_dir: str) -> None:
-    """Configure a single custom MQTT broker interactively."""
+def _user_custom_broker_names(config_dir: str | Path) -> list[str]:
+    """Names of full custom broker definitions in the user TOML (those with a server)."""
+    data = _load_user_toml(user_config_path(config_dir))
+    brokers = data.get("broker")
+    if not isinstance(brokers, list):
+        return []
+    return [
+        str(b["name"]) for b in brokers
+        if isinstance(b, dict) and b.get("name") and b.get("server")
+    ]
+
+
+def _custom_broker_fields(config_dir: str | Path, broker_name: str) -> dict[str, str]:
+    """Read an existing custom broker's fields from the user TOML as prompt defaults."""
+    data = _load_user_toml(user_config_path(config_dir))
+    brokers = data.get("broker")
+    if not isinstance(brokers, list):
+        return {}
+    for b in brokers:
+        if not isinstance(b, dict) or b.get("name") != broker_name:
+            continue
+        tls = b.get("tls") if isinstance(b.get("tls"), dict) else {}
+        auth = b.get("auth") if isinstance(b.get("auth"), dict) else {}
+        return {
+            "server": str(b.get("server") or ""),
+            "port": str(b.get("port") or "1883"),
+            "transport": str(b.get("transport") or "tcp"),
+            "use_tls": "true" if tls.get("enabled") else "false",
+            "tls_verify": "false" if tls.get("verify") is False else "true",
+            "auth_method": str(auth.get("method") or "none"),
+            "username": str(auth.get("username") or ""),
+            "password": str(auth.get("password") or ""),
+            "audience": str(auth.get("audience") or ""),
+            "owner": str(auth.get("owner") or ""),
+            "email": str(auth.get("email") or ""),
+        }
+    return {}
+
+
+def _existing_owner_email(config_dir: str | Path) -> tuple[str, str]:
+    """Best-effort existing owner/email to reuse as a default for new brokers."""
+    data = _load_user_toml(user_config_path(config_dir))
+    brokers = data.get("broker") if isinstance(data.get("broker"), list) else []
+    owner = email = ""
+    for b in brokers:
+        if not isinstance(b, dict):
+            continue
+        auth = b.get("auth") if isinstance(b.get("auth"), dict) else {}
+        owner = owner or str(auth.get("owner") or "")
+        email = email or str(auth.get("email") or "")
+    return owner, email
+
+
+def configure_custom_broker(broker_num: int, config_dir: str, *, existing_name: str | None = None) -> None:
+    """Configure a single custom MQTT broker interactively.
+
+    When ``existing_name`` is given, the broker's current values are read and
+    offered as prompt defaults, and the old block is replaced (edit in place).
+    """
     user_toml = str(migrate_user_config_filename(config_dir))
+    cur = _custom_broker_fields(config_dir, existing_name) if existing_name else {}
 
     print()
-    print_header(f"Configuring MQTT Broker {broker_num}")
+    if existing_name:
+        print_header(f"Editing MQTT Broker: {existing_name}")
+    else:
+        print_header(f"Configuring MQTT Broker {broker_num}")
 
-    server = prompt_input("Server hostname/IP")
+    server = prompt_input("Server hostname/IP", cur.get("server", ""))
     if not server:
         print_warning(f"Server hostname required - skipping broker {broker_num}")
         return
 
-    port = prompt_input("Port", "1883")
-    transport = "websockets" if prompt_yes_no("Use WebSockets transport?", "n") else "tcp"
+    port = prompt_input("Port", cur.get("port", "1883"))
+    transport = "websockets" if prompt_yes_no(
+        "Use WebSockets transport?", "y" if cur.get("transport") == "websockets" else "n"
+    ) else "tcp"
 
     use_tls = "false"
     tls_verify = "true"
-    if prompt_yes_no("Use TLS/SSL encryption?", "n"):
+    if prompt_yes_no("Use TLS/SSL encryption?", "y" if cur.get("use_tls") == "true" else "n"):
         use_tls = "true"
-        if not prompt_yes_no("Verify TLS certificates?", "y"):
+        if not prompt_yes_no("Verify TLS certificates?", "n" if cur.get("tls_verify") == "false" else "y"):
             tls_verify = "false"
 
     print()
@@ -1128,16 +1231,19 @@ def configure_custom_broker(broker_num: int, config_dir: str) -> None:
     print("  1) Username/Password")
     print("  2) MeshCore Auth Token")
     print("  3) None (anonymous)")
-    auth_choice = prompt_input("Choose authentication method [1-3]", "1")
+    auth_default = {"password": "1", "token": "2", "none": "3"}.get(cur.get("auth_method", ""), "1")
+    auth_choice = prompt_input("Choose authentication method [1-3]", auth_default)
 
     auth_method = "none"
     username = password = audience = owner = email = ""
 
     if auth_choice == "2":
         auth_method = "token"
-        audience = prompt_input("Token audience (optional)")
-        owner = prompt_owner_pubkey()
-        email = prompt_owner_email()
+        audience = prompt_input("Token audience (optional)", cur.get("audience", ""))
+        # Reuse an already-entered owner identity as the default for new brokers.
+        shared_owner, shared_email = _existing_owner_email(config_dir)
+        owner = prompt_owner_pubkey(cur.get("owner") or shared_owner)
+        email = prompt_owner_email(cur.get("email") or shared_email)
 
         parts = []
         if owner and email:
@@ -1151,22 +1257,44 @@ def configure_custom_broker(broker_num: int, config_dir: str) -> None:
 
     if auth_choice == "1":
         auth_method = "password"
-        username = prompt_input("Username")
+        username = prompt_input("Username", cur.get("username", ""))
         if username:
-            password = prompt_input("Password")
+            password = prompt_input("Password", cur.get("password", ""))
 
-    broker_name = f"custom-{broker_num}"
+    broker_name = existing_name or f"custom-{broker_num}"
+    if existing_name:
+        # Replace the existing block rather than appending a duplicate.
+        _remove_broker_overrides_toml(user_toml, [existing_name])
     append_custom_broker_toml(
         user_toml, broker_name, server, port, transport,
         use_tls, tls_verify, auth_method,
         username, password, audience, owner, email,
     )
-    print_success(f"Broker {broker_num} configured")
+    print_success(f"Broker '{broker_name}' configured")
 
 
 # ---------------------------------------------------------------------------
 # Configure MQTT brokers (main flow)
 # ---------------------------------------------------------------------------
+
+def _select_custom_broker_to_edit(config_dir: str) -> str | None:
+    """Offer to edit an existing custom broker; return its name, or None to add new."""
+    existing = _user_custom_broker_names(config_dir)
+    if not existing:
+        return None
+
+    print()
+    print_info("Existing custom brokers:")
+    for idx, name in enumerate(existing, 1):
+        print(f"  {idx}) {name}")
+    add_choice = len(existing) + 1
+    print(f"  {add_choice}) Add a new custom broker")
+
+    raw = prompt_input(f"Edit an existing broker or add new [1-{add_choice}]", str(add_choice)).strip()
+    if raw.isdigit() and 1 <= int(raw) <= len(existing):
+        return existing[int(raw) - 1]
+    return None
+
 
 def configure_mqtt_brokers(ctx: InstallerContext) -> None:
     """Interactive MQTT broker configuration flow."""
@@ -1220,7 +1348,11 @@ def configure_mqtt_brokers(ctx: InstallerContext) -> None:
                     print_error(f"Failed to import preset: {exc}")
         elif choice == "3":
             _configure_iata_simple(user_toml)
-            configure_custom_broker(_next_custom_broker_number(ctx.config_dir), ctx.config_dir)
+            target = _select_custom_broker_to_edit(ctx.config_dir)
+            if target:
+                configure_custom_broker(0, ctx.config_dir, existing_name=target)
+            else:
+                configure_custom_broker(_next_custom_broker_number(ctx.config_dir), ctx.config_dir)
             added_brokers = True
         elif choice == "4":
             _manage_existing_presets(ctx.config_dir)
@@ -1267,7 +1399,13 @@ def _configure_iata_for_presets(user_toml: str, ctx: InstallerContext) -> None:
 
 
 def _configure_token_preset_overrides(config_dir: str) -> None:
-    """Configure owner/email overrides separately for each token-auth preset."""
+    """Configure owner/email overrides for token-auth presets.
+
+    Owner identity is almost always the same person for every broker, so by
+    default we ask once and apply the answer to all token-authenticated brokers.
+    A per-preset path is still offered when the user has more than one preset and
+    wants different identities for each.
+    """
     user_toml = str(user_config_path(config_dir))
     presets = token_preset_brokers(config_dir)
     if not presets:
@@ -1277,28 +1415,47 @@ def _configure_token_preset_overrides(config_dir: str) -> None:
     print_info("Token-authenticated broker presets support optional owner identification")
     print_info("This links your observer to your MeshCore public key and email")
 
+    # Gather metadata for every token broker across all presets.
+    metadata: dict[str, tuple[str, str]] = {}
+    all_broker_names: list[str] = []
+    for broker_names in presets.values():
+        for broker_name in broker_names:
+            all_broker_names.append(broker_name)
+            metadata[broker_name] = _broker_auth_metadata(config_dir, broker_name)
+
+    has_owner_info = any(owner or email for owner, email in metadata.values())
+
+    print()
     for preset_path, broker_names in presets.items():
-        print()
-        print_header(f"Owner Info: {preset_path.name}")
-        print_info("Token-authenticated brokers in this preset:")
-
-        metadata = {
-            broker_name: _broker_auth_metadata(config_dir, broker_name)
-            for broker_name in broker_names
-        }
-        has_owner_info = any(owner or email for owner, email in metadata.values())
-
+        print_info(f"{preset_path.name}:")
         for broker_name in broker_names:
             owner, email = metadata[broker_name]
             print(f"  - {broker_name}")
             print(f"    owner: {owner or '(not set)'}")
             print(f"    email: {email or '(not set)'}")
 
-        if has_owner_info and not prompt_yes_no(f"Change owner info for {preset_path.name}?", "n"):
-            continue
+    if has_owner_info and not prompt_yes_no("Update owner info for token-authenticated brokers?", "n"):
+        return
 
+    multiple_presets = len(presets) > 1
+    if not multiple_presets or prompt_yes_no(
+        "Use the same owner public key and email for all token-authenticated brokers?", "y"
+    ):
         owner_default = _shared_metadata_default(metadata, 0)
         email_default = _shared_metadata_default(metadata, 1)
+        owner_pubkey = prompt_owner_pubkey(owner_default)
+        owner_email = prompt_owner_email(email_default)
+        _rewrite_token_owner_overrides_toml(user_toml, all_broker_names, owner_pubkey, owner_email)
+        print_success("Owner info updated for all token-authenticated brokers")
+        return
+
+    # Per-preset path: the user wants a different identity per preset.
+    for preset_path, broker_names in presets.items():
+        print()
+        print_header(f"Owner Info: {preset_path.name}")
+        preset_meta = {name: metadata[name] for name in broker_names}
+        owner_default = _shared_metadata_default(preset_meta, 0)
+        email_default = _shared_metadata_default(preset_meta, 1)
         owner_pubkey = prompt_owner_pubkey(owner_default)
         owner_email = prompt_owner_email(email_default)
         _rewrite_token_owner_overrides_toml(user_toml, broker_names, owner_pubkey, owner_email)

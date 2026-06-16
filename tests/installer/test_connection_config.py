@@ -184,8 +184,9 @@ def test_configure_device_connection_reconfigures_when_accepted(monkeypatch: pyt
     dest.write_text('[general]\niata = "PAE"\n\n[capture]\nconnection_type = "serial"\n\n[serial]\nports = ["/dev/ttyUSB0"]\n')
     monkeypatch.setattr(cfg, "prompt_yes_no", lambda *a, **k: True)  # accept reconfigure
     seen_default = {}
-    def _sel(ctx, default_type="ble"):
+    def _sel(ctx, default_type="ble", current=None):
         seen_default["v"] = default_type
+        seen_default["current"] = current
         return {"type": "ble", "ble_address": "AA:BB:CC:DD:EE:FF", "ble_device_name": "X"}
     monkeypatch.setattr(cfg, "select_connection_type", _sel)
     cfg.configure_device_connection(_ctx(tmp_path), str(dest))
@@ -195,6 +196,7 @@ def test_configure_device_connection_reconfigures_when_accepted(monkeypatch: pyt
     assert "serial" not in data  # serial section dropped on switch
     assert data["general"]["iata"] == "PAE"  # preserved
     assert seen_default["v"] == "serial"  # menu defaulted to the current type
+    assert seen_default["current"]["serial_device"] == "/dev/ttyUSB0"  # existing values passed as defaults
 
 
 def test_ensure_bluez_noop_off_linux(monkeypatch: pytest.MonkeyPatch):

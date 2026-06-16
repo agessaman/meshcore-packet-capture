@@ -39,14 +39,19 @@ systemd/launchd service.
 ### Install as a managed service (systemd / launchd)
 
 For a turnkey install that creates a service account, installs a systemd (Linux) or
-launchd (macOS) unit, and writes config under `/etc`, use the bootstrap installer:
+launchd (macOS) unit, and writes config under `/etc`, use the bootstrap installer.
+It installs system-wide (under `/opt` and `/etc`) and so must run as root:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh)
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh)"
 ```
 
 > **Note:** the bootstrap installer is a secondary install path and is slated for
 > deprecation in a future release as the PyPI-based workflow matures.
+>
+> **macOS + BLE:** because macOS grants Bluetooth permission per-user (not to
+> root daemons), a BLE install is set up as a per-user LaunchAgent that runs in
+> your login session. Serial/TCP installs use a system LaunchDaemon.
 
 ### Uninstall
 ```bash

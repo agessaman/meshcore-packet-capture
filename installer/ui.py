@@ -41,26 +41,55 @@ def print_info(msg: str) -> None:
 # (curl | bash scenario). Falls back to sys.stdin if /dev/tty is unavailable.
 # ---------------------------------------------------------------------------
 
-def _tty_input(prompt_text: str) -> str:
-    """Read a line from /dev/tty (or stdin as fallback)."""
+_NONINTERACTIVE_WARNED: bool = False
+
+
+def _interactive_input_stream():
+    """Return an interactive input stream, or None when none is available.
+
+    Prefers /dev/tty (works even when stdin is a pipe, e.g. curl | bash). Falls
+    back to stdin only when it is itself a TTY — never to a piped/closed stdin,
+    which would otherwise hang or spin on EOF.
+    """
     try:
-        tty = open("/dev/tty", "r")
+        return open("/dev/tty", "r")
     except OSError:
-        tty = sys.stdin
+        if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+            return sys.stdin
+        return None
+
+
+def _tty_input(prompt_text: str, default: str = "") -> str:
+    """Read a line from an interactive stream.
+
+    When no interactive stream is available (no TTY and stdin is piped/closed),
+    return ``default`` with a one-time warning instead of blocking, so
+    unattended runs proceed with documented defaults.
+    """
+    global _NONINTERACTIVE_WARNED
+    stream = _interactive_input_stream()
+    if stream is None:
+        if not _NONINTERACTIVE_WARNED:
+            print_warning("No interactive terminal detected — using default answers for prompts.")
+            _NONINTERACTIVE_WARNED = True
+        return default
 
     try:
         sys.stderr.write(prompt_text)
         sys.stderr.flush()
-        return tty.readline().rstrip("\n")
+        line = stream.readline()
+        if line == "":  # EOF
+            return default
+        return line.rstrip("\n")
     finally:
-        if tty is not sys.stdin:
-            tty.close()
+        if stream is not sys.stdin:
+            stream.close()
 
 
 def prompt_yes_no(prompt: str, default: str = "n") -> bool:
     """Prompt for y/n confirmation. Returns True for yes."""
     suffix = " [Y/n]: " if default == "y" else " [y/N]: "
-    response = _tty_input(prompt + suffix).strip()
+    response = _tty_input(prompt + suffix, default).strip()
     if not response:
         response = default
     return response.lower() in ("y", "yes")
@@ -72,5 +101,5 @@ def prompt_input(prompt: str, default: str = "") -> str:
         text = f"{prompt} [{default}]: "
     else:
         text = f"{prompt}: "
-    response = _tty_input(text).strip()
+    response = _tty_input(text, default).strip()
     return response if response else default

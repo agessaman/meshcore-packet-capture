@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 
 from . import InstallerContext
 from .system import require_root
+from .ui import print_error, print_info
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="meshcore-packet-capture-installer",
         description="MeshCore Packet Capture installer",
@@ -27,12 +29,10 @@ def main() -> None:
 
     sub.add_parser("migrate", help="Migrate legacy ~/.meshcore-packet-capture installation")
 
-    args: argparse.Namespace = parser.parse_args()
+    return parser
 
-    if not args.command:
-        parser.print_help()
-        sys.exit(1)
 
+def _dispatch(args: argparse.Namespace) -> None:
     require_root()
 
     ctx = InstallerContext(
@@ -57,6 +57,37 @@ def main() -> None:
         if not run_migrate(ctx):
             print("No legacy installation found to migrate.")
             sys.exit(0)
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    try:
+        _dispatch(args)
+    except KeyboardInterrupt:
+        print()
+        print_error("Installation cancelled.")
+        sys.exit(130)
+    except subprocess.CalledProcessError as exc:
+        cmd = exc.cmd
+        if isinstance(cmd, (list, tuple)):
+            cmd = " ".join(str(c) for c in cmd)
+        print_error(f"Command failed (exit {exc.returncode}): {cmd}")
+        if exc.stderr:
+            print_info(str(exc.stderr).strip())
+        print_info("Installation did not complete. Fix the issue above and re-run the installer.")
+        sys.exit(1)
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 - surface a clean message, not a traceback
+        print_error(f"Unexpected error: {exc}")
+        print_info("Installation did not complete. Re-run the installer; if this persists, report the message above.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

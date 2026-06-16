@@ -321,11 +321,13 @@ def download_repo_archive(repo: str, branch: str, dest_dir: str) -> str:
     zip_path = os.path.join(dest_dir, "repo.zip")
 
     print_info(f"Downloading repository archive ({repo} @ {branch})...")
-    run_cmd(
-        ["curl", "-fsSL", "--retry", "3", "--retry-delay", "2",
-         "-o", zip_path, archive_url],
-        check=True,
-    )
+    # Use urllib (stdlib) rather than shelling out to curl so the Python flow
+    # has no external download dependency of its own.
+    data = http_get(archive_url, timeout=60)
+    if not data:
+        raise RuntimeError(f"Failed to download repository archive from {archive_url}")
+    with open(zip_path, "wb") as fh:
+        fh.write(data)
 
     print_info("Extracting archive...")
     import zipfile
@@ -685,52 +687,86 @@ def detect_system_type_native() -> str:
 # Service health check
 # ---------------------------------------------------------------------------
 
-def check_service_health(service_type: str) -> None:
-    """Wait briefly and check if the service started successfully."""
+def _poll_until(predicate, *, timeout: float = 18.0, interval: float = 1.5) -> bool:
+    """Call predicate() repeatedly until it returns True or the timeout elapses.
+
+    Returns the last predicate result. Always polls at least once.
+    """
     import time
 
+    deadline = time.monotonic() + timeout
+    result = bool(predicate())
+    while not result and time.monotonic() < deadline:
+        time.sleep(interval)
+        result = bool(predicate())
+    return result
+
+
+def check_service_health(service_type: str) -> None:
+    """Confirm the service started.
+
+    The authoritative success signal is that the supervisor reports the unit
+    running (systemd is-active / launchctl list / docker ps). A successful
+    connection to a broker is a *bonus* that may take longer than install — its
+    absence is reported as still-connecting info, not a failure.
+    """
     print_info("Waiting for service to start...")
-    time.sleep(5)
 
     if service_type == "docker":
-        result = run_cmd(["docker", "logs", "meshcore-packet-capture"], check=False, capture=True)
-        ps_result = run_cmd(["docker", "ps"], check=False, capture=True)
-        if ps_result.returncode == 0 and "meshcore-packet-capture" in ps_result.stdout:
-            if "connected to" in result.stdout.lower() or "connected to" in result.stderr.lower():
-                print_success("Container started and connected successfully")
-            else:
-                print_warning("Container started but may not be connected yet")
+        def _running() -> bool:
+            ps = run_cmd(["docker", "ps"], check=False, capture=True)
+            return ps.returncode == 0 and "meshcore-packet-capture" in (ps.stdout or "")
+
+        running = _poll_until(_running)
+        logs = run_cmd(["docker", "logs", "meshcore-packet-capture"], check=False, capture=True)
+        connected = "connected to" in (logs.stdout + logs.stderr).lower()
+        if running and connected:
+            print_success("Container started and connected successfully")
+        elif running:
+            print_success("Container is running")
+            print_info("Not connected to a broker yet — this can take a moment; check the logs below.")
+        else:
+            print_error("Container is not running — check the logs below.")
         print()
         print_info("Recent logs:")
-        # Show last 10 lines
-        lines = (result.stdout + result.stderr).strip().splitlines()[-10:]
-        for line in lines:
+        for line in (logs.stdout + logs.stderr).strip().splitlines()[-10:]:
             print(f"  {line}")
 
     elif service_type == "systemd":
-        result = run_cmd(
-            ["systemctl", "is-active", "--quiet", "meshcore-packet-capture.service"],
-            check=False,
-        )
+        def _active() -> bool:
+            r = run_cmd(
+                ["systemctl", "is-active", "--quiet", "meshcore-packet-capture.service"],
+                check=False,
+            )
+            return r.returncode == 0
+
+        active = _poll_until(_active)
         log_result = run_cmd(
             ["journalctl", "-u", "meshcore-packet-capture.service", "-n", "10", "--no-pager"],
             check=False, capture=True,
         )
-        if result.returncode == 0 and "connected to" in log_result.stdout.lower():
+        connected = "connected to" in (log_result.stdout or "").lower()
+        if active and connected:
             print_success("Service started and connected successfully")
+        elif active:
+            print_success("Service is active")
+            print_info("Not connected to a broker yet — this can take a moment; check the logs below.")
         else:
-            print_warning("Service started but may not be connected yet")
+            print_error("Service is not active — check the logs below.")
         print()
         print_info("Recent logs:")
-        for line in log_result.stdout.strip().splitlines()[-10:]:
+        for line in (log_result.stdout or "").strip().splitlines()[-10:]:
             print(f"  {line}")
 
     elif service_type == "launchd":
-        result = run_cmd(["launchctl", "list"], check=False, capture=True)
-        if "com.meshcore.meshcore_packet_capture" in result.stdout:
+        def _loaded() -> bool:
+            r = run_cmd(["launchctl", "list"], check=False, capture=True)
+            return "com.meshcore.meshcore_packet_capture" in (r.stdout or "")
+
+        if _poll_until(_loaded):
             print_success("Service started successfully")
         else:
-            print_error("Service may not be running")
+            print_error("Service may not be running — check the logs below.")
         print()
         print_info("Recent logs:")
         log_path = Path("/var/log/meshcore-packet-capture.log")
@@ -841,6 +877,44 @@ WantedBy=multi-user.target
     return True
 
 
+def _console_user() -> str | None:
+    """Return the user who should own a macOS LaunchAgent (the GUI login user).
+
+    Prefers SUDO_USER (the human who ran the installer under sudo); falls back to
+    the current console owner. Returns None if it can't be determined or is root.
+    """
+    user = os.environ.get("SUDO_USER")
+    if not user:
+        r = run_cmd(["stat", "-f", "%Su", "/dev/console"], check=False, capture=True)
+        user = (r.stdout or "").strip() if r.returncode == 0 else ""
+    if not user or user == "root":
+        return None
+    return user
+
+
+def _user_connection_is_ble(config_dir: str) -> bool:
+    """Return whether the configured device connection is BLE."""
+    import tomllib
+
+    user_toml = Path(config_dir) / "config.d" / "99-user.toml"
+    if not user_toml.is_file():
+        return False
+    try:
+        with open(user_toml, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    return str((data.get("capture") or {}).get("connection_type") or "") == "ble"
+
+
+def _launchctl_load(plist_dest: str, *, domain: str) -> None:
+    """Load a plist with `launchctl bootstrap`, falling back to legacy `load`."""
+    result = run_cmd(["launchctl", "bootstrap", domain, plist_dest], check=False, capture=True)
+    if result is None or result.returncode != 0:
+        # Already loaded, or older launchctl — fall back to the legacy verb.
+        run_cmd(["launchctl", "load", plist_dest], check=False)
+
+
 def install_launchd_service(
     install_dir: str,
     config_dir: str,
@@ -849,13 +923,41 @@ def install_launchd_service(
     auto: bool = False,
     plist_label: str = "com.meshcore.meshcore_packet_capture",
 ) -> bool:
-    """Install a launchd service (macOS). Returns True if installed."""
-    print_info("Installing launchd service...")
+    """Install a launchd service (macOS). Returns True if installed.
 
-    plist_dest = f"/Library/LaunchDaemons/{plist_label}.plist"
+    BLE on macOS requires Bluetooth (TCC) permission, which is granted per-user
+    inside a GUI login session — a root LaunchDaemon cannot access it. So when
+    the configured connection is BLE we install a per-user LaunchAgent that runs
+    in the login user's session; otherwise we install a system LaunchDaemon.
+    """
+    use_agent = _user_connection_is_ble(config_dir)
+    agent_user = _console_user() if use_agent else None
+
+    if use_agent and not agent_user:
+        print_warning(
+            "BLE connection selected but the login user couldn't be determined; "
+            "installing a system LaunchDaemon instead."
+        )
+        print_warning("BLE may not work under a root daemon — re-run from a normal user session if so.")
+        use_agent = False
+
+    if use_agent and agent_user:
+        home = pwd.getpwnam(agent_user).pw_dir
+        agents_dir = Path(home) / "Library" / "LaunchAgents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        plist_dest = str(agents_dir / f"{plist_label}.plist")
+        log_dir = Path(home) / "Library" / "Logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = str(log_dir / "meshcore-packet-capture.log")
+        stderr_path = str(log_dir / "meshcore-packet-capture-error.log")
+        print_info(f"Installing per-user LaunchAgent for '{agent_user}' (required for BLE access)...")
+    else:
+        plist_dest = f"/Library/LaunchDaemons/{plist_label}.plist"
+        stdout_path = "/var/log/meshcore-packet-capture.log"
+        stderr_path = "/var/log/meshcore-packet-capture-error.log"
+
     template = Path(install_dir) / "com.meshcore.meshcore_packet_capture.plist"
-
-    if template.exists():
+    if template.exists() and not use_agent:
         print_info("Installing plist from template...")
         shutil.copy2(str(template), plist_dest)
     else:
@@ -878,22 +980,32 @@ def install_launchd_service(
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/var/log/meshcore-packet-capture.log</string>
+    <string>{stdout_path}</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/meshcore-packet-capture-error.log</string>
+    <string>{stderr_path}</string>
 </dict>
 </plist>
 """
         Path(plist_dest).write_text(plist_content)
 
-    shutil.chown(plist_dest, "root", "wheel")
+    if use_agent and agent_user:
+        shutil.chown(plist_dest, agent_user)
+    else:
+        shutil.chown(plist_dest, "root", "wheel")
     os.chmod(plist_dest, 0o644)
 
     if auto or prompt_yes_no("Load service now?", "y"):
-        run_cmd(["launchctl", "load", plist_dest])
+        if use_agent and agent_user:
+            uid = pwd.getpwnam(agent_user).pw_uid
+            _launchctl_load(plist_dest, domain=f"gui/{uid}")
+        else:
+            _launchctl_load(plist_dest, domain="system")
         print_success("Service loaded")
 
-    print_success("Launchd service installed to /Library/LaunchDaemons/")
+    if use_agent and agent_user:
+        print_success(f"LaunchAgent installed for '{agent_user}' at {plist_dest}")
+    else:
+        print_success("Launchd service installed to /Library/LaunchDaemons/")
     return True
 
 

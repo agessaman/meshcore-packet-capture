@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from . import extract_version_from_file
 from .config import (
     configure_mqtt_brokers,
+    _config_dir_has_broker,
     _read_existing_iata,
     prompt_iata_letsmesh,
     prompt_iata_simple,
@@ -311,6 +312,30 @@ def _do_install(ctx: InstallerContext, tmp_dir: str) -> None:
     # Summary
     # ---------------------------------------------------------------------------
     _print_install_summary(ctx, migration_done)
+    _warn_if_config_incomplete(ctx)
+
+
+def _warn_if_config_incomplete(ctx: InstallerContext) -> None:
+    """Surface a prominent final warning when required config is missing.
+
+    A half-configured install (no MQTT broker, or a placeholder IATA) otherwise
+    looks successful but fails at runtime — so flag it here with the file to edit.
+    """
+    user_toml = user_config_path(ctx.config_dir)
+    problems: list[str] = []
+    if not _config_dir_has_broker(ctx.config_dir):
+        problems.append("no MQTT broker is configured")
+    iata = _read_existing_iata(str(user_toml)) if user_toml.exists() else ""
+    if not iata or iata == "XXX":
+        problems.append("the IATA code is not set (still 'XXX')")
+
+    if not problems:
+        return
+
+    print()
+    print_warning("Configuration is incomplete: " + "; ".join(problems) + ".")
+    print_info(f"Edit {user_toml} to finish configuration,")
+    print_info("or re-run the installer to configure brokers interactively.")
 
 
 def _install_new_service(ctx: InstallerContext) -> None:

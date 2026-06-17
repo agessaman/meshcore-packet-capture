@@ -37,6 +37,20 @@ def test_prompts_fall_back_to_default_without_tty(monkeypatch: pytest.MonkeyPatc
     assert ui.prompt_yes_no("Proceed?", "n") is False
 
 
+def test_prompts_prefer_interactive_stdin(monkeypatch: pytest.MonkeyPatch):
+    class _FakeStdin:
+        def isatty(self) -> bool:
+            return True
+
+        def readline(self) -> str:
+            return "Y\n"
+
+    fake_stdin = _FakeStdin()
+    monkeypatch.setattr(ui.sys, "stdin", fake_stdin)
+    assert ui._interactive_input_stream() is fake_stdin
+    assert ui.prompt_yes_no("Proceed?", "n") is True
+
+
 # --- Reading existing custom-broker values ---------------------------------
 
 def test_custom_broker_fields_reads_existing(tmp_path: Path):

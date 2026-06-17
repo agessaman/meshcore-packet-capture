@@ -47,15 +47,16 @@ _NONINTERACTIVE_WARNED: bool = False
 def _interactive_input_stream():
     """Return an interactive input stream, or None when none is available.
 
-    Prefers /dev/tty (works even when stdin is a pipe, e.g. curl | bash). Falls
-    back to stdin only when it is itself a TTY — never to a piped/closed stdin,
-    which would otherwise hang or spin on EOF.
+    Prefers stdin when it is already a TTY (the bootstrap redirects it there for
+    piped installs). Falls back to /dev/tty for direct Python runs with piped
+    stdin. Never reads from a piped/closed stdin, which would otherwise hang or
+    spin on EOF.
     """
+    if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
+        return sys.stdin
     try:
         return open("/dev/tty", "r")
     except OSError:
-        if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
-            return sys.stdin
         return None
 
 

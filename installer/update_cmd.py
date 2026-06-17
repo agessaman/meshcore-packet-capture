@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +40,7 @@ from .ui import (
     print_header,
     print_info,
     print_success,
+    print_warning,
     prompt_yes_no,
 )
 
@@ -52,12 +54,18 @@ def run_update(ctx: InstallerContext) -> None:
     venv_py = Path(ctx.install_dir, "venv", "bin", "python3")
     has_pkg = False
     if venv_py.is_file():
-        r = run_cmd(
-            [str(venv_py), "-m", "pip", "show", "meshcore-packet-capture"],
-            check=False,
-            capture=True,
-        )
-        has_pkg = r.returncode == 0
+        print_info("Checking existing runtime package...")
+        try:
+            r = run_cmd(
+                [str(venv_py), "-m", "pip", "show", "meshcore-packet-capture"],
+                check=False,
+                capture=True,
+                timeout=20,
+            )
+            has_pkg = r.returncode == 0
+        except subprocess.TimeoutExpired:
+            print_warning("Timed out checking the existing package; continuing with update preflight.")
+            has_pkg = True
     legacy_flat = Path(ctx.install_dir, "packet_capture.py").exists()
     if not (has_pkg or legacy_flat):
         print_error(f"No installation found at {ctx.install_dir}")

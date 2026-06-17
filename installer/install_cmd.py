@@ -102,12 +102,17 @@ def _do_install(ctx: InstallerContext, tmp_dir: str) -> None:
     venv_py = Path(ctx.install_dir, "venv", "bin", "python3")
     has_pkg = False
     if venv_py.is_file():
-        r = run_cmd(
-            [str(venv_py), "-m", "pip", "show", "meshcore-packet-capture"],
-            check=False,
-            capture=True,
-        )
-        has_pkg = r.returncode == 0
+        try:
+            r = run_cmd(
+                [str(venv_py), "-m", "pip", "show", "meshcore-packet-capture"],
+                check=False,
+                capture=True,
+                timeout=20,
+            )
+            has_pkg = r.returncode == 0
+        except subprocess.TimeoutExpired:
+            print_warning("Timed out checking the existing package; treating the venv as an existing install.")
+            has_pkg = True
     legacy_flat = Path(ctx.install_dir, "packet_capture.py").exists()
     has_runtime = has_pkg or legacy_flat
     has_existing = (

@@ -15,25 +15,25 @@ NC: str = "\033[0m" if _USE_COLOR else ""
 
 
 def print_header(msg: str) -> None:
-    print(f"\n{BLUE}{'=' * 51}{NC}")
-    print(f"{BLUE}  {msg}{NC}")
-    print(f"{BLUE}{'=' * 51}{NC}\n")
+    print(f"\n{BLUE}{'=' * 51}{NC}", flush=True)
+    print(f"{BLUE}  {msg}{NC}", flush=True)
+    print(f"{BLUE}{'=' * 51}{NC}\n", flush=True)
 
 
 def print_success(msg: str) -> None:
-    print(f"{GREEN}\u2713{NC} {msg}")
+    print(f"{GREEN}\u2713{NC} {msg}", flush=True)
 
 
 def print_error(msg: str) -> None:
-    print(f"{RED}\u2717{NC} {msg}", file=sys.stderr)
+    print(f"{RED}\u2717{NC} {msg}", file=sys.stderr, flush=True)
 
 
 def print_warning(msg: str) -> None:
-    print(f"{YELLOW}\u26a0{NC} {msg}")
+    print(f"{YELLOW}\u26a0{NC} {msg}", flush=True)
 
 
 def print_info(msg: str) -> None:
-    print(f"{BLUE}\u2139{NC} {msg}")
+    print(f"{BLUE}\u2139{NC} {msg}", flush=True)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """Installer flow tests with mocked side effects."""
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -132,6 +133,29 @@ def test_run_update_requires_existing_runtime(monkeypatch: pytest.MonkeyPatch, t
 
     with pytest.raises(SystemExit):
         uc.run_update(ctx)
+
+
+def test_run_update_timeout_still_continues_with_existing_venv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    install_dir = tmp_path / "opt" / "meshcore-packet-capture"
+    venv_py = install_dir / "venv" / "bin" / "python3"
+    venv_py.parent.mkdir(parents=True, exist_ok=True)
+    venv_py.write_text("#!/bin/sh\n")
+    config_dir = tmp_path / "etc" / "meshcore-packet-capture"
+
+    ctx = InstallerContext(install_dir=str(install_dir), config_dir=str(config_dir))
+    updates: list[str] = []
+
+    def _timeout_run(cmd, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd, timeout=20)
+
+    monkeypatch.setattr(uc, "run_cmd", _timeout_run)
+    monkeypatch.setattr(uc, "_do_update", lambda _ctx, _tmp: updates.append(_ctx.install_dir))
+
+    uc.run_update(ctx)
+
+    assert updates == [str(install_dir)]
 
 
 def test_do_update_non_docker_reinstalls_package(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

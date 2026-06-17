@@ -113,4 +113,8 @@ fi
 export INSTALL_REPO="$REPO"
 export INSTALL_BRANCH="$BRANCH"
 cd "$TMP_DIR"
-python3 -m installer install "${EXTRA_ARGS[@]}"
+if [ -r /dev/tty ]; then
+    python3 -m installer install "${EXTRA_ARGS[@]}" < /dev/tty
+else
+    python3 -m installer install "${EXTRA_ARGS[@]}"
+fi

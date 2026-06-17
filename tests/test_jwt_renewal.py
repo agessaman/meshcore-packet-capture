@@ -1,11 +1,12 @@
-"""Tests for per-broker JWT TTL: the expiry-driven renewal scheduler computation
-and that a custom expiry is carried in the token payload."""
+"""Tests for per-broker JWT metadata and renewal behavior."""
 from __future__ import annotations
 
+import pytest
 import time
 from types import SimpleNamespace
 
 from meshcore_packet_capture.auth_token import AuthTokenPayload
+from meshcore_packet_capture import packet_capture as pc_mod
 from meshcore_packet_capture.packet_capture import PacketCapture
 
 
@@ -114,3 +115,114 @@ def test_payload_carries_custom_exp():
     payload = AuthTokenPayload(public_key="ab" * 32, iat=iat, exp=iat + ttl).to_dict()
     assert payload["exp"] == iat + ttl
     assert payload["iat"] == iat
+
+
+@pytest.mark.asyncio
+async def test_jwt_uses_broker_specific_owner_email(monkeypatch: pytest.MonkeyPatch):
+    captured: dict = {}
+
+    async def _fake_create_auth_token_async(public_key, **kwargs):
+        captured["public_key"] = public_key
+        captured["kwargs"] = kwargs
+        payload = {
+            "publicKey": public_key.upper(),
+            "iat": 1,
+            "exp": 2,
+            "aud": kwargs.get("aud"),
+            "owner": kwargs.get("owner"),
+            "email": kwargs.get("email"),
+            "client": kwargs.get("client"),
+        }
+        import base64
+        import json
+
+        encoded_payload = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        return f"header.{encoded_payload}.signature"
+
+    monkeypatch.setattr(pc_mod, "create_auth_token_async", _fake_create_auth_token_async)
+    monkeypatch.setattr(pc_mod, "create_auth_token", None)
+    monkeypatch.setenv("PACKETCAPTURE_OWNER_PUBLIC_KEY", "B" * 64)
+    monkeypatch.setenv("PACKETCAPTURE_OWNER_EMAIL", "global@example.com")
+
+    cap = SimpleNamespace(
+        meshcore=None,
+        device_public_key="c" * 64,
+        device_private_key="d" * 128,
+        debug=False,
+        jwt_tokens={},
+        logger=SimpleNamespace(
+            info=lambda *_a, **_k: None,
+            warning=lambda *_a, **_k: None,
+            error=lambda *_a, **_k: None,
+            debug=lambda *_a, **_k: None,
+        ),
+        _env={
+            "MQTT1_TOKEN_OWNER": "A" * 64,
+            "MQTT1_TOKEN_EMAIL": "User@Example.COM",
+            "MQTT1_TOKEN_TTL": "3600",
+        },
+        get_env=lambda key, default="": cap._env.get(key, default),
+        resolve_token_ttl=lambda broker_num: 3600,
+        _load_client_version=lambda: "meshcore-packet-capture/test",
+    )
+
+    async def _create_jwt_with_private_key(audience, expiry_seconds=86400, broker_num=None):
+        return await PacketCapture.create_jwt_with_private_key(
+            cap,
+            audience,
+            expiry_seconds=expiry_seconds,
+            broker_num=broker_num,
+        )
+
+    cap.create_jwt_with_private_key = _create_jwt_with_private_key
+
+    token = await PacketCapture.create_auth_token_jwt(cap, "mqtt.waev.app", 1)
+
+    assert token is not None
+    assert captured["kwargs"]["owner"] == "A" * 64
+    assert captured["kwargs"]["email"] == "user@example.com"
+    assert captured["kwargs"]["aud"] == "mqtt.waev.app"
+    assert captured["kwargs"]["expiry_seconds"] == 3600
+    assert cap.jwt_tokens[1]["audience"] == "mqtt.waev.app"
+
+
+@pytest.mark.asyncio
+async def test_jwt_owner_email_falls_back_to_global(monkeypatch: pytest.MonkeyPatch):
+    captured: dict = {}
+
+    async def _fake_create_auth_token_async(_public_key, **kwargs):
+        captured["kwargs"] = kwargs
+        return "header.payload.signature"
+
+    monkeypatch.setattr(pc_mod, "create_auth_token_async", _fake_create_auth_token_async)
+    monkeypatch.setattr(pc_mod, "create_auth_token", None)
+    monkeypatch.setenv("PACKETCAPTURE_OWNER_PUBLIC_KEY", "B" * 64)
+    monkeypatch.setenv("PACKETCAPTURE_OWNER_EMAIL", "Global@Example.COM")
+
+    cap = SimpleNamespace(
+        meshcore=None,
+        device_public_key="c" * 64,
+        device_private_key="d" * 128,
+        debug=False,
+        jwt_tokens={},
+        logger=SimpleNamespace(
+            info=lambda *_a, **_k: None,
+            warning=lambda *_a, **_k: None,
+            error=lambda *_a, **_k: None,
+            debug=lambda *_a, **_k: None,
+        ),
+        _env={"MQTT1_TOKEN_TTL": "3600"},
+        get_env=lambda key, default="": cap._env.get(key, default),
+        resolve_token_ttl=lambda broker_num: 3600,
+        _load_client_version=lambda: "meshcore-packet-capture/test",
+    )
+
+    await PacketCapture.create_jwt_with_private_key(
+        cap,
+        "mqtt.waev.app",
+        expiry_seconds=3600,
+        broker_num=1,
+    )
+
+    assert captured["kwargs"]["owner"] == "B" * 64
+    assert captured["kwargs"]["email"] == "global@example.com"

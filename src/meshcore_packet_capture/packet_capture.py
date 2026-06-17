@@ -1090,7 +1090,12 @@ class PacketCapture:
     
     
     
-    async def create_jwt_with_private_key(self, audience: str = None, expiry_seconds: int = 86400) -> Optional[str]:
+    async def create_jwt_with_private_key(
+        self,
+        audience: str = None,
+        expiry_seconds: int = 86400,
+        broker_num: int = None,
+    ) -> Optional[str]:
         """Create JWT using on-device signing (preferred) or private key from device.
 
         ``expiry_seconds`` sets the JWT lifetime (default 24h); pass a smaller value
@@ -1105,8 +1110,14 @@ class PacketCapture:
             if audience:
                 claims['aud'] = audience
             
-            # Add optional owner public key if configured
-            owner_public_key = os.getenv('PACKETCAPTURE_OWNER_PUBLIC_KEY', '').strip()
+            # Add optional owner public key if configured. Per-broker token
+            # metadata wins over global owner metadata so account linking can
+            # vary by broker/preset.
+            owner_public_key = ""
+            if broker_num is not None:
+                owner_public_key = self.get_env(f'MQTT{broker_num}_TOKEN_OWNER', '').strip()
+            if not owner_public_key:
+                owner_public_key = os.getenv('PACKETCAPTURE_OWNER_PUBLIC_KEY', '').strip()
             if owner_public_key:
                 # Validate it's a valid hex string of correct length (64 hex chars = 32 bytes)
                 if len(owner_public_key) == 64 and all(c in '0123456789ABCDEFabcdef' for c in owner_public_key):
@@ -1115,7 +1126,11 @@ class PacketCapture:
                     self.logger.warning(f"Invalid owner public key format (expected 64 hex characters): {owner_public_key[:16]}...")
             
             # Add optional email if configured
-            email = os.getenv('PACKETCAPTURE_OWNER_EMAIL', '').strip()
+            email = ""
+            if broker_num is not None:
+                email = self.get_env(f'MQTT{broker_num}_TOKEN_EMAIL', '').strip()
+            if not email:
+                email = os.getenv('PACKETCAPTURE_OWNER_EMAIL', '').strip()
             if email:
                 # Normalize to lowercase
                 email = email.lower()
@@ -1251,7 +1266,11 @@ class PacketCapture:
         expiry_seconds = self.resolve_token_ttl(broker_num)
         # Use on-device signing (preferred) or private key method (fallback)
         # The create_jwt_with_private_key() method already logs which method was used
-        jwt_token = await self.create_jwt_with_private_key(audience, expiry_seconds=expiry_seconds)
+        jwt_token = await self.create_jwt_with_private_key(
+            audience,
+            expiry_seconds=expiry_seconds,
+            broker_num=broker_num,
+        )
         if jwt_token:
             # Store token with expiry time if broker_num is provided
             if broker_num is not None:

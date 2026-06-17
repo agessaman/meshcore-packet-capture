@@ -92,6 +92,27 @@ def test_flatten_broker_token_ttl():
     assert "PACKETCAPTURE_MQTT2_TOKEN_TTL" not in env
 
 
+def test_flatten_broker_token_owner_email():
+    cfg = {
+        "broker": [
+            {
+                "name": "waev",
+                "enabled": True,
+                "server": "mqtt.waev.app",
+                "auth": {
+                    "method": "token",
+                    "audience": "mqtt.waev.app",
+                    "owner": "A" * 64,
+                    "email": "User@Example.COM",
+                },
+            }
+        ]
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert env["PACKETCAPTURE_MQTT1_TOKEN_OWNER"] == "A" * 64
+    assert env["PACKETCAPTURE_MQTT1_TOKEN_EMAIL"] == "User@Example.COM"
+
+
 def test_flatten_token_ttl_ignored_for_non_token_auth():
     cfg = {
         "broker": [

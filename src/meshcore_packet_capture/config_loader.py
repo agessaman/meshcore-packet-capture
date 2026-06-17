@@ -151,6 +151,10 @@ def _broker_to_env_slot(broker: dict[str, Any], slot: int) -> dict[str, str]:
             out[prefix + "TOKEN_AUDIENCE"] = str(auth["audience"])
         if "token_ttl" in auth:
             out[prefix + "TOKEN_TTL"] = str(int(auth["token_ttl"]))
+        if "owner" in auth:
+            out[prefix + "TOKEN_OWNER"] = str(auth["owner"])
+        if "email" in auth:
+            out[prefix + "TOKEN_EMAIL"] = str(auth["email"])
     elif method == "password":
         out[prefix + "USE_AUTH_TOKEN"] = "false"
         if "username" in auth:

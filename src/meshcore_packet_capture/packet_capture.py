@@ -2466,6 +2466,16 @@ class PacketCapture:
         self.stats_supported = available
         return available
 
+    @staticmethod
+    def normalize_packet_stats(payload: dict) -> dict:
+        """Add stable packet counter aliases to MeshCore packet stats."""
+        normalized = dict(payload)
+        if "sent" in normalized and "packets_sent" not in normalized:
+            normalized["packets_sent"] = normalized["sent"]
+        if "recv" in normalized and "packets_received" not in normalized:
+            normalized["packets_received"] = normalized["recv"]
+        return normalized
+
     async def refresh_stats(self, force: bool = False):
         """Fetch stats from the radio and cache them for status publishing."""
         if not self.stats_status_enabled:
@@ -2533,6 +2543,24 @@ class PacketCapture:
                     self.logger.debug(f"Radio stats unavailable: {radio_result.payload}")
             except Exception as exc:
                 self.logger.debug(f"Error fetching radio stats: {exc}")
+
+            get_stats_packets = getattr(self.meshcore.commands, "get_stats_packets", None)
+            if callable(get_stats_packets):
+                try:
+                    packets_result = await self.retryable_device_command(
+                        lambda: get_stats_packets(),
+                        "get_stats_packets",
+                        timeout=8.0,
+                        max_retries=self.stats_retry_limit,  # Use stats retry limit
+                        retry_delay=0.2
+                    )
+                    stats_packets_type = getattr(EventType, "STATS_PACKETS", "stats_packets")
+                    if packets_result and packets_result.type == stats_packets_type and packets_result.payload:
+                        stats_payload.update(self.normalize_packet_stats(packets_result.payload))
+                    elif packets_result and packets_result.type == EventType.ERROR:
+                        self.logger.debug(f"Packet stats unavailable: {packets_result.payload}")
+                except Exception as exc:
+                    self.logger.debug(f"Error fetching packet stats: {exc}")
             
             if stats_payload:
                 self.latest_stats = stats_payload

@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 
 import pytest
 
+from meshcore_packet_capture import packet_capture as pc_mod
 from meshcore_packet_capture.enums import PayloadType
 from meshcore_packet_capture.packet_capture import PacketCapture
 
@@ -77,3 +79,91 @@ def test_resolve_topic_template_replaces_token_placeholder(monkeypatch: pytest.M
     monkeypatch.setenv("PACKETCAPTURE_MQTT1_TOPIC_TOKEN", "tok123")
     topic = capture.resolve_topic_template("meshrank/uplink/{TOKEN}/{PUBLIC_KEY}/packets", broker_num=1)
     assert topic == "meshrank/uplink/tok123/ABCDEF/packets"
+
+
+@pytest.mark.asyncio
+async def test_refresh_stats_fetches_packet_stats(monkeypatch: pytest.MonkeyPatch, capture: PacketCapture) -> None:
+    event_type = types.SimpleNamespace(
+        ERROR="error",
+        STATS_CORE="stats_core",
+        STATS_RADIO="stats_radio",
+        STATS_PACKETS="stats_packets",
+    )
+    monkeypatch.setattr(pc_mod, "EventType", event_type)
+
+    async def _core():
+        return types.SimpleNamespace(type=event_type.STATS_CORE, payload={"uptime": 10})
+
+    async def _radio():
+        return types.SimpleNamespace(type=event_type.STATS_RADIO, payload={"airtime": 20})
+
+    async def _packets():
+        return types.SimpleNamespace(
+            type=event_type.STATS_PACKETS,
+            payload={
+                "recv": 1234,
+                "sent": 567,
+                "flood_tx": 400,
+                "direct_tx": 167,
+                "flood_rx": 900,
+                "direct_rx": 334,
+                "recv_errors": 12,
+            },
+        )
+
+    async def _retry(command, *_args, **_kwargs):
+        return await command()
+
+    capture.meshcore = types.SimpleNamespace(
+        is_connected=True,
+        commands=types.SimpleNamespace(
+            get_stats_core=_core,
+            get_stats_radio=_radio,
+            get_stats_packets=_packets,
+        ),
+    )
+    capture.retryable_device_command = _retry
+
+    stats = await capture.refresh_stats(force=True)
+
+    assert stats["packets_received"] == 1234
+    assert stats["packets_sent"] == 567
+    assert stats["recv"] == 1234
+    assert stats["sent"] == 567
+    assert stats["flood_tx"] == 400
+    assert stats["direct_rx"] == 334
+    assert stats["recv_errors"] == 12
+
+
+@pytest.mark.asyncio
+async def test_publish_status_includes_packet_stats_aliases(capture: PacketCapture) -> None:
+    published: list[dict] = []
+
+    async def _firmware():
+        return {"model": "companion", "version": "1.2.3"}
+
+    async def _refresh_stats(force=False):
+        return {
+            "recv": 1234,
+            "sent": 567,
+            "packets_received": 1234,
+            "packets_sent": 567,
+        }
+
+    def _publish(_topic, payload, **_kwargs):
+        published.append(json.loads(payload))
+        return {"attempted": 1, "succeeded": 1}
+
+    capture.get_firmware_info = _firmware
+    capture.refresh_stats = _refresh_stats
+    capture.safe_publish = _publish
+    capture.mqtt_connected = True
+    capture.device_name = "node"
+    capture.device_public_key = "abc"
+    capture.radio_info = {"region": "US"}
+
+    await capture.publish_status("online")
+
+    assert published
+    assert published[0]["stats"]["packets_received"] == 1234
+    assert published[0]["stats"]["packets_sent"] == 567

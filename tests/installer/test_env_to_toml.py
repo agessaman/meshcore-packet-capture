@@ -102,6 +102,21 @@ def test_capture_numeric_vs_string():
     assert data["capture"]["advert_interval_hours"] == 11
 
 
+def test_invalid_numeric_values_are_skipped():
+    data = _roundtrip(
+        {
+            "PACKETCAPTURE_CONNECTION_TYPE": "tcp",
+            "PACKETCAPTURE_TCP_HOST": "host.example",
+            "PACKETCAPTURE_TCP_PORT": "not-a-port",
+            "PACKETCAPTURE_SERIAL_TIMEOUT": "slow",
+        }
+    )
+    assert data["capture"]["connection_type"] == "tcp"
+    assert data["capture"]["tcp_host"] == "host.example"
+    assert "tcp_port" not in data["capture"]
+    assert "serial" not in data
+
+
 # --- brokers ---------------------------------------------------------------
 
 def test_letsmesh_us_broker_token_auth():

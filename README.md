@@ -145,6 +145,21 @@ sudo bash install.sh
 
 Or bootstrap via curl (downloads the branch and runs `python3 -m installer install`).
 
+#### Upgrading legacy service installs
+
+Older installers placed the app and `.env.local` configuration under
+`~/.meshcore-packet-capture` and created a `meshcore-capture.service` unit. Run the
+managed-service installer to upgrade that layout. It detects the legacy directory,
+converts `.env` / `.env.local` into
+`/etc/meshcore-packet-capture/config.d/99-user.toml`, stops and removes the old
+service unit after the TOML file is written, then continues with the new
+systemwide `/opt` install.
+
+The old `~/.meshcore-packet-capture` directory is left in place for rollback or
+manual cleanup. Standalone `python3 -m installer migrate` only migrates
+configuration and service units; use the full installer when you want the new
+application files and service installed too.
+
 ### Legacy environment files (local development)
 
 For development and manual installs, two flat key/value files are still read from the

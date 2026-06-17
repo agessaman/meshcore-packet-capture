@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -50,13 +51,32 @@ def parse_env_file(path: str) -> dict[str, str]:
             if "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            env[key.strip()] = value.strip()
+            value = value.strip()
+            if "#" in value:
+                quote: str | None = None
+                cleaned: list[str] = []
+                for idx, char in enumerate(value):
+                    if char in ("'", '"'):
+                        quote = None if quote == char else char if quote is None else quote
+                    if char == "#" and quote is None and (idx == 0 or value[idx - 1].isspace()):
+                        break
+                    cleaned.append(char)
+                value = "".join(cleaned).strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            env[key.strip()] = value
     return env
 
 
 def env_to_toml(env: dict[str, str]) -> str:
     """Convert a merged .env dict to TOML config string."""
     lines: list[str] = []
+
+    def _append_int(target: list[str], key: str, value: str, *, env_key: str) -> None:
+        try:
+            target.append(f"{key} = {int(value)}")
+        except ValueError:
+            print_warning(f"Skipping invalid numeric value for {env_key}: {value!r}")
 
     # General section
     general: dict[str, str] = {}
@@ -83,16 +103,19 @@ def env_to_toml(env: dict[str, str]) -> str:
     ports = env.get("PACKETCAPTURE_SERIAL_PORTS", "")
     baud = env.get("PACKETCAPTURE_SERIAL_BAUD_RATE", "")
     timeout = env.get("PACKETCAPTURE_SERIAL_TIMEOUT", "")
+    serial_lines: list[str] = []
     if ports or baud or timeout:
-        lines.append("[serial]")
         if ports:
             port_list = [p.strip() for p in ports.split(",") if p.strip()]
             ports_str = ", ".join(f'"{p}"' for p in port_list)
-            lines.append(f"ports = [{ports_str}]")
+            serial_lines.append(f"ports = [{ports_str}]")
         if baud and baud != "115200":
-            lines.append(f"baud_rate = {baud}")
+            _append_int(serial_lines, "baud_rate", baud, env_key="PACKETCAPTURE_SERIAL_BAUD_RATE")
         if timeout and timeout != "2":
-            lines.append(f"timeout = {timeout}")
+            _append_int(serial_lines, "timeout", timeout, env_key="PACKETCAPTURE_SERIAL_TIMEOUT")
+    if serial_lines:
+        lines.append("[serial]")
+        lines.extend(serial_lines)
         lines.append("")
 
     # Update section
@@ -138,7 +161,7 @@ def env_to_toml(env: dict[str, str]) -> str:
         val = env.get(ekey, "")
         if val:
             if tkey in ("timeout", "tcp_port", "advert_interval_hours"):
-                cap_lines.append(f"{tkey} = {int(val)}")
+                _append_int(cap_lines, tkey, val, env_key=ekey)
             else:
                 cap_lines.append(f'{tkey} = "{val}"')
     if cap_lines:
@@ -215,6 +238,20 @@ def env_to_toml(env: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _backup_existing_file(path: str | Path) -> None:
+    """Backup an existing file before overwriting migration output."""
+    target = Path(path)
+    if not target.exists():
+        return
+    backup = target.with_suffix(target.suffix + ".backup")
+    counter = 1
+    while backup.exists():
+        backup = target.with_suffix(target.suffix + f".backup-{counter}")
+        counter += 1
+    shutil.copy2(target, backup)
+    print_info(f"Backed up existing configuration to {backup}")
+
+
 # ---------------------------------------------------------------------------
 # Migration command
 # ---------------------------------------------------------------------------
@@ -273,10 +310,8 @@ def run_migrate(ctx: InstallerContext) -> bool:
         print_info("Skipping migration. Old installation left in place.")
         return False
 
-    # Step 1: Stop old services
-    _stop_old_services(old_dir)
-
-    # Step 2: Migrate config
+    # Step 1: Migrate config. Do this before touching old services so a failed
+    # conversion does not leave users without their working legacy service.
     print_info("Migrating configuration to TOML format...")
 
     old_env = os.path.join(old_dir, ".env")
@@ -326,27 +361,33 @@ def run_migrate(ctx: InstallerContext) -> bool:
 
     if not merged:
         print_warning("No user configuration found to migrate")
+        print_info("Old installation left running; continue with install to configure it interactively.")
+        return False
     else:
         toml_content = env_to_toml(merged)
+        if not toml_content.strip():
+            print_warning("Legacy configuration did not contain settings that map to TOML.")
+            print_info("Old installation left running; continue with install to configure it interactively.")
+            return False
 
-        # Write directly
+        _backup_existing_file(migrated_toml_path)
         Path(migrated_toml_path).write_text(
             "# MeshCore Packet Capture - User Configuration\n"
             "# Migrated from legacy .env/.env.local installation\n\n"
             + toml_content
         )
 
-        if os.path.exists(migrated_toml_path):
-            print_success(f"Configuration migrated to {migrated_toml_path}")
-            print()
-            print_info("Migrated configuration:")
-            content = Path(migrated_toml_path).read_text()
-            print(content)
-            print()
-        else:
-            print_warning("No configuration was migrated (no user overrides found)")
+        print_success(f"Configuration migrated to {migrated_toml_path}")
+        print()
+        print_info("Migrated configuration:")
+        content = Path(migrated_toml_path).read_text()
+        print(content)
+        print()
 
-    # Step 3: Remove old systemd unit
+    # Step 2: Stop old services
+    _stop_old_services(old_dir)
+
+    # Step 3: Remove old service units
     _cleanup_old_service_units()
 
     # Step 4: Mark migration as complete
@@ -374,6 +415,7 @@ def _stop_old_services(old_dir: str) -> None:
 
     if platform.system() == "Darwin":
         for plist_name in (
+            "com.meshcore.packet-capture.plist",
             "com.meshcore.meshcore_packet_capture.plist",
             "meshcore-capture.plist",
         ):
@@ -399,6 +441,7 @@ def _cleanup_old_service_units() -> None:
 
     if platform.system() == "Darwin":
         for plist_name in (
+            "com.meshcore.packet-capture.plist",
             "com.meshcore.meshcore_packet_capture.plist",
             "meshcore-capture.plist",
         ):

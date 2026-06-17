@@ -107,23 +107,43 @@ remove_systemd_service() {
 
 # Remove launchd service
 remove_launchd_service() {
-    local plist_file="$HOME/Library/LaunchAgents/com.meshcore.packet-capture.plist"
-    
-    if [ -f "$plist_file" ]; then
-        print_info "Stopping and removing launchd service..."
-        
-        if launchctl list | grep -q com.meshcore.packet-capture; then
-            launchctl unload "$plist_file" 2>/dev/null || true
-            print_success "Service unloaded"
+    local label="com.meshcore.meshcore_packet_capture"
+    local daemon_plist="/Library/LaunchDaemons/${label}.plist"
+    local agent_user="${SUDO_USER:-$(whoami)}"
+    local agent_home="$HOME"
+    local found=false
+
+    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+        agent_home=$(eval echo "~$SUDO_USER")
+    fi
+    local agent_plist="$agent_home/Library/LaunchAgents/${label}.plist"
+
+    if [ -f "$daemon_plist" ]; then
+        found=true
+        print_info "Stopping and removing system LaunchDaemon..."
+        sudo launchctl bootout system "$daemon_plist" 2>/dev/null || sudo launchctl unload "$daemon_plist" 2>/dev/null || true
+        sudo rm -f "$daemon_plist"
+        print_success "System LaunchDaemon removed"
+    fi
+
+    if [ -f "$agent_plist" ]; then
+        found=true
+        print_info "Stopping and removing BLE LaunchAgent for $agent_user..."
+        local agent_uid
+        agent_uid=$(id -u "$agent_user" 2>/dev/null || true)
+        if [ -n "$agent_uid" ]; then
+            sudo -u "$agent_user" launchctl bootout "gui/$agent_uid" "$agent_plist" 2>/dev/null || sudo -u "$agent_user" launchctl unload "$agent_plist" 2>/dev/null || true
+        else
+            launchctl unload "$agent_plist" 2>/dev/null || true
         fi
-        
-        rm -f "$plist_file"
-        print_success "Service removed"
-        
-        # Clean up log files
+        rm -f "$agent_plist"
+        print_success "BLE LaunchAgent removed"
+    fi
+
+    if [ "$found" = true ]; then
         if prompt_yes_no "Remove log files?" "y"; then
-            rm -f "$HOME/Library/Logs/meshcore-capture.log"
-            rm -f "$HOME/Library/Logs/meshcore-capture-error.log"
+            sudo rm -f /var/log/meshcore-packet-capture.log /var/log/meshcore-packet-capture-error.log 2>/dev/null || true
+            rm -f "$agent_home/Library/Logs/meshcore-packet-capture.log" "$agent_home/Library/Logs/meshcore-packet-capture-error.log"
             print_success "Log files removed"
         fi
     else
@@ -280,7 +300,7 @@ main() {
     print_header "System Cleanup"
     
     # Remove any remaining log files
-    for logf in /var/log/meshcore-capture.log /var/log/meshcore-packet-capture.log /var/log/meshcore-packet-capture-error.log; do
+    for logf in /var/log/meshcore-packet-capture.log /var/log/meshcore-packet-capture-error.log; do
         if [ -f "$logf" ]; then
             if prompt_yes_no "Remove system log file $logf?" "y"; then
                 sudo rm -f "$logf" 2>/dev/null || true

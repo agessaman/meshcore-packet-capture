@@ -118,6 +118,9 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
     shutil.copytree(src_from, src_tmp)
     shutil.copy2(os.path.join(repo_dir, "config.toml.example"), os.path.join(tmp_dir, "config.toml.example"))
     shutil.copy2(os.path.join(repo_dir, "uninstall.sh"), os.path.join(tmp_dir, "uninstall.sh"))
+    ble_disc_src = os.path.join(repo_dir, "packaging", "systemd", "ble-disconnect.sh")
+    if os.path.isfile(ble_disc_src):
+        shutil.copy2(ble_disc_src, os.path.join(tmp_dir, "ble-disconnect.sh"))
     req_src = os.path.join(repo_dir, "requirements.txt")
     if os.path.isfile(req_src):
         shutil.copy2(req_src, os.path.join(tmp_dir, "requirements.txt"))
@@ -161,6 +164,10 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
         if os.path.exists(src):
             shutil.copy2(src, f"{ctx.install_dir}/")
     os.chmod(f"{ctx.install_dir}/uninstall.sh", 0o755)
+    ble_disc_tmp = os.path.join(tmp_dir, "ble-disconnect.sh")
+    if os.path.isfile(ble_disc_tmp):
+        shutil.copy2(ble_disc_tmp, f"{ctx.install_dir}/")
+        os.chmod(f"{ctx.install_dir}/ble-disconnect.sh", 0o755)
 
     # Update base config (overwrite config.toml, preserve user overrides)
     shutil.copy2(os.path.join(tmp_dir, "config.toml.example"), f"{ctx.config_dir}/config.toml")

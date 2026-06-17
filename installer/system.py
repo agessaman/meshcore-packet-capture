@@ -459,15 +459,18 @@ def create_system_user(svc_user: str, install_dir: str) -> None:
         ])
         print_success(f"System user '{svc_user}' created")
 
-    # Add to serial device group
+    # Add to device-access groups needed by service-managed transports.
     if platform.system() == "Linux":
         is_arch = Path("/etc/arch-release").exists()
-        group = "uucp" if is_arch else "dialout"
-        # Check group exists
-        result = run_cmd(["getent", "group", group], check=False, capture=True)
-        if result.returncode == 0:
-            run_cmd(["usermod", "-aG", group, svc_user])
-            print_success(f"Added '{svc_user}' to '{group}' group (serial access)")
+        device_groups = [
+            ("uucp" if is_arch else "dialout", "serial access"),
+            ("bluetooth", "Bluetooth access"),
+        ]
+        for group, reason in device_groups:
+            result = run_cmd(["getent", "group", group], check=False, capture=True)
+            if result.returncode == 0:
+                run_cmd(["usermod", "-aG", group, svc_user])
+                print_success(f"Added '{svc_user}' to '{group}' group ({reason})")
 
 
 # ---------------------------------------------------------------------------
@@ -825,7 +828,7 @@ def install_systemd_service(
     else:
         content = f"""[Unit]
 Description=MeshCore Packet Capture
-After=time-sync.target network-online.target
+After=time-sync.target network-online.target bluetooth.target
 Wants=time-sync.target network-online.target
 
 [Service]
@@ -834,6 +837,8 @@ User={svc_user}
 Group={svc_user}
 WorkingDirectory={install_dir}
 ExecStart={install_dir}/venv/bin/python3 -m meshcore_packet_capture
+ExecStopPost={install_dir}/ble-disconnect.sh
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 Restart=always
 RestartSec=10
 NoNewPrivileges=true

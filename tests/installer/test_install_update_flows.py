@@ -30,6 +30,7 @@ def _write_repo_fixture(repo: Path) -> None:
     (repo / "presets" / "letsmesh.toml").write_text('[[broker]]\nname = "letsmesh-us"\nenabled = true\n')
     (repo / "packaging" / "systemd").mkdir(parents=True, exist_ok=True)
     (repo / "packaging" / "systemd" / "meshcore-packet-capture.service").write_text("[Service]\n")
+    (repo / "packaging" / "systemd" / "ble-disconnect.sh").write_text("#!/bin/bash\nexit 0\n")
     (repo / "packaging" / "launchd").mkdir(parents=True, exist_ok=True)
     (repo / "packaging" / "launchd" / "com.meshcore.meshcore_packet_capture.plist").write_text("<plist/>")
 
@@ -84,6 +85,7 @@ def test_do_install_local_copy_and_pip_install(monkeypatch: pytest.MonkeyPatch, 
     assert (install_dir / "presets" / "letsmesh.toml").exists()
     assert (install_dir / "meshcore-packet-capture.service").exists()
     assert (install_dir / "com.meshcore.meshcore_packet_capture.plist").exists()
+    assert (install_dir / "ble-disconnect.sh").exists()
     assert (config_dir / "config.toml").exists()
     assert pip_calls == [(str(install_dir), False)]
     assert install_service_calls == ["3"]
@@ -173,4 +175,7 @@ def test_do_update_non_docker_reinstalls_package(monkeypatch: pytest.MonkeyPatch
     uc._do_update(ctx, str(work_tmp))
 
     assert (install_dir / "src" / "meshcore_packet_capture" / "__init__.py").exists()
+    ble_disconnect = install_dir / "ble-disconnect.sh"
+    assert ble_disconnect.exists()
+    assert ble_disconnect.stat().st_mode & 0o111
     assert pip_calls == [(str(install_dir), True)]

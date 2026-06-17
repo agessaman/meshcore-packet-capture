@@ -46,8 +46,9 @@ It installs system-wide (under `/opt` and `/etc`) and so must run as root:
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh)"
 ```
 
-> **Note:** the bootstrap installer is a secondary install path and is slated for
-> deprecation in a future release as the PyPI-based workflow matures.
+> **Note:** use the bootstrap installer when you want a systemwide managed
+> service. The PyPI/pipx install is for CLI/manual runs and does not create
+> service files or write system configuration.
 >
 > **macOS + BLE:** because macOS grants Bluetooth permission per-user (not to
 > root daemons), a BLE install is set up as a per-user LaunchAgent that runs in
@@ -81,7 +82,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 
 ## Installation
 
-### From PyPI (recommended)
+### From PyPI (CLI/manual use)
 
 ```bash
 # Isolated CLI install (recommended)
@@ -128,11 +129,12 @@ Values are applied as `PACKETCAPTURE_*` environment variables. See `config.toml.
 
 ### Managed-service installer (Linux and macOS)
 
-This is the secondary install path (slated for deprecation as the PyPI workflow
-matures). Use it when you want a managed background service rather than just the CLI:
-it installs under `/opt/meshcore-packet-capture`, writes configuration under
-`/etc/meshcore-packet-capture`, creates a service account and a systemd (Linux) or
-launchd (macOS) unit, and offers bundled presets (default selection: LetsMesh).
+Use the bootstrap installer when you want a systemwide managed background service
+rather than just the CLI: it installs under `/opt/meshcore-packet-capture`, writes
+configuration under `/etc/meshcore-packet-capture`, creates a Linux service
+account, and installs a systemd (Linux) or launchd (macOS) unit. During setup it
+also configures the Companion connection (BLE, serial, or TCP) and offers bundled
+broker presets (default selection: LetsMesh).
 
 From a repo checkout (requires root):
 

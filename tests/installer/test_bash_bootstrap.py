@@ -29,5 +29,7 @@ def test_install_sh_default_repo_and_branch():
     # Runs the Python installer module rather than embedding logic.
     assert "python3 -m installer install" in text
     assert "python3 -m installer install" in text and "< /dev/tty" in text
+    assert "interactive installs cannot be run with 'curl | sudo bash'" in text
+    assert "tmp=\\$(mktemp)" in text
     # Honors the offline LOCAL_INSTALL path.
     assert "LOCAL_INSTALL" in text

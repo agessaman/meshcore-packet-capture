@@ -38,6 +38,17 @@ if [ "$_needs_root" = true ] && [ "$(id -u)" -ne 0 ]; then
     fi
 fi
 
+if [ "$_needs_root" = true ] && [ ! -t 0 ]; then
+    echo "Error: interactive installs cannot be run with 'curl | sudo bash'."
+    echo
+    echo "That form uses stdin for the script itself, which can prevent prompts from"
+    echo "receiving your answers on some systems. Download the script first so stdin"
+    echo "stays attached to your terminal:"
+    echo
+    echo "  tmp=\$(mktemp) && curl -fsSL https://raw.githubusercontent.com/$REPO/$BRANCH/install.sh -o \"\$tmp\" && sudo bash \"\$tmp\" --repo $REPO --branch $BRANCH; rm -f \"\$tmp\""
+    exit 1
+fi
+
 # --- Dependency preflight ---------------------------------------------------
 # Pick an available downloader (curl preferred, wget fallback).
 DOWNLOADER=""

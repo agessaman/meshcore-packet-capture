@@ -41,6 +41,7 @@ Add this to your `/etc/nixos/configuration.nix`:
       useTLS = true;
       useAuthToken = true;
       tokenAudience = "mqtt-us-v1.letsmesh.net";
+      tokenTtl = 3600;
       keepalive = 120;
     };
     
@@ -53,6 +54,7 @@ Add this to your `/etc/nixos/configuration.nix`:
       useTLS = true;
       useAuthToken = true;
       tokenAudience = "mqtt-eu-v1.letsmesh.net";
+      tokenTtl = 3600;
       keepalive = 120;
     };
     
@@ -149,6 +151,7 @@ If you're using Nix Flakes, add this to your `flake.nix`:
               useTLS = true;
               useAuthToken = true;
               tokenAudience = "mqtt-us-v1.letsmesh.net";
+              tokenTtl = 3600;
               keepalive = 120;
             };
             
@@ -161,6 +164,7 @@ If you're using Nix Flakes, add this to your `flake.nix`:
               useTLS = true;
               useAuthToken = true;
               tokenAudience = "mqtt-eu-v1.letsmesh.net";
+              tokenTtl = 3600;
               keepalive = 120;
             };
             
@@ -216,6 +220,7 @@ services.meshcore-packet-capture = {
     useTLS = true;
     useAuthToken = true;
     tokenAudience = "mqtt-us-v1.letsmesh.net";
+    tokenTtl = 3600;
     keepalive = 120;
   };
   
@@ -228,6 +233,7 @@ services.meshcore-packet-capture = {
     useTLS = true;
     useAuthToken = true;
     tokenAudience = "mqtt-eu-v1.letsmesh.net";
+    tokenTtl = 3600;
     keepalive = 120;
   };
   
@@ -274,6 +280,12 @@ services.meshcore-packet-capture = {
   mqtt1 = {
     useAuthToken = true;
     tokenAudience = "mqtt.example.com";
+    # Optional per-broker account-linking metadata. These override the global
+    # ownerPublicKey / ownerEmail values for this broker's JWT.
+    tokenOwner = "YOUR_64_CHAR_HEX_PUBLIC_KEY";
+    tokenEmail = "your.email@example.com";
+    # Optional JWT lifetime override in seconds.
+    tokenTtl = 3600;
   };
   # Private key is automatically fetched from the device if it supports ENABLE_PRIVATE_KEY_EXPORT
   # Only provide these if automatic fetching fails:
@@ -293,6 +305,9 @@ services.meshcore-packet-capture = {
   enableMqtt = true;
   maxMqttRetries = 5;  # 0 = infinite
   mqttRetryDelay = 5;
+  statsInStatusEnabled = true;
+  statsRefreshInterval = 300;
+  statsRetryLimit = 2;
   exitOnReconnectFail = true;
   iata = "SEA";  # For topic templates
   origin = "My Device";

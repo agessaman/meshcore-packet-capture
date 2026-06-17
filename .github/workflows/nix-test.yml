@@ -154,7 +154,15 @@ jobs:
                         enabled = true;
                         server = "mqtt2.example.com";
                         transport = "websockets";
+                        useAuthToken = true;
+                        tokenAudience = "mqtt2.example.com";
+                        tokenTtl = 3600;
+                        tokenOwner = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+                        tokenEmail = "owner@example.com";
                       };
+                      statsInStatusEnabled = true;
+                      statsRefreshInterval = 300;
+                      statsRetryLimit = 2;
                       logLevel = "DEBUG";
                       iata = "SEA";
                     };
@@ -166,6 +174,8 @@ jobs:
                 enabled = eval.config.services.meshcore-packet-capture.enable;
                 connectionType = eval.config.services.meshcore-packet-capture.connectionType;
                 mqtt1Enabled = eval.config.services.meshcore-packet-capture.mqtt1.enabled;
+                mqtt2TokenTtl = eval.config.services.meshcore-packet-capture.mqtt2.tokenTtl;
+                statsRefreshInterval = eval.config.services.meshcore-packet-capture.statsRefreshInterval;
               }
           ' --strict
 

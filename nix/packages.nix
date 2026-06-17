@@ -5,12 +5,12 @@
       # Note: If meshcore is available in nixpkgs, you can override this
       meshcorePackage = pkgs.python3Packages.buildPythonPackage rec {
         pname = "meshcore";
-        version = "2.1.10";
+        version = "2.2.31";
         format = "pyproject";
         
         src = pkgs.python3Packages.fetchPypi {
           inherit pname version;
-          sha256 = "sha256-mnr5WqH/uKzONI8lcm1GQCSlnhx6WQyqsAr12gsMKEI=";
+          sha256 = "sha256-Z0FkdOY9Kv/y2fPXyH266CaWIWLeHwgC+yqSRLZxog8=";
         };
         
         nativeBuildInputs = with pkgs.python3Packages; [
@@ -32,6 +32,7 @@
         pyserial-asyncio
         pycayennelpp
         pexpect
+        pynacl
       ] ++ [meshcorePackage]);
 
       meshcore-packet-capture = pkgs.stdenv.mkDerivation {

@@ -1,49 +1,43 @@
-# Use Python 3.11 slim image for smaller size
-FROM python:3.11-slim AS base
+# Use node base image because installing it afterwards is hell
+FROM node:22-bookworm-slim
 
 # Install system dependencies for BLE, serial communication
+# gcc, make and libffi-dev are required to build certain python packages
+# on architectures not shipped as wheels
 # Use --no-install-recommends to minimize package size
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bluez \
     libbluetooth-dev \
     curl \
+    gcc \
+    make \
+    libffi-dev \
+    python3 \
+    python3-dev \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
 # Set working directory
 WORKDIR /app
 
-# Create non-root user for security (do this early to avoid permission issues)
-RUN useradd -m -u 1000 meshcore
-
 # Copy requirements first for better Docker layer caching
 COPY requirements.txt .
 
 # Install Python dependencies with optimizations
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt \
-    && pip cache purge
+RUN pip install --break-system-packages --no-cache-dir -r requirements.txt
 
-# Install Node.js via nvm and meshcore-decoder for auth token support
-ENV NVM_DIR=/opt/nvm
-ENV NODE_VERSION=lts/*
-
-RUN mkdir -p "$NVM_DIR" && \
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
-    && . "$NVM_DIR/nvm.sh" \
-    && nvm install $NODE_VERSION \
-    && nvm use $NODE_VERSION \
-    && npm install -g @michaelhart/meshcore-decoder \
-    && ln -s "$NVM_DIR/versions/node/$(ls $NVM_DIR/versions/node | head -1)/bin/"* /usr/local/bin/
+# Install meshcore decoder node package
+RUN npm install -g @michaelhart/meshcore-decoder
 
 # Copy application files
-COPY --chown=meshcore:meshcore packet_capture.py enums.py auth_token.py ./
+COPY --chown=1000:1000 packet_capture.py enums.py auth_token.py ./
 
 # Create data directory for output files
-RUN mkdir -p /app/data && chown -R meshcore:meshcore /app
+RUN mkdir -p /app/data && chown -R 1000:1000 /app
 
 # Switch to non-root user
-USER meshcore
+USER 1000
 
 # Set default environment variables
 # Note: These are defaults - override in docker-compose.yml or .env.local
@@ -56,4 +50,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import meshcore; print('OK')" || exit 1
 
 # Default command
-CMD ["python", "packet_capture.py"]
+ENTRYPOINT ["/usr/bin/python3"]
+CMD ["packet_capture.py"]

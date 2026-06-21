@@ -216,6 +216,7 @@ Brokers are discovered sequentially starting at `MQTT1` and continue until `PACK
 
 **Broker 1 (Primary):**
 - `PACKETCAPTURE_MQTT1_ENABLED`: Enable/disable MQTT broker 1
+- `PACKETCAPTURE_MQTT1_NAME`: Optional human-readable broker label for logs (TOML `[[broker]]` `name` is exported automatically; when unset, logs use `SERVER`)
 - `PACKETCAPTURE_MQTT1_SERVER`: MQTT broker address
 - `PACKETCAPTURE_MQTT1_PORT`: MQTT broker port
 - `PACKETCAPTURE_MQTT1_USERNAME`/`PACKETCAPTURE_MQTT1_PASSWORD`: Authentication credentials

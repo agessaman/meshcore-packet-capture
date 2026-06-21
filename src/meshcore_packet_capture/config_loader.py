@@ -118,6 +118,8 @@ def _broker_to_env_slot(broker: dict[str, Any], slot: int) -> dict[str, str]:
     prefix = f"MQTT{slot}_"
     out: dict[str, str] = {}
     out[prefix + "ENABLED"] = _bool_str(broker.get("enabled", False))
+    if "name" in broker:
+        out[prefix + "NAME"] = str(broker["name"])
     if "server" in broker:
         out[prefix + "SERVER"] = str(broker["server"])
     if "port" in broker:

@@ -1320,30 +1320,30 @@ class PacketCapture:
         """Renew JWT token for a specific broker"""
         try:
             if broker_num not in self.jwt_tokens:
-                self.logger.warning(f"No existing JWT token for broker {broker_num}")
+                self.logger.warning(f"No existing JWT token for broker {self.get_broker_label(broker_num)}")
                 return False
             
             token_info = self.jwt_tokens[broker_num]
             audience = token_info.get('audience')
             
-            self.logger.info(f"Renewing JWT token for broker {broker_num}...")
+            self.logger.info(f"Renewing JWT token for broker {self.get_broker_label(broker_num)}...")
             
             # Create new token
             new_token = await self.create_auth_token_jwt(audience, broker_num)
             if new_token:
-                self.logger.info(f"✓ JWT token renewed for broker {broker_num}")
+                self.logger.info(f"✓ JWT token renewed for broker {self.get_broker_label(broker_num)}")
                 # Reset failure count on success
                 self.jwt_failure_count = 0
                 return True
             else:
-                self.logger.error(f"Failed to renew JWT token for broker {broker_num}")
+                self.logger.error(f"Failed to renew JWT token for broker {self.get_broker_label(broker_num)}")
                 # Increment failure count
                 self.jwt_failure_count += 1
                 self.jwt_circuit_breaker_reset_time = time.time()
                 return False
                 
         except Exception as e:
-            self.logger.error(f"Error renewing JWT token for broker {broker_num}: {e}")
+            self.logger.error(f"Error renewing JWT token for broker {self.get_broker_label(broker_num)}: {e}")
             # Increment failure count
             self.jwt_failure_count += 1
             self.jwt_circuit_breaker_reset_time = time.time()
@@ -1356,7 +1356,7 @@ class PacketCapture:
                 return
             
             if self.is_jwt_token_expired(broker_num):
-                self.logger.info(f"JWT token for broker {broker_num} needs renewal")
+                self.logger.info(f"JWT token for broker {self.get_broker_label(broker_num)} needs renewal")
                 
                 # Renew the token
                 renewal_success = await self.renew_jwt_token(broker_num)
@@ -1372,13 +1372,13 @@ class PacketCapture:
                             mqtt_client.username_pw_set(username, new_token)
                             mqtt_client.reconnect()
                             
-                            self.logger.info(f"✓ Updated credentials for MQTT broker {broker_num}")
+                            self.logger.info(f"✓ Updated credentials for MQTT broker {self.get_broker_label(broker_num)}")
                             break
                 else:
-                    self.logger.error(f"Failed to renew JWT token for broker {broker_num}")
+                    self.logger.error(f"Failed to renew JWT token for broker {self.get_broker_label(broker_num)}")
                     
         except Exception as e:
-            self.logger.error(f"Error checking JWT renewal for broker {broker_num}: {e}")
+            self.logger.error(f"Error checking JWT renewal for broker {self.get_broker_label(broker_num)}: {e}")
 
     async def check_and_renew_jwt_tokens(self):
         """Check all JWT tokens and renew if needed"""
@@ -1625,7 +1625,7 @@ class PacketCapture:
                 # Broker is connected - clear any disconnect timestamp
                 if broker_num in self.mqtt_disconnect_timestamps:
                     disconnect_duration = current_time - self.mqtt_disconnect_timestamps[broker_num]
-                    self.logger.info(f"MQTT{broker_num} reconnected after {disconnect_duration:.1f} seconds")
+                    self.logger.info(f"{self.get_broker_label(broker_num)} reconnected after {disconnect_duration:.1f} seconds")
                     del self.mqtt_disconnect_timestamps[broker_num]
                     # Reset consecutive failures on successful reconnection
                     self.reset_consecutive_failures("mqtt")
@@ -1635,7 +1635,7 @@ class PacketCapture:
                 # Record disconnect timestamp if not already recorded
                 if broker_num not in self.mqtt_disconnect_timestamps:
                     self.mqtt_disconnect_timestamps[broker_num] = current_time
-                    self.logger.debug(f"MQTT{broker_num} disconnected - grace period started")
+                    self.logger.debug(f"{self.get_broker_label(broker_num)} disconnected - grace period started")
                 
                 # Check if grace period has elapsed
                 disconnect_time = self.mqtt_disconnect_timestamps[broker_num]
@@ -1645,7 +1645,7 @@ class PacketCapture:
                     # Grace period elapsed - this broker has persistently failed
                     failed_brokers += 1
                     if self.debug:
-                        self.logger.debug(f"MQTT{broker_num} disconnected for {time_disconnected:.1f}s (grace period: {self.mqtt_grace_period}s) - persistent failure")
+                        self.logger.debug(f"{self.get_broker_label(broker_num)} disconnected for {time_disconnected:.1f}s (grace period: {self.mqtt_grace_period}s) - persistent failure")
         
         # If all enabled brokers have been disconnected past grace period, this is a failure
         # We require ALL brokers to be failed, not just one, to avoid false positives with multiple brokers
@@ -2093,6 +2093,16 @@ class PacketCapture:
         while os.getenv(f'PACKETCAPTURE_MQTT{broker_num}_ENABLED') is not None:
             yield broker_num
             broker_num += 1
+
+    def get_broker_label(self, broker_num: int) -> str:
+        """Return a human-readable label for an MQTT broker."""
+        name = self.get_env(f'MQTT{broker_num}_NAME', '').strip()
+        if name:
+            return name
+        server = self.get_env(f'MQTT{broker_num}_SERVER', '').strip()
+        if server:
+            return server
+        return f"MQTT{broker_num}"
     
     def on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
         broker_name = userdata.get('name', 'unknown') if userdata else 'unknown'
@@ -2105,7 +2115,7 @@ class PacketCapture:
             if broker_num and broker_num in self.mqtt_disconnect_timestamps:
                 import time
                 disconnect_duration = time.time() - self.mqtt_disconnect_timestamps[broker_num]
-                self.logger.info(f"MQTT{broker_num} reconnected after {disconnect_duration:.1f} seconds")
+                self.logger.info(f"{self.get_broker_label(broker_num)} reconnected after {disconnect_duration:.1f} seconds")
                 del self.mqtt_disconnect_timestamps[broker_num]
                 # Reset consecutive failures on successful reconnection
                 self.reset_consecutive_failures("mqtt")
@@ -2186,7 +2196,7 @@ class PacketCapture:
             for info in self.mqtt_clients:
                 if info['client'] == client and info['broker_num'] not in self.mqtt_disconnect_timestamps:
                     self.mqtt_disconnect_timestamps[info['broker_num']] = time.time()
-                    self.logger.debug(f"MQTT{info['broker_num']} disconnect recorded - grace period started")
+                    self.logger.debug(f"{self.get_broker_label(info['broker_num'])} disconnect recorded - grace period started")
             
             # Only attempt reconnection if we're not shutting down
             if not self.should_exit:
@@ -2206,14 +2216,15 @@ class PacketCapture:
 
         # Check if broker is enabled
         if not self.get_env_bool(f'MQTT{broker_num}_ENABLED', False):
-            self.logger.debug(f"MQTT broker {broker_num} is disabled, skipping")
+            self.logger.debug(f"MQTT broker {self.get_broker_label(broker_num)} is disabled, skipping")
             return None
 
         # Validate IATA configuration for brokers that require it
         if self.broker_requires_iata(broker_num) and not self.has_configured_iata(broker_num):
             server = self.get_env(f'MQTT{broker_num}_SERVER', 'unknown')
+            broker_label = self.get_broker_label(broker_num)
             self.logger.warning(
-                f"WARNING: MQTT broker {broker_num} ({server}) requires IATA configuration but IATA code is not set.\n"
+                f"WARNING: MQTT broker {broker_label} ({server}) requires IATA configuration but IATA code is not set.\n"
                 f"  This broker will be DISABLED during startup.\n"
                 f"  To fix this issue:\n"
                 f"    1. Set a global IATA code: PACKETCAPTURE_IATA=<airport_code>\n"
@@ -2224,12 +2235,13 @@ class PacketCapture:
             return None
 
         try:
+            broker_label = self.get_broker_label(broker_num)
             # Create client ID
             client_id = self.sanitize_client_id(self.device_public_key or self.device_name)
             if broker_num > 1:
                 client_id += f"_{broker_num}"
             
-            self.logger.info(f"Connecting to MQTT{broker_num} with client ID: {client_id}")
+            self.logger.info(f"Connecting to {broker_label} with client ID: {client_id}")
             
             # Get transport type
             transport = self.get_env(f'MQTT{broker_num}_TRANSPORT', 'tcp')
@@ -2247,7 +2259,7 @@ class PacketCapture:
             
             # Set user data for callbacks
             mqtt_client.user_data_set({
-                'name': f"MQTT{broker_num}",
+                'name': broker_label,
                 'broker_num': broker_num
             })
             
@@ -2260,34 +2272,34 @@ class PacketCapture:
                     audience = self.get_env(f'MQTT{broker_num}_TOKEN_AUDIENCE', "")
                     
                     if audience:
-                        self.logger.info(f"MQTT{broker_num}: Using JWT authentication [aud: {audience}]")
+                        self.logger.info(f"{broker_label}: Using JWT authentication [aud: {audience}]")
                     else:
-                        self.logger.info(f"MQTT{broker_num}: Using JWT authentication")
+                        self.logger.info(f"{broker_label}: Using JWT authentication")
                     
                     # Use the JWT creation method with private key from device
                     password = await self.create_auth_token_jwt(audience, broker_num)
                     if not password:
-                        self.logger.error(f"MQTT{broker_num}: Failed to generate JWT token")
+                        self.logger.error(f"{broker_label}: Failed to generate JWT token")
                         return None
                     
                     # Log JWT details for debugging if debug mode is enabled
                     if self.debug:
-                        self.logger.debug(f"MQTT{broker_num}: Generated JWT: {password}")
+                        self.logger.debug(f"{broker_label}: Generated JWT: {password}")
                         try:
                             import base64
                             parts = password.split('.')
                             if len(parts) == 3:
                                 header = base64.urlsafe_b64decode(parts[0] + '==').decode('utf-8')
                                 payload = base64.urlsafe_b64decode(parts[1] + '==').decode('utf-8')
-                                self.logger.debug(f"MQTT{broker_num}: JWT Header: {header}")
-                                self.logger.debug(f"MQTT{broker_num}: JWT Payload: {payload}")
-                                self.logger.debug(f"MQTT{broker_num}: JWT Signature length: {len(base64.urlsafe_b64decode(parts[2] + '=='))} bytes")
+                                self.logger.debug(f"{broker_label}: JWT Header: {header}")
+                                self.logger.debug(f"{broker_label}: JWT Payload: {payload}")
+                                self.logger.debug(f"{broker_label}: JWT Signature length: {len(base64.urlsafe_b64decode(parts[2] + '=='))} bytes")
                         except Exception as e:
                             self.logger.debug(f"Could not decode JWT for inspection: {e}")
                     
                     mqtt_client.username_pw_set(username, password)
                 except Exception as e:
-                    self.logger.error(f"MQTT{broker_num}: Failed to generate auth token: {e}")
+                    self.logger.error(f"{broker_label}: Failed to generate auth token: {e}")
                     return None
             else:
                 # Username/password authentication
@@ -2316,7 +2328,7 @@ class PacketCapture:
             # Get connection parameters
             server = self.get_env(f'MQTT{broker_num}_SERVER', "")
             if not server:
-                self.logger.error(f"MQTT{broker_num}: Server not configured")
+                self.logger.error(f"{broker_label}: Server not configured")
                 return None
                 
             port = self.get_env_int(f'MQTT{broker_num}_PORT', 1883)
@@ -2333,7 +2345,7 @@ class PacketCapture:
                 else:
                     mqtt_client.tls_set(cert_reqs=ssl.CERT_NONE)
                     mqtt_client.tls_insecure_set(True)
-                    self.logger.warning(f"MQTT{broker_num}: TLS certificate verification disabled (insecure)")
+                    self.logger.warning(f"{broker_label}: TLS certificate verification disabled (insecure)")
             
             # Handle WebSocket transport
             if transport == "websockets":
@@ -2353,14 +2365,15 @@ class PacketCapture:
             mqtt_client.connect(server, port, keepalive=keepalive)
             mqtt_client.loop_start()
             
-            self.logger.info(f"Connected to MQTT{broker_num} at {server}:{port} (transport={transport}, tls={use_tls})")
+            self.logger.info(f"Connected to {broker_label} at {server}:{port} (transport={transport}, tls={use_tls})")
             return {
                 'client': mqtt_client,
-                'broker_num': broker_num
+                'broker_num': broker_num,
+                'label': broker_label,
             }
             
         except Exception as e:
-            self.logger.error(f"MQTT connection error for MQTT{broker_num}: {str(e)}")
+            self.logger.error(f"MQTT connection error for {self.get_broker_label(broker_num)}: {str(e)}")
             return None
 
     async def connect_mqtt(self):
@@ -2397,10 +2410,10 @@ class PacketCapture:
                     if mqtt_client.is_connected():
                         mqtt_client.loop_stop()
                         mqtt_client.disconnect()
-                        self.logger.debug(f"Disconnected from MQTT{broker_num}")
+                        self.logger.debug(f"Disconnected from {self.get_broker_label(broker_num)}")
                     
                 except Exception as e:
-                    self.logger.warning(f"Error disconnecting from MQTT{broker_num}: {e}")
+                    self.logger.warning(f"Error disconnecting from {self.get_broker_label(broker_num)}: {e}")
             
             # Clear the clients list
             self.mqtt_clients.clear()
@@ -2605,7 +2618,7 @@ class PacketCapture:
                 expired_brokers = []
                 for broker_num in list(self.jwt_tokens.keys()):
                     if self.is_jwt_token_expired(broker_num):
-                        expired_brokers.append(broker_num)
+                        expired_brokers.append(self.get_broker_label(broker_num))
                 
                 if expired_brokers:
                     self.logger.warning(f"Detected expired JWT tokens for brokers: {expired_brokers}")
@@ -2634,19 +2647,20 @@ class PacketCapture:
 
         for mqtt_client_info in clients_to_publish:
             current_broker_num = mqtt_client_info['broker_num']
+            broker_label = mqtt_client_info.get('label') or self.get_broker_label(current_broker_num)
             try:
                 mqtt_client = mqtt_client_info['client']
 
                 # Check individual client connection status
                 if not mqtt_client.is_connected():
-                    self.logger.warning(f"MQTT{current_broker_num} client not connected - skipping publish")
+                    self.logger.warning(f"{broker_label} client not connected - skipping publish")
                     continue
 
                 # CRITICAL FIX: Resolve topic properly
                 if topic_type:
                     resolved_topic = self.get_topic(topic_type, current_broker_num)
                     if self.debug:
-                        self.logger.debug(f"Resolved topic for MQTT{current_broker_num} {topic_type}: {resolved_topic}")
+                        self.logger.debug(f"Resolved topic for {broker_label} {topic_type}: {resolved_topic}")
                 elif topic:
                     resolved_topic = topic
                 else:
@@ -2656,7 +2670,7 @@ class PacketCapture:
                 # Skip publishing if topic is None (e.g., RAW topic not configured)
                 if resolved_topic is None:
                     if self.debug:
-                        self.logger.debug(f"Skipping publish to MQTT{current_broker_num} - topic not configured for {topic_type}")
+                        self.logger.debug(f"Skipping publish to {broker_label} - topic not configured for {topic_type}")
                     continue
 
                 # Validate topic before publishing
@@ -2673,13 +2687,13 @@ class PacketCapture:
                 metrics["attempted"] += 1
                 result = mqtt_client.publish(resolved_topic, payload, qos=qos, retain=retain)
                 if result.rc != mqtt.MQTT_ERR_SUCCESS:
-                    self.logger.error(f"Publish failed to {resolved_topic} on MQTT{current_broker_num}: {mqtt.error_string(result.rc)}")
+                    self.logger.error(f"Publish failed to {resolved_topic} on {broker_label}: {mqtt.error_string(result.rc)}")
                 else:
                     if self.verbose:
-                        self.logger.info(f"✓ Published to {resolved_topic} on MQTT{current_broker_num} (len={len(payload)})")
+                        self.logger.info(f"✓ Published to {resolved_topic} on {broker_label} (len={len(payload)})")
                     metrics["succeeded"] += 1
             except Exception as e:
-                self.logger.error(f"Publish error on MQTT{current_broker_num}: {str(e)}", exc_info=True)
+                self.logger.error(f"Publish error on {broker_label}: {str(e)}", exc_info=True)
 
         return metrics
     

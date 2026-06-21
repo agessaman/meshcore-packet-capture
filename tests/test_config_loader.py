@@ -50,6 +50,8 @@ def test_flatten_brokers_to_mqtt_slots():
     }
     env = cl.flatten_config_to_env_dict(cfg)
     assert env["PACKETCAPTURE_MQTT1_SERVER"] == "mqtt.example"
+    assert env["PACKETCAPTURE_MQTT1_NAME"] == "one"
+    assert env["PACKETCAPTURE_MQTT2_NAME"] == "two"
     assert env["PACKETCAPTURE_MQTT2_USE_TLS"] == "true"
     assert env["PACKETCAPTURE_MQTT2_USE_AUTH_TOKEN"] == "true"
     assert env["PACKETCAPTURE_MQTT2_TOKEN_AUDIENCE"] == "aud"

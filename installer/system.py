@@ -308,26 +308,70 @@ def download_file(url: str, dest: str, name: str) -> None:
         fh.write(data)
 
 
-def download_repo_archive(repo: str, branch: str, dest_dir: str) -> str:
-    """Download and extract a GitHub repo zip archive.
+def latest_release_tag(repo: str) -> str | None:
+    """Return the latest published GitHub Release tag (e.g. 'v2.0.0'), or None.
+
+    Uses the /releases/latest endpoint, which excludes drafts and pre-releases.
+    Returns None on no releases, network failure, or rate limiting so callers can
+    fall back to a branch.
+    """
+    data = http_get(f"https://api.github.com/repos/{repo}/releases/latest", timeout=10)
+    if not data:
+        return None
+    try:
+        tag = json.loads(data).get("tag_name")
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        return None
+    return tag or None
+
+
+def resolve_install_ref(
+    repo: str,
+    *,
+    branch: str | None = None,
+    tag: str | None = None,
+    local_install: str = "",
+) -> tuple[str, bool]:
+    """Resolve which git ref to install, returning (ref, is_tag).
+
+    Precedence: an explicit branch wins (dev/CI), then an explicit tag, then the
+    latest published release, then the ``main`` branch as a last resort. Network
+    lookup is skipped for local installs since no archive is downloaded.
+    """
+    if branch:
+        return branch, False
+    if tag:
+        return tag, True
+    if local_install:
+        return "main", False
+    latest = latest_release_tag(repo)
+    if latest:
+        print_info(f"Latest release: {latest}")
+        return latest, True
+    print_info("No published release found — installing from the 'main' branch.")
+    return "main", False
+
+
+def download_repo_archive(repo: str, ref: str, dest_dir: str, *, is_tag: bool = False) -> str:
+    """Download and extract a GitHub repo archive for a branch or tag.
 
     Downloads the archive from GitHub, extracts it, and returns the path
     to the extracted repo root directory.
 
     Args:
         repo: GitHub repo in "owner/name" format.
-        branch: Branch or tag name to download.
+        ref: Branch or tag name to download.
         dest_dir: Directory to extract into.
+        is_tag: True if ``ref`` is a release tag (uses refs/tags/), else a branch.
 
     Returns:
-        Path to the extracted repo root (e.g., dest_dir/meshcoretomqtt-main/).
+        Path to the extracted repo root (e.g., dest_dir/meshcore-packet-capture-2.0.0/).
     """
-    # TODO: Switch to downloading GitHub Releases once CI/CD is set up
-    # to create tagged releases. For now, download the branch archive.
-    archive_url = f"https://github.com/{repo}/archive/refs/heads/{branch}.zip"
+    ref_kind = "tags" if is_tag else "heads"
+    archive_url = f"https://github.com/{repo}/archive/refs/{ref_kind}/{ref}.zip"
     zip_path = os.path.join(dest_dir, "repo.zip")
 
-    print_info(f"Downloading repository archive ({repo} @ {branch})...")
+    print_info(f"Downloading repository archive ({repo} @ {ref})...")
     # Use urllib (stdlib) rather than shelling out to curl so the Python flow
     # has no external download dependency of its own.
     data = http_get(archive_url, timeout=60)
@@ -343,10 +387,13 @@ def download_repo_archive(repo: str, branch: str, dest_dir: str) -> str:
 
     os.unlink(zip_path)
 
-    # GitHub archives extract to {repo_name}-{branch}/ with '/' replaced by '-'
+    # GitHub archives extract to {repo_name}-{ref}/ with '/' replaced by '-'.
+    # For tags the leading 'v' is stripped (v2.0.0 -> {repo_name}-2.0.0).
     repo_name = repo.split("/")[-1]
-    branch_sanitized = branch.replace("/", "-")
-    extracted_dir = os.path.join(dest_dir, f"{repo_name}-{branch_sanitized}")
+    ref_sanitized = ref.replace("/", "-")
+    if is_tag and ref_sanitized.startswith("v"):
+        ref_sanitized = ref_sanitized[1:]
+    extracted_dir = os.path.join(dest_dir, f"{repo_name}-{ref_sanitized}")
     if not os.path.isdir(extracted_dir):
         # Fallback: find the single extracted directory
         entries = [
@@ -1283,6 +1330,7 @@ def create_version_info(ctx: InstallerContext) -> None:
     import urllib.error
 
     git_hash = "unknown"
+    # commits/<ref> resolves a branch name, tag, or SHA to its commit.
     api_url = f"https://api.github.com/repos/{ctx.repo}/commits/{ctx.branch}"
     try:
         req = urllib.request.Request(api_url, headers={"User-Agent": "meshcore-packet-capture-installer"})
@@ -1295,6 +1343,9 @@ def create_version_info(ctx: InstallerContext) -> None:
     info = {
         "installer_version": ctx.script_version,
         "git_hash": git_hash,
+        "git_ref": ctx.branch,
+        "git_ref_kind": "tag" if ctx.ref_is_tag else "branch",
+        # Kept for backward compatibility with readers of older .version_info files.
         "git_branch": ctx.branch,
         "git_repo": ctx.repo,
         "install_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

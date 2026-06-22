@@ -35,7 +35,8 @@ class InstallerContext:
     """Shared state passed between installer modules."""
 
     repo: str = "agessaman/meshcore-packet-capture"
-    branch: str = "main"
+    branch: str = "main"  # the git ref to install (branch name or release tag)
+    ref_is_tag: bool = False  # True when `branch` holds a release tag, not a branch
     install_dir: str = "/opt/meshcore-packet-capture"
     config_dir: str = "/etc/meshcore-packet-capture"
     svc_user: str = "meshcore-capture"

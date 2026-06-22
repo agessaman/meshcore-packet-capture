@@ -1,7 +1,6 @@
 """Startup, env loading, and CLI behavior tests for packet capture."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import signal

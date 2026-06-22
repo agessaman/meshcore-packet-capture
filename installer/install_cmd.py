@@ -17,7 +17,7 @@ from .config import (
     _read_existing_iata,
     prompt_iata_letsmesh,
     prompt_iata_simple,
-    _update_iata_in_file,
+    set_user_toml_iata,
     migrate_user_config_filename,
     user_config_path,
 )
@@ -457,7 +457,7 @@ def _handle_config_url(ctx: InstallerContext, user_toml: Path) -> None:
 
     try:
         download_file(ctx.config_url, str(user_toml), "99-user.toml")
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, RuntimeError, OSError):
         print_error("Failed to download configuration from URL")
         if prompt_yes_no("Continue with interactive configuration?", "y"):
             configure_mqtt_brokers(ctx)
@@ -490,12 +490,9 @@ def _handle_config_url(ctx: InstallerContext, user_toml: Path) -> None:
         else:
             iata = prompt_iata_simple(existing_iata)
 
-        if "iata = " in content:
-            _update_iata_in_file(str(user_toml), iata)
-        else:
-            # Prepend general section with iata
-            new_content = f'[general]\niata = "{iata}"\n\n' + content
-            user_toml.write_text(new_content)
+        # Set iata safely: update in place if present, else inject via a TOML
+        # round-trip (never prepend a second [general], which tomllib rejects).
+        set_user_toml_iata(str(user_toml), iata)
 
         print_success(f"IATA code set to: {iata}")
 

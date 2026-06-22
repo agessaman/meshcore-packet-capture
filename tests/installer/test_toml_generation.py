@@ -4,8 +4,6 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-import pytest
-
 from installer.config import (
     _load_user_toml,
     _toml_dumps,
@@ -13,6 +11,7 @@ from installer.config import (
     append_custom_broker_toml,
     append_disabled_broker_toml,
     append_letsmesh_broker_toml,
+    set_user_toml_iata,
     write_user_toml_base,
 )
 
@@ -20,6 +19,36 @@ from installer.config import (
 def _parse(path: Path) -> dict:
     with open(path, "rb") as f:
         return tomllib.load(f)
+
+
+def test_set_iata_updates_existing_in_place(tmp_path: Path):
+    p = tmp_path / "99-user.toml"
+    p.write_text('[general]\niata = "XXX"\nlog_level = "INFO"\n')
+    set_user_toml_iata(str(p), "SEA")
+    data = _parse(p)
+    assert data["general"]["iata"] == "SEA"
+    assert data["general"]["log_level"] == "INFO"  # untouched
+
+
+def test_set_iata_injects_without_duplicate_general(tmp_path: Path):
+    # Downloaded config already has [general] (without iata) — must not create a
+    # second [general] table, which tomllib would reject.
+    p = tmp_path / "99-user.toml"
+    p.write_text('[general]\nlog_level = "DEBUG"\n\n[capture]\nconnection_type = "ble"\n')
+    set_user_toml_iata(str(p), "LAX")
+    data = _parse(p)  # parses cleanly == no duplicate table
+    assert data["general"]["iata"] == "LAX"
+    assert data["general"]["log_level"] == "DEBUG"
+    assert data["capture"]["connection_type"] == "ble"
+
+
+def test_set_iata_on_config_without_general(tmp_path: Path):
+    p = tmp_path / "99-user.toml"
+    p.write_text('[capture]\nconnection_type = "tcp"\n')
+    set_user_toml_iata(str(p), "NYC")
+    data = _parse(p)
+    assert data["general"]["iata"] == "NYC"
+    assert data["capture"]["connection_type"] == "tcp"
 
 
 def test_write_user_toml_base(tmp_path: Path):

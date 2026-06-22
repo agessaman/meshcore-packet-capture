@@ -1,7 +1,6 @@
 """Output formatting, TTY prompts, and colors."""
 from __future__ import annotations
 
-import os
 import sys
 
 # ANSI color codes — disabled when stdout is not a TTY

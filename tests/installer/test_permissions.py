@@ -1,7 +1,6 @@
 """Tests for installer.system.set_permissions ownership/mode logic (no root needed)."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +13,8 @@ def test_set_permissions_ownership_and_modes(monkeypatch: pytest.MonkeyPatch, tm
     config_dir = tmp_path / "etc"
     (config_dir / "config.d").mkdir(parents=True)
     (config_dir / "config.toml").write_text("")
+    (config_dir / "config.d" / "10-letsmesh.toml").write_text("")
+    (config_dir / "config.d" / "99-user.toml").write_text("")
     install_dir.mkdir()
 
     chowns: list[tuple] = []
@@ -30,6 +31,9 @@ def test_set_permissions_ownership_and_modes(monkeypatch: pytest.MonkeyPatch, tm
     assert chmods[str(config_dir)] == 0o755
     assert chmods[str(config_dir / "config.d")] == 0o755
     assert chmods[str(config_dir / "config.toml")] == 0o644
+    # Preset stays world-readable (no secrets); user override is group-only (0640).
+    assert chmods[str(config_dir / "config.d" / "10-letsmesh.toml")] == 0o644
+    assert chmods[str(config_dir / "config.d" / "99-user.toml")] == 0o640
 
 
 def test_set_permissions_skips_absent_optional_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

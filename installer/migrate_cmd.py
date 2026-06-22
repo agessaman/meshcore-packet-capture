@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -66,6 +67,19 @@ def parse_env_file(path: str) -> dict[str, str]:
                 value = value[1:-1]
             env[key.strip()] = value
     return env
+
+
+_MQTT_SLOT_RE = re.compile(r"^PACKETCAPTURE_MQTT(\d+)_")
+
+
+def _max_broker_slot(env: dict[str, str]) -> int:
+    """Highest MQTT broker slot number present in the env keys (0 if none)."""
+    highest = 0
+    for key in env:
+        match = _MQTT_SLOT_RE.match(key)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return highest
 
 
 def env_to_toml(env: dict[str, str]) -> str:
@@ -169,8 +183,10 @@ def env_to_toml(env: dict[str, str]) -> str:
         lines.extend(cap_lines)
         lines.append("")
 
-    # Brokers
-    for broker_num in range(1, 5):
+    # Brokers. Discover slots dynamically rather than capping at a fixed count —
+    # the legacy meshcoretomqtt .env format supported up to 6 (and the runtime
+    # loader has no cap), so a hardcoded range would silently drop higher slots.
+    for broker_num in range(1, _max_broker_slot(env) + 1):
         prefix = f"PACKETCAPTURE_MQTT{broker_num}_"
         enabled = env.get(f"{prefix}ENABLED", "false")
         server = env.get(f"{prefix}SERVER", "")

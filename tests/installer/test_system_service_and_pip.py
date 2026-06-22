@@ -127,3 +127,21 @@ def test_pip_install_project_calls_expected_command(monkeypatch: pytest.MonkeyPa
 def test_pip_install_project_requires_venv_pip(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         sysmod.pip_install_project(str(tmp_path / "missing"))
+
+
+def test_docker_group_args_resolves_gid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sysmod.grp, "getgrnam",
+        lambda name: type("G", (), {"gr_gid": 4242})(),
+    )
+    assert sysmod.docker_group_args("meshcore-capture") == ["--group-add", "4242"]
+
+
+def test_docker_group_args_empty_when_no_user_or_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert sysmod.docker_group_args("") == []
+
+    def _raise(name):
+        raise KeyError(name)
+
+    monkeypatch.setattr(sysmod.grp, "getgrnam", _raise)
+    assert sysmod.docker_group_args("nonexistent") == []

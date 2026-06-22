@@ -1373,11 +1373,13 @@ def configure_mqtt_brokers(ctx: InstallerContext) -> None:
     if not added_brokers and not had_existing_brokers:
         print_warning(f"No MQTT brokers configured - you'll need to edit {user_toml} manually")
 
-    # Fix ownership after writing config
+    # Fix ownership after writing config. The user file may contain a plaintext
+    # MQTT password, so keep it group-readable (640) rather than world-readable;
+    # the service runs as ctx.svc_user and can still read it.
     if platform.system() != "Darwin" and ctx.svc_user:
         import shutil as _shutil
         _shutil.chown(user_toml, "root", ctx.svc_user)
-        os.chmod(user_toml, 0o644)
+        os.chmod(user_toml, 0o640)
 
 
 def _configure_iata_simple(user_toml: str) -> None:
@@ -1666,6 +1668,26 @@ def _update_iata_in_file(user_toml: str, iata: str) -> None:
     content = Path(user_toml).read_text()
     content = re.sub(r'^(iata\s*=\s*).*$', f'\\1"{iata}"', content, flags=re.MULTILINE)
     Path(user_toml).write_text(content)
+
+
+def set_user_toml_iata(user_toml: str, iata: str) -> None:
+    """Set general.iata in a user TOML, safe whether or not it already exists.
+
+    If an ``iata = …`` line is present it is updated in place (preserving comments).
+    Otherwise the value is injected through a TOML round-trip, which — unlike naive
+    string-prepending of a ``[general]`` block — never produces a duplicate
+    ``[general]`` table (an error tomllib rejects at load time).
+    """
+    path = Path(user_toml)
+    content = path.read_text() if path.exists() else ""
+    if re.search(r'^\s*iata\s*=', content, re.MULTILINE):
+        _update_iata_in_file(user_toml, iata)
+        return
+    data = _load_user_toml(path)
+    general = dict(data.get("general") or {})
+    general["iata"] = iata
+    data["general"] = general
+    _write_user_toml(path, data)
 
 
 # Need platform for the import in configure_mqtt_brokers

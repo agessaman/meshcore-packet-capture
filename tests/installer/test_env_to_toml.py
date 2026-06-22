@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import tomllib
 
-import pytest
-
 from installer.migrate_cmd import env_to_toml, normalize_env_keys
 
 
@@ -200,6 +198,17 @@ def test_two_brokers_in_order():
     )
     names = [b["name"] for b in data["broker"]]
     assert names == ["letsmesh-us", "custom-2"]
+
+
+def test_six_brokers_all_migrated():
+    # Legacy .env supported up to 6 broker slots; none should be dropped.
+    env = {}
+    for n in range(1, 7):
+        env[f"PACKETCAPTURE_MQTT{n}_ENABLED"] = "true"
+        env[f"PACKETCAPTURE_MQTT{n}_SERVER"] = f"mqtt{n}.example.com"
+    data = _roundtrip(env)
+    names = [b["name"] for b in data["broker"]]
+    assert names == [f"custom-{n}" for n in range(1, 7)]
 
 
 def test_empty_env_produces_empty_valid_toml():

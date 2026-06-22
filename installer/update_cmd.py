@@ -20,7 +20,6 @@ from .config import (
     user_config_path,
 )
 from .system import (
-    LOCAL_IMAGE,
     check_service_health,
     cleanup_legacy_nvm,
     create_system_user,
@@ -28,10 +27,13 @@ from .system import (
     create_venv,
     detect_service_user,
     detect_system_type,
+    docker_group_args,
     download_repo_archive,
     install_systemd_service,
+    launchd_service_present,
     pip_install_project,
     pull_or_build_docker_image,
+    restart_launchd_service,
     run_cmd,
     set_permissions,
 )
@@ -272,6 +274,7 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
                         "docker", "run", "-d", "--name", "meshcore-packet-capture", "--restart", "unless-stopped",
                         "-v", f"{ctx.config_dir}:/etc/meshcore-packet-capture:ro",
                     ]
+                    parts += docker_group_args(ctx.svc_user)
                     if Path(serial_device).exists():
                         parts.append(f"--device={serial_device}")
                     parts.append(image)
@@ -287,14 +290,11 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
         )
 
     elif system_type == "launchd":
-        result = run_cmd(["launchctl", "list"], check=False, capture=True)
-        if "com.meshcore.meshcore_packet_capture" in (result.stdout or ""):
+        if launchd_service_present(ctx.config_dir):
             if ctx.update_mode or prompt_yes_no("Restart launchd service?", "y"):
-                run_cmd(["launchctl", "stop", "com.meshcore.meshcore_packet_capture"], check=False)
-                import time
-                time.sleep(2)
-                run_cmd(["launchctl", "start", "com.meshcore.meshcore_packet_capture"], check=False)
-                check_service_health("launchd")
+                restart_launchd_service(ctx.config_dir)
+        else:
+            print_info("No existing launchd service found to restart.")
     else:
         print_info("No existing service found")
         if prompt_yes_no("Install service?", "n"):

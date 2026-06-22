@@ -248,7 +248,6 @@ class PacketCapture:
     """Standalone packet capture using meshcore package"""
     
     def __init__(self, output_file: Optional[str] = None, verbose: bool = False, debug: bool = False, enable_mqtt: bool = True, shutdown_event=None):
-        global _environment_initialized
         if not _environment_initialized:
             init_environment(None)
 
@@ -1813,7 +1812,7 @@ class PacketCapture:
                 if not self_info_populated and hasattr(self.meshcore, 'commands'):
                     try:
                         self.logger.debug("Attempting to query device info...")
-                        result = await self.retryable_device_command(
+                        await self.retryable_device_command(
                             lambda: self.meshcore.commands.send_device_query(),
                             "send_device_query (device info)",
                             timeout=3.0,
@@ -3217,7 +3216,7 @@ class PacketCapture:
         """Handle raw data events (full packet data)"""
         try:
             payload = event.payload
-            self.logger.info(f"📦 RAW_DATA EVENT RECEIVED")
+            self.logger.info("📦 RAW_DATA EVENT RECEIVED")
             
             # Extract raw hex data
             raw_hex = None

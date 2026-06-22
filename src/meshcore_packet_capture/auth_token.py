@@ -411,8 +411,6 @@ async def _create_auth_token_with_device(
     if os.getenv('DEBUG_DEVICE_SIGNING', '').lower() == 'true':
         logger.debug("Using manual signing flow for debugging")
         try:
-            from meshcore import EventType
-            
             # Verify device's public key matches what we expect
             # The device signs with self_id, which might be different from exported key
             try:
@@ -592,7 +590,7 @@ def _create_auth_token_with_meshcore_decoder(
                 token = result.stdout.strip()
                 if token and token.count('.') == 2:
                     return token
-        except Exception as e:
+        except Exception:
             # CLI not available or failed, fall back to script method
             pass
     

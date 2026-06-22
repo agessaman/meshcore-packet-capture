@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import grp
 import json
 import os
 import platform
@@ -293,12 +294,18 @@ def chown_recursive(path: str, user: str, group: str) -> None:
 # ---------------------------------------------------------------------------
 
 def download_file(url: str, dest: str, name: str) -> None:
-    """Download a file with curl and retry."""
+    """Download a file to ``dest`` using the stdlib HTTP helper.
+
+    Uses urllib (via http_get) rather than shelling out to curl so a host with
+    only wget — which the bootstrap install.sh accepts — isn't left unable to
+    fetch a ``--config`` URL. Raises RuntimeError on failure.
+    """
     print_info(f"Downloading {name}...")
-    run_cmd(
-        ["curl", "-fsSL", "--retry", "3", "--retry-delay", "2", url, "-o", dest],
-        check=True,
-    )
+    data = http_get(url, timeout=60)
+    if data is None:
+        raise RuntimeError(f"Failed to download {name} from {url}")
+    with open(dest, "wb") as fh:
+        fh.write(data)
 
 
 def download_repo_archive(repo: str, branch: str, dest_dir: str) -> str:
@@ -495,9 +502,13 @@ def set_permissions(install_dir: str, config_dir: str, svc_user: str) -> None:
         os.chmod(str(config_toml), 0o644)
 
     for override in config_d.glob("*.toml") if config_d.exists() else []:
-        os.chmod(str(override), 0o644)
+        # The user override (99-user.toml) may hold a plaintext MQTT password, so
+        # keep it readable by the service group only (640) rather than world.
+        # Presets and the base config carry no secrets and stay world-readable.
+        mode = 0o640 if override.name == "99-user.toml" else 0o644
+        os.chmod(str(override), mode)
 
-    print_success(f"Permissions set on {config_dir} (root:{svc_user}, 755/644)")
+    print_success(f"Permissions set on {config_dir} (root:{svc_user}, 755/644, user override 640)")
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +517,22 @@ def set_permissions(install_dir: str, config_dir: str, svc_user: str) -> None:
 
 GHCR_IMAGE = "ghcr.io/agessaman/meshcore-packet-capture:latest"
 LOCAL_IMAGE = "meshcore-packet-capture:latest"
+
+
+def docker_group_args(svc_user: str) -> list[str]:
+    """`--group-add` args so a non-root container can read group-readable config.
+
+    The image runs as a non-root user and bind-mounts the config read-only; since
+    99-user.toml is now 0640 root:<svc_user>, the container must join that group's
+    gid to read it. Returns [] when there's no service group (e.g. macOS).
+    """
+    if not svc_user:
+        return []
+    try:
+        gid = grp.getgrnam(svc_user).gr_gid
+    except KeyError:
+        return []
+    return ["--group-add", str(gid)]
 
 
 def docker_cmd() -> str | None:
@@ -1014,6 +1041,74 @@ def install_launchd_service(
     return True
 
 
+def launchd_service_present(
+    config_dir: str,
+    *,
+    plist_label: str = "com.meshcore.meshcore_packet_capture",
+) -> bool:
+    """Whether a launchd service is installed (per-user BLE agent or system daemon).
+
+    Used to gate the "Restart launchd service?" prompt so the user isn't asked to
+    restart something that doesn't exist (and then told there was nothing to do).
+    Mirrors the detection in restart_launchd_service().
+    """
+    agent_user = _console_user() if _user_connection_is_ble(config_dir) else None
+    if agent_user:
+        plist = Path(pwd.getpwnam(agent_user).pw_dir) / "Library" / "LaunchAgents" / f"{plist_label}.plist"
+        if plist.is_file():
+            return True
+    result = run_cmd(["launchctl", "list"], check=False, capture=True)
+    return plist_label in (result.stdout or "")
+
+
+def restart_launchd_service(
+    config_dir: str,
+    *,
+    plist_label: str = "com.meshcore.meshcore_packet_capture",
+) -> None:
+    """Restart the launchd service, handling both a per-user BLE LaunchAgent and
+    a system LaunchDaemon.
+
+    BLE installs run as a per-user LaunchAgent in the login user's gui/<uid>
+    domain, which is invisible to root-domain launchctl — so restart it there
+    with ``kickstart -k``. Otherwise restart the system LaunchDaemon. Best-effort.
+    """
+    agent_user = _console_user() if _user_connection_is_ble(config_dir) else None
+    if agent_user:
+        home = pwd.getpwnam(agent_user).pw_dir
+        plist = Path(home) / "Library" / "LaunchAgents" / f"{plist_label}.plist"
+        if plist.is_file():
+            uid = pwd.getpwnam(agent_user).pw_uid
+            print_info(f"Restarting LaunchAgent for '{agent_user}'...")
+            # kickstart -k restarts the running service (or starts it if stopped).
+            result = run_cmd(
+                ["launchctl", "kickstart", "-k", f"gui/{uid}/{plist_label}"],
+                check=False, capture=True,
+            )
+            if result.returncode != 0:
+                # Older launchctl or not currently bootstrapped: reload it.
+                run_cmd(["launchctl", "bootout", f"gui/{uid}", str(plist)], check=False)
+                run_cmd(["launchctl", "bootstrap", f"gui/{uid}", str(plist)], check=False)
+            check_service_health("launchd")
+            return
+        print_warning(
+            f"Expected BLE LaunchAgent for '{agent_user}' not found at {plist}; "
+            "falling back to the system domain."
+        )
+
+    # System LaunchDaemon
+    result = run_cmd(["launchctl", "list"], check=False, capture=True)
+    if plist_label in (result.stdout or ""):
+        import time
+        print_info("Restarting launchd service...")
+        run_cmd(["launchctl", "stop", plist_label], check=False)
+        time.sleep(2)
+        run_cmd(["launchctl", "start", plist_label], check=False)
+        check_service_health("launchd")
+    else:
+        print_info("No loaded launchd service found to restart.")
+
+
 def install_docker_service(ctx: InstallerContext) -> bool:
     """Install Docker container. Returns True if installed."""
     print_info("Setting up Docker installation...")
@@ -1054,6 +1149,7 @@ def install_docker_service(ctx: InstallerContext) -> bool:
         "docker", "run", "-d", "--name", "meshcore-packet-capture", "--restart", "unless-stopped",
         "-v", f"{ctx.config_dir}:/etc/meshcore-packet-capture:ro",
     ]
+    parts += docker_group_args(ctx.svc_user)
     if Path(serial_device).exists():
         parts.append(f"--device={serial_device}")
     else:

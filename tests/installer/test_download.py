@@ -37,3 +37,21 @@ def test_download_sanitizes_branch_with_slash(monkeypatch: pytest.MonkeyPatch, t
 
     result = sysmod.download_repo_archive("owner/proj", "feat/x", str(dest))
     assert result == str(dest / "proj-feat-x")
+
+
+def test_download_file_uses_urllib(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    # No curl dependency: download_file must work purely via http_get (urllib).
+    dest = tmp_path / "99-user.toml"
+    monkeypatch.setattr(sysmod, "http_get", lambda url, **k: b'[general]\niata = "SEA"\n')
+
+    sysmod.download_file("https://example/cfg.toml", str(dest), "99-user.toml")
+    assert dest.read_text().startswith("[general]")
+
+
+def test_download_file_raises_on_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    dest = tmp_path / "99-user.toml"
+    monkeypatch.setattr(sysmod, "http_get", lambda url, **k: None)
+
+    with pytest.raises(RuntimeError):
+        sysmod.download_file("https://example/cfg.toml", str(dest), "99-user.toml")
+    assert not dest.exists()

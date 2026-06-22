@@ -1,5 +1,14 @@
 # ============================================================================
-# MeshCore Packet Capture - Interactive Installer for Windows (Fixed Version)
+# MeshCore Packet Capture - Interactive Installer for Windows
+# ============================================================================
+# SCOPE: Windows is a manual / development-only target. Windows has no
+# systemd/launchd service integration, so this script installs files and a venv
+# for a manual run only (no auto-start service). It writes configuration as a
+# legacy .env.local file under the install directory rather than the TOML
+# config.d model used by the Linux/macOS installer (the installer/ Python
+# package). .env.local remains a supported runtime config layer - it is
+# overridden by TOML config where present - so this divergence is intentional,
+# not a bug. BLE support on Windows is limited/untested; see README.md.
 # ============================================================================
 
 param(
@@ -497,7 +506,12 @@ function Start-Installation {
     
     Write-Host "This installer will help you set up MeshCore Packet Capture."
     Write-Host ""
-    
+    Write-Host "NOTE: Windows is a manual / development-only target. This installs files" -ForegroundColor Yellow
+    Write-Host "for a manual run (no auto-start service) and writes a legacy .env.local" -ForegroundColor Yellow
+    Write-Host "config. For a managed service, use Linux/macOS (install.sh). BLE on Windows" -ForegroundColor Yellow
+    Write-Host "is limited/untested." -ForegroundColor Yellow
+    Write-Host ""
+
     # Determine installation directory
     $defaultInstallDir = Join-Path $env:USERPROFILE ".meshcore-packet-capture"
     $script:InstallDir = Read-Host "Installation directory" $defaultInstallDir

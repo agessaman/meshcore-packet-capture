@@ -54,6 +54,20 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-
 > root daemons), a BLE install is set up as a per-user LaunchAgent that runs in
 > your login session. Serial/TCP installs use a system LaunchDaemon.
 
+### Windows (manual / development only)
+
+Windows has no systemd/launchd integration, so `install.ps1` is a manual/dev-only
+path: it installs files and a venv for a manual run (no auto-start service) and
+writes configuration as a legacy `.env.local` file rather than the TOML
+`config.d` model used on Linux/macOS. `.env.local` is still honored at runtime
+(TOML config overrides it where present), so this is intentional. BLE support on
+Windows is limited and currently untested — serial/TCP are the expected
+transports there.
+
+```powershell
+.\install.ps1
+```
+
 ### Uninstall
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/uninstall.sh)

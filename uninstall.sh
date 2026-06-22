@@ -189,7 +189,6 @@ remove_docker_installation() {
 # Main uninstallation
 main() {
     print_header "MeshCore Packet Capture Uninstaller"
-    KEEP_CONFIG=false
 
     echo "This will remove MeshCore Packet Capture from your system."
     echo ""
@@ -236,65 +235,39 @@ main() {
         print_info "Docker not found - skipping Docker cleanup"
     fi
     
-    # Handle .env.local
+    # Back up the user configuration before any files are removed.
     print_header "Configuration Files"
-    
-    if [ -f "$INSTALL_DIR/.env.local" ]; then
-        echo "Your configuration file contains custom settings:"
+
+    CONFIG_DIR="/etc/meshcore-packet-capture"
+    USER_CONFIG="$CONFIG_DIR/config.d/99-user.toml"
+    # Honor older/dev locations too: the renamed legacy override, then a
+    # bind-mounted/manual .env.local under the install dir.
+    [ -f "$USER_CONFIG" ] || USER_CONFIG="$CONFIG_DIR/config.d/00-user.toml"
+    [ -f "$USER_CONFIG" ] || USER_CONFIG="$INSTALL_DIR/.env.local"
+
+    if [ -f "$USER_CONFIG" ]; then
+        echo "Found user configuration: $USER_CONFIG"
         echo ""
-        cat "$INSTALL_DIR/.env.local" | head -20
-        if [ $(wc -l < "$INSTALL_DIR/.env.local") -gt 20 ]; then
-            echo "..."
-        fi
-        echo ""
-        
-        if prompt_yes_no "Do you want to back up .env.local before uninstalling?" "y"; then
-            BACKUP_FILE="$HOME/meshcore-capture-config-backup-$(date +%Y%m%d-%H%M%S).env"
-            cp "$INSTALL_DIR/.env.local" "$BACKUP_FILE"
-            print_success "Configuration backed up to: $BACKUP_FILE"
-        fi
-        
-        if ! prompt_yes_no "Remove .env.local configuration file?" "y"; then
-            print_info "Keeping .env.local - you'll need to remove it manually"
-            KEEP_CONFIG=true
+        if prompt_yes_no "Back up your configuration before uninstalling?" "y"; then
+            BACKUP_FILE="$HOME/meshcore-capture-config-backup-$(date +%Y%m%d-%H%M%S)-$(basename "$USER_CONFIG")"
+            # The user file is root-owned (0640), so copy via sudo, then hand the
+            # backup to the invoking user.
+            if sudo cp "$USER_CONFIG" "$BACKUP_FILE"; then
+                sudo chown "$(id -un):$(id -gn)" "$BACKUP_FILE" 2>/dev/null || true
+                print_success "Configuration backed up to: $BACKUP_FILE"
+            else
+                print_error "Backup failed - leaving configuration in place"
+            fi
         fi
     fi
     
-    # Handle Python virtual environment
-    if [ -d "$INSTALL_DIR/venv" ]; then
-        print_header "Python Environment"
-        if prompt_yes_no "Remove Python virtual environment?" "y"; then
-            rm -rf "$INSTALL_DIR/venv"
-            print_success "Virtual environment removed"
-        fi
-    fi
-    
-    # Handle meshcore_py directory
-    if [ -d "$INSTALL_DIR/meshcore_py" ]; then
-        print_header "MeshCore Library"
-        if prompt_yes_no "Remove meshcore_py library?" "y"; then
-            rm -rf "$INSTALL_DIR/meshcore_py"
-            print_success "MeshCore library removed"
-        fi
-    fi
-    
-    # Remove installation directory
+    # Remove installation directory (under /opt, owned by the service user -
+    # needs sudo). This also removes the bundled venv and any libraries.
     print_header "Removing Files"
-    
-    if [ "$KEEP_CONFIG" = true ]; then
-        # Remove everything except .env.local
-        print_info "Removing installation files (keeping .env.local)..."
-        
-        find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name '.env.local' -exec rm -rf {} +
-        
-        print_warning ".env.local kept at: $INSTALL_DIR/.env.local"
-        print_info "To complete removal, manually delete: $INSTALL_DIR"
-    else
-        # Remove everything
-        print_info "Removing installation directory..."
-        rm -rf "$INSTALL_DIR"
-        print_success "Installation directory removed"
-    fi
+
+    print_info "Removing installation directory..."
+    sudo rm -rf "$INSTALL_DIR"
+    print_success "Installation directory removed"
     
     # Clean up any remaining system files
     print_header "System Cleanup"
@@ -325,18 +298,14 @@ main() {
 
     # Final message
     print_header "Uninstallation Complete"
-    
-    if [ "$KEEP_CONFIG" = true ]; then
-        echo "MeshCore Packet Capture has been removed (configuration kept)."
-        echo "Configuration file: $INSTALL_DIR/.env.local"
-    else
-        echo "MeshCore Packet Capture has been completely removed."
-    fi
-    
+
+    echo "MeshCore Packet Capture has been removed."
+
     echo ""
     print_success "Uninstallation complete!"
     echo ""
-    print_info "If you want to reinstall, run: curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh | bash"
+    print_info "To reinstall, download the installer first, then run it with sudo:"
+    echo "  tmp=\$(mktemp) && curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh -o \"\$tmp\" && sudo bash \"\$tmp\"; rm -f \"\$tmp\""
 }
 
 # Run main

@@ -375,10 +375,10 @@ def detect_service_user(ctx: InstallerContext) -> str:
     (the user chose that account in a previous 1.1+ install).
     Also checks /etc/passwd for a user whose home directory matches the
     install directory (how create_system_user sets up accounts).
-    For pre-1.1 installs, returns the default ('meshcore-packet-capture') since those
+    For pre-1.1 installs, returns the default ('meshcore-capture') since those
     ran as the user's own account and should be migrated.
     """
-    default = ctx.svc_user  # "meshcore-packet-capture"
+    default = ctx.svc_user  # "meshcore-capture"
     unit_user: str | None = None
     passwd_user: str | None = None
 

@@ -35,7 +35,7 @@ tcp_host = "localhost"
 tcp_port = 5000
 # ble_address = "XX:XX:XX:XX:XX:XX"
 # ble_device_name = "MeshCore Device"
-advert_interval_hours = 1
+advert_interval_hours = 47
 # State directory for advert_state.json (installer creates and chowns this path)
 data_dir = "/var/lib/meshcore-packet-capture/data"
 max_connection_retries = 5

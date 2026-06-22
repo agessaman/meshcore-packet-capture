@@ -89,7 +89,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 ## Requirements
 
 - Python 3.11+ (installer and recommended runtime)
-- `meshcore` package (official MeshCore Python library) version 2.2.2 or later (required for stats support)
+- `meshcore` package (official MeshCore Python library) version 2.2.31 or later (required for multi-byte path support and stats)
 - `paho-mqtt` package (for MQTT functionality)
 
 **Note**: For Docker deployment, this application is best deployed on Linux systems due to Bluetooth Low Energy (BLE) and serial device access requirements. While Docker containers can run on macOS and Windows, BLE functionality may be limited or require additional configuration.
@@ -335,7 +335,7 @@ PACKETCAPTURE_MAX_MQTT_RETRIES=0
 ```
 
 #### Advert Settings
-- `PACKETCAPTURE_ADVERT_INTERVAL_HOURS`: Send flood adverts at this interval (0 = disabled, default = 11 hours)
+- `PACKETCAPTURE_ADVERT_INTERVAL_HOURS`: Send flood adverts at this interval (0 = disabled, default = 47 hours)
 
 #### Packet Type Filtering
 - `PACKETCAPTURE_UPLOAD_PACKET_TYPES`: Comma-separated list of packet type numbers to upload to MQTT (default: upload all types)
@@ -536,9 +536,17 @@ Captured packets are output in JSON format with the following structure:
 
 ## MQTT Topics
 
-- `meshcore/status`: Device online/offline status
-- `meshcore/packets`: Full packet data
-- `meshcore/raw`: Raw packet data (required for map.w0z.is)
+Default topic templates (from the shipped `config.toml`):
+
+- `meshcore/{IATA}/{PUBLIC_KEY}/status`: Device online/offline status (plus optional stats)
+- `meshcore/{IATA}/{PUBLIC_KEY}/packets`: Full packet data
+- `meshcore/{IATA}/{PUBLIC_KEY}/raw`: Raw packet data (commented out by default; enable it for e.g. map.w0z.is)
+
+These are configurable globally or per broker — see [Topic Templates](#topic-templates)
+and [Per-Broker Topic Overrides](#per-broker-topic-overrides). The classic flat form
+(`meshcore/status`, `meshcore/packets`, `meshcore/raw`) still works if you set the
+topics explicitly.
+
 ## Troubleshooting
 
 ### Connection Issues

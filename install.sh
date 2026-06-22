@@ -6,16 +6,33 @@
 set -e
 
 REPO="${MESHCORE_PACKET_CAPTURE_REPO:-${PACKETCAPTURE_REPO:-agessaman/meshcore-packet-capture}}"
+# Branch the bootstrap fetches the installer from (default: main = latest
+# installer). The install *payload* defaults to the latest published release
+# unless the user pins --branch/--tag (see installer.system.resolve_install_ref).
 BRANCH="${MESHCORE_PACKET_CAPTURE_BRANCH:-${PACKETCAPTURE_BRANCH:-main}}"
+BRANCH_EXPLICIT=false
+if [ -n "${MESHCORE_PACKET_CAPTURE_BRANCH:-}" ] || [ -n "${PACKETCAPTURE_BRANCH:-}" ]; then
+    BRANCH_EXPLICIT=true
+fi
+TAG=""
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --repo)   REPO="$2"; shift 2 ;;
-        --branch) BRANCH="$2"; shift 2 ;;
+        --branch) BRANCH="$2"; BRANCH_EXPLICIT=true; shift 2 ;;
+        --tag)    TAG="$2"; EXTRA_ARGS+=("--tag" "$2"); shift 2 ;;
         *)        EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
+
+# Ref the bootstrap downloads its installer copy from: an explicit branch wins,
+# else a pinned tag, else main. (When none is pinned the Python installer
+# resolves the latest release for the payload.)
+BOOT_REF="$BRANCH"; BOOT_KIND="heads"
+if [ "$BRANCH_EXPLICIT" != true ] && [ -n "$TAG" ]; then
+    BOOT_REF="$TAG"; BOOT_KIND="tags"
+fi
 
 _needs_root=true
 for arg in "${EXTRA_ARGS[@]}"; do
@@ -107,22 +124,31 @@ trap "rm -rf $TMP_DIR" EXIT
 if [ -n "$LOCAL_INSTALL" ]; then
     cp -r "$LOCAL_INSTALL/installer" "$TMP_DIR/installer"
 else
-    ARCHIVE_URL="https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz"
+    ARCHIVE_URL="https://github.com/$REPO/archive/refs/$BOOT_KIND/$BOOT_REF.tar.gz"
     echo "Downloading repository archive..."
     download "$ARCHIVE_URL" "$TMP_DIR/repo.tar.gz" || {
         echo "Error: Failed to download repository archive"; exit 1
     }
-    REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
-    BRANCH_SANITIZED=$(echo "$BRANCH" | tr '/' '-')
     tar -xzf "$TMP_DIR/repo.tar.gz" -C "$TMP_DIR" || {
         echo "Error: Failed to extract repository archive"; exit 1
     }
     rm -f "$TMP_DIR/repo.tar.gz"
-    cp -r "$TMP_DIR/$REPO_NAME-$BRANCH_SANITIZED/installer" "$TMP_DIR/installer"
+    # The extracted dir name varies (tags drop a leading 'v'), so locate it.
+    REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
+    extracted_dir=$(find "$TMP_DIR" -maxdepth 1 -type d -name "$REPO_NAME-*" | head -1)
+    if [ -z "$extracted_dir" ] || [ ! -d "$extracted_dir/installer" ]; then
+        echo "Error: Could not locate installer in the downloaded archive"; exit 1
+    fi
+    cp -r "$extracted_dir/installer" "$TMP_DIR/installer"
 fi
 
 export INSTALL_REPO="$REPO"
-export INSTALL_BRANCH="$BRANCH"
+# Only pin a branch for the Python layer when the user explicitly chose one;
+# otherwise leave it unset so the installer resolves the latest release. A
+# pinned --tag is forwarded via EXTRA_ARGS instead.
+if [ "$BRANCH_EXPLICIT" = true ]; then
+    export INSTALL_BRANCH="$BOOT_REF"
+fi
 cd "$TMP_DIR"
 if [ -r /dev/tty ]; then
     python3 -m installer install "${EXTRA_ARGS[@]}" < /dev/tty

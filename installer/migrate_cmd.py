@@ -343,7 +343,7 @@ def run_migrate(ctx: InstallerContext) -> bool:
         if not repo_dir:
             try:
                 migrate_tmp = tempfile.mkdtemp()
-                repo_dir = download_repo_archive(ctx.repo, ctx.branch, migrate_tmp)
+                repo_dir = download_repo_archive(ctx.repo, ctx.branch, migrate_tmp, is_tag=ctx.ref_is_tag)
                 ctx.repo_dir = repo_dir
             except subprocess.CalledProcessError:
                 repo_dir = ""

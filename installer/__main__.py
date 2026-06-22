@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from . import InstallerContext
-from .system import require_root
+from .system import require_root, resolve_install_ref
 from .ui import print_error, print_info
 
 
@@ -17,7 +17,17 @@ def _build_parser() -> argparse.ArgumentParser:
         description="MeshCore Packet Capture installer",
     )
     parser.add_argument("--repo", default=os.environ.get("INSTALL_REPO", "agessaman/meshcore-packet-capture"))
-    parser.add_argument("--branch", default=os.environ.get("INSTALL_BRANCH", "main"))
+    # No default branch: when neither --branch nor --tag is given, the latest
+    # published release is installed (falling back to 'main'). An explicit branch
+    # or tag pins the install for dev/CI.
+    parser.add_argument(
+        "--branch",
+        default=os.environ.get("INSTALL_BRANCH") or os.environ.get("PACKETCAPTURE_BRANCH") or None,
+    )
+    parser.add_argument(
+        "--tag",
+        default=os.environ.get("INSTALL_TAG") or os.environ.get("PACKETCAPTURE_TAG") or None,
+    )
 
     sub = parser.add_subparsers(dest="command")
 
@@ -35,10 +45,22 @@ def _build_parser() -> argparse.ArgumentParser:
 def _dispatch(args: argparse.Namespace) -> None:
     require_root()
 
+    local_install = os.environ.get("LOCAL_INSTALL", "")
+    # If the bootstrap already resolved a ref, honor it verbatim so both download
+    # passes agree; otherwise resolve here (explicit branch/tag, else latest release).
+    ref_env = os.environ.get("INSTALL_REF")
+    if ref_env:
+        ref, ref_is_tag = ref_env, os.environ.get("INSTALL_REF_KIND") == "tags"
+    else:
+        ref, ref_is_tag = resolve_install_ref(
+            args.repo, branch=args.branch, tag=args.tag, local_install=local_install,
+        )
+
     ctx = InstallerContext(
         repo=args.repo,
-        branch=args.branch,
-        local_install=os.environ.get("LOCAL_INSTALL", ""),
+        branch=ref,
+        ref_is_tag=ref_is_tag,
+        local_install=local_install,
     )
 
     if args.command == "install":

@@ -157,7 +157,21 @@ export LOCAL_INSTALL=/path/to/meshcore-packet-capture
 sudo bash install.sh
 ```
 
-Or bootstrap via curl (downloads the branch and runs `python3 -m installer install`).
+Or bootstrap via curl (downloads the installer and runs `python3 -m installer install`).
+
+#### Choosing what to install (version pinning)
+
+By default the installer installs the **latest published GitHub Release**, so you
+get a stable, tagged version rather than the moving branch tip. (If the project
+has no releases yet, it falls back to the `main` branch.) You can override this:
+
+```bash
+sudo bash install.sh --tag v2.0.0      # pin to a specific release
+sudo bash install.sh --branch main     # track a branch (development)
+```
+
+`update` resolves the latest release the same way and reports the
+installed-versus-target version before applying it.
 
 #### Upgrading legacy service installs
 

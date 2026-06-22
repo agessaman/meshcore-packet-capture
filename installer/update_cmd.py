@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
@@ -11,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import extract_version_from_file
+from . import extract_version_from_file, parse_version_tuple
 from .config import (
     configure_mqtt_brokers,
     update_owner_info,
@@ -48,6 +49,17 @@ from .ui import (
 
 if TYPE_CHECKING:
     from . import InstallerContext
+
+
+def _installed_version(install_dir: str) -> str:
+    """Read installer_version from an existing .version_info, or '' if unavailable."""
+    path = Path(install_dir) / ".version_info"
+    if not path.is_file():
+        return ""
+    try:
+        return str(json.loads(path.read_text()).get("installer_version") or "")
+    except (json.JSONDecodeError, OSError, ValueError):
+        return ""
 
 
 def run_update(ctx: InstallerContext) -> None:
@@ -87,7 +99,7 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
     if ctx.local_install:
         repo_dir = ctx.local_install
     else:
-        repo_dir = download_repo_archive(ctx.repo, ctx.branch, tmp_dir)
+        repo_dir = download_repo_archive(ctx.repo, ctx.branch, tmp_dir, is_tag=ctx.ref_is_tag)
 
     ctx.repo_dir = repo_dir
 
@@ -98,6 +110,19 @@ def _do_update(ctx: InstallerContext, tmp_dir: str) -> None:
     ctx.script_version = extract_version_from_file(ver_src)
 
     print_header(f"MeshCore Packet Capture Updater v{ctx.script_version}")
+    installed_version = _installed_version(ctx.install_dir)
+    if installed_version:
+        current = parse_version_tuple(installed_version)
+        target = parse_version_tuple(ctx.script_version)
+        if target > current:
+            print_info(f"Updating from {installed_version} to {ctx.script_version}")
+        elif target == current:
+            print_info(f"Already at {installed_version} — reinstalling files")
+        else:
+            print_warning(
+                f"Installed version {installed_version} is newer than target "
+                f"{ctx.script_version}; proceeding anyway"
+            )
     print_info(f"Installation directory: {ctx.install_dir}")
     print_info(f"Configuration directory: {ctx.config_dir}")
     print()

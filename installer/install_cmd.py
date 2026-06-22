@@ -67,7 +67,7 @@ def _do_install(ctx: InstallerContext, tmp_dir: str) -> None:
         repo_dir = ctx.local_install
     else:
         try:
-            repo_dir = download_repo_archive(ctx.repo, ctx.branch, tmp_dir)
+            repo_dir = download_repo_archive(ctx.repo, ctx.branch, tmp_dir, is_tag=ctx.ref_is_tag)
         except subprocess.CalledProcessError:
             print_error("Failed to download repository archive")
             raise SystemExit(1)

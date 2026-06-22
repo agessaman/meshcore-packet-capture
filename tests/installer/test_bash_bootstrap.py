@@ -33,3 +33,16 @@ def test_install_sh_default_repo_and_branch():
     assert "tmp=\\$(mktemp)" in text
     # Honors the offline LOCAL_INSTALL path.
     assert "LOCAL_INSTALL" in text
+
+
+def test_install_sh_release_ref_handling():
+    text = (REPO_ROOT / "install.sh").read_text()
+    # Accepts a pinned release tag and forwards it to the Python installer.
+    assert "--tag)" in text
+    assert 'EXTRA_ARGS+=("--tag" "$2")' in text
+    # Downloads from either heads/ or tags/ depending on the chosen ref.
+    assert "/archive/refs/$BOOT_KIND/$BOOT_REF.tar.gz" in text
+    # Only pins INSTALL_BRANCH when the user explicitly chose a branch, so that an
+    # unpinned install lets the Python layer resolve the latest release.
+    assert 'if [ "$BRANCH_EXPLICIT" = true ]; then' in text
+    assert "export INSTALL_BRANCH=" in text

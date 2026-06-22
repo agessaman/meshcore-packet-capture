@@ -37,12 +37,13 @@
 
       meshcore-packet-capture = pkgs.stdenv.mkDerivation {
         pname = "meshcore-packet-capture";
-        version = "1.0.0";
+        version = "2.0.0";
         src = ./.;
 
         nativeBuildInputs = [pkgs.makeWrapper];
 
-        buildInputs = [pythonEnv pkgs.nodejs_20];
+        # JWT signing is pure-Python (pynacl, in pythonEnv); no Node.js required.
+        buildInputs = [pythonEnv];
 
         installPhase = ''
           mkdir -p $out/bin
@@ -50,16 +51,9 @@
           cp -r ${../src} $out/lib/meshcore-packet-capture/src
 
           makeWrapper ${pythonEnv}/bin/python $out/bin/meshcore-packet-capture \
-            --set PATH "${pkgs.lib.makeBinPath [pkgs.nodejs_20 pkgs.nodePackages.npm]}:$PATH" \
             --prefix PYTHONPATH : "$out/lib/meshcore-packet-capture/src:${pythonEnv}/${pythonEnv.sitePackages}" \
             --add-flags "-m" \
             --add-flags "meshcore_packet_capture"
-
-          # Create a helper script for meshcore-decoder
-          # This will use npx to run it, which handles installation automatically
-          makeWrapper ${pkgs.nodejs_20}/bin/npx $out/bin/meshcore-decoder \
-            --add-flags "-y" \
-            --add-flags "@michaelhart/meshcore-decoder"
         '';
 
         meta = {

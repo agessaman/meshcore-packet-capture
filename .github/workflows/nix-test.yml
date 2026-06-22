@@ -199,13 +199,11 @@ jobs:
           nix develop --command bash -c '
             echo "✅ Development shell entered successfully"
             echo "Python version: $(python --version)"
-            echo "Node.js version: $(node --version)"
             echo "Checking Python packages..."
             python -c "import paho.mqtt; print(\"✅ paho-mqtt available\")"
             python -c "import bleak; print(\"✅ bleak available\")"
             python -c "import pexpect; print(\"✅ pexpect available\")"
-            echo "Checking if meshcore-decoder is accessible..."
-            npx -y @michaelhart/meshcore-decoder --help || echo "⚠️  meshcore-decoder may need network access"
+            python -c "import nacl; print(\"✅ pynacl available\")"
           '
 
   # Test package installation and basic functionality
@@ -233,15 +231,6 @@ jobs:
             ./result/bin/meshcore-packet-capture --help || true
           else
             echo "❌ Binary not found"
-            exit 1
-          fi
-
-      - name: Test meshcore-decoder wrapper
-        run: |
-          if [ -f ./result/bin/meshcore-decoder ]; then
-            echo "✅ meshcore-decoder wrapper exists"
-          else
-            echo "❌ meshcore-decoder wrapper not found"
             exit 1
           fi
 

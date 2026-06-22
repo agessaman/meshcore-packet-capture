@@ -1,2 +1,8 @@
 pytest>=8.0
+pytest-asyncio>=0.23
 pytest-cov>=4.0
+
+# Real Ed25519 crypto for JWT signing tests. auth_token.py imports nacl at module
+# load (it's a declared runtime dependency in pyproject.toml), so it can't be
+# stubbed like meshcore/paho are in tests/conftest.py.
+pynacl>=1.5.0

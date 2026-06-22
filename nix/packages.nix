@@ -17,9 +17,13 @@
           hatchling
         ];
         
+        # meshcore 2.2.31's wheel requires these at runtime; nixpkgs' Python deps
+        # check (pythonRuntimeDepsCheck) fails the build if they're not provided.
         propagatedBuildInputs = with pkgs.python3Packages; [
           bleak
           pyserial-asyncio
+          pyserial-asyncio-fast
+          pycryptodome
           pycayennelpp
         ];
         

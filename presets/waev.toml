@@ -1,0 +1,19 @@
+[[broker]]
+name = "waev"
+enabled = true
+server = "mqtt.waev.app"
+port = 443
+transport = "websockets"
+keepalive = 55
+qos = 0
+retain = false
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt.waev.app"
+# WAEV requires a shorter-lived JWT than the 24h default (value in seconds).
+token_ttl = 3600

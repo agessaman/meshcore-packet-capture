@@ -3,6 +3,7 @@ config.ini
 .env.*
 old/
 advert_state.json
+mytest.toml
 
 # Python
 __pycache__/
@@ -73,7 +74,5 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Testing directory (not committed to repo)
-tests/
 nixos-test/
 local-docs/

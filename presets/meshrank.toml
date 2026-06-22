@@ -1,0 +1,20 @@
+[[broker]]
+name = "meshrank"
+enabled = true
+server = "meshrank.net"
+port = 8883
+transport = "tcp"
+qos = 0
+retain = false
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "none"
+topic_token = "REPLACE_WITH_MESHRANK_TOKEN"
+
+[broker.topics]
+# Meshrank expects packets-only uplink topics with a user token in the path.
+packets = "meshrank/uplink/{TOKEN}/{PUBLIC_KEY}/packets"

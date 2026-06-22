@@ -10,12 +10,9 @@
           pyserial-asyncio
           pycayennelpp
           pexpect
+          pynacl
         ]))
-        
-        # Node.js for meshcore-decoder
-        nodejs_20
-        nodePackages.npm
-        
+
         # System dependencies
         bluez
         bluez.dev
@@ -25,11 +22,11 @@
       ];
 
       shellHook = ''
+        export PYTHONPATH="$PWD/src''${PYTHONPATH:+:$PYTHONPATH}"
         echo "MeshCore Packet Capture Development Environment"
         echo "Python: $(python --version)"
-        echo "Node.js: $(node --version)"
         echo ""
-        echo "To run meshcore-decoder, use: npx -y @michaelhart/meshcore-decoder"
+        echo "Run: python -m meshcore_packet_capture"
         echo ""
       '';
     };

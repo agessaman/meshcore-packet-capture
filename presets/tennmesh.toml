@@ -1,0 +1,14 @@
+[[broker]]
+name = "tennmesh"
+enabled = true
+server = "mqtt.tennmesh.com"
+port = 1883
+transport = "tcp"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.auth]
+method = "password"
+username = "mqttfeed"
+password = "tc2live"

@@ -154,7 +154,15 @@ jobs:
                         enabled = true;
                         server = "mqtt2.example.com";
                         transport = "websockets";
+                        useAuthToken = true;
+                        tokenAudience = "mqtt2.example.com";
+                        tokenTtl = 3600;
+                        tokenOwner = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+                        tokenEmail = "owner@example.com";
                       };
+                      statsInStatusEnabled = true;
+                      statsRefreshInterval = 300;
+                      statsRetryLimit = 2;
                       logLevel = "DEBUG";
                       iata = "SEA";
                     };
@@ -166,6 +174,8 @@ jobs:
                 enabled = eval.config.services.meshcore-packet-capture.enable;
                 connectionType = eval.config.services.meshcore-packet-capture.connectionType;
                 mqtt1Enabled = eval.config.services.meshcore-packet-capture.mqtt1.enabled;
+                mqtt2TokenTtl = eval.config.services.meshcore-packet-capture.mqtt2.tokenTtl;
+                statsRefreshInterval = eval.config.services.meshcore-packet-capture.statsRefreshInterval;
               }
           ' --strict
 
@@ -189,13 +199,11 @@ jobs:
           nix develop --command bash -c '
             echo "✅ Development shell entered successfully"
             echo "Python version: $(python --version)"
-            echo "Node.js version: $(node --version)"
             echo "Checking Python packages..."
             python -c "import paho.mqtt; print(\"✅ paho-mqtt available\")"
             python -c "import bleak; print(\"✅ bleak available\")"
             python -c "import pexpect; print(\"✅ pexpect available\")"
-            echo "Checking if meshcore-decoder is accessible..."
-            npx -y @michaelhart/meshcore-decoder --help || echo "⚠️  meshcore-decoder may need network access"
+            python -c "import nacl; print(\"✅ pynacl available\")"
           '
 
   # Test package installation and basic functionality
@@ -223,15 +231,6 @@ jobs:
             ./result/bin/meshcore-packet-capture --help || true
           else
             echo "❌ Binary not found"
-            exit 1
-          fi
-
-      - name: Test meshcore-decoder wrapper
-        run: |
-          if [ -f ./result/bin/meshcore-decoder ]; then
-            echo "✅ meshcore-decoder wrapper exists"
-          else
-            echo "❌ meshcore-decoder wrapper not found"
             exit 1
           fi
 

@@ -1,5 +1,14 @@
 # ============================================================================
-# MeshCore Packet Capture - Interactive Installer for Windows (Fixed Version)
+# MeshCore Packet Capture - Interactive Installer for Windows
+# ============================================================================
+# SCOPE: Windows is a manual / development-only target. Windows has no
+# systemd/launchd service integration, so this script installs files and a venv
+# for a manual run only (no auto-start service). It writes configuration as a
+# legacy .env.local file under the install directory rather than the TOML
+# config.d model used by the Linux/macOS installer (the installer/ Python
+# package). .env.local remains a supported runtime config layer - it is
+# overridden by TOML config where present - so this divergence is intentional,
+# not a bug. BLE support on Windows is limited/untested; see README.md.
 # ============================================================================
 
 param(
@@ -9,7 +18,7 @@ param(
 )
 
 # Script configuration
-$ScriptVersion = "1.2"
+$ScriptVersion = "2.0.0"
 $ErrorActionPreference = "Stop"
 
 # Global variables
@@ -497,7 +506,12 @@ function Start-Installation {
     
     Write-Host "This installer will help you set up MeshCore Packet Capture."
     Write-Host ""
-    
+    Write-Host "NOTE: Windows is a manual / development-only target. This installs files" -ForegroundColor Yellow
+    Write-Host "for a manual run (no auto-start service) and writes a legacy .env.local" -ForegroundColor Yellow
+    Write-Host "config. For a managed service, use Linux/macOS (install.sh). BLE on Windows" -ForegroundColor Yellow
+    Write-Host "is limited/untested." -ForegroundColor Yellow
+    Write-Host ""
+
     # Determine installation directory
     $defaultInstallDir = Join-Path $env:USERPROFILE ".meshcore-packet-capture"
     $script:InstallDir = Read-Host "Installation directory" $defaultInstallDir
@@ -550,46 +564,51 @@ function Start-Installation {
     Write-Host "INFO: Downloading application files..." -ForegroundColor Blue
     
     if ($env:LOCAL_INSTALL) {
-        # Local install for testing
+        # Local install for testing (full repo checkout)
         Write-Host "INFO: Installing from local directory: $env:LOCAL_INSTALL" -ForegroundColor Blue
-        Copy-Item "$env:LOCAL_INSTALL\packet_capture.py" $InstallDir\
-        Copy-Item "$env:LOCAL_INSTALL\auth_token.py" $InstallDir\
-        Copy-Item "$env:LOCAL_INSTALL\enums.py" $InstallDir\
-        Copy-Item "$env:LOCAL_INSTALL\ble_pairing_helper.py" $InstallDir\
+        Copy-Item "$env:LOCAL_INSTALL\pyproject.toml" $InstallDir\
+        if (Test-Path "$env:LOCAL_INSTALL\README.md") {
+            Copy-Item "$env:LOCAL_INSTALL\README.md" $InstallDir\
+        }
+        Copy-Item "$env:LOCAL_INSTALL\src" $InstallDir\src -Recurse -Force
         Copy-Item "$env:LOCAL_INSTALL\requirements.txt" $InstallDir\
         if (Test-Path "$env:LOCAL_INSTALL\.env") {
             Copy-Item "$env:LOCAL_INSTALL\.env" $InstallDir\
         }
-        # Create version info file
         New-VersionInfo
-        
         Write-Host "SUCCESS: Files copied from local directory" -ForegroundColor Green
-        }
-        else {
-        # Download from GitHub
-        Write-Host "INFO: Downloading from GitHub ($Repo @ $Branch)..." -ForegroundColor Blue
-        
-        $baseUrl = "https://raw.githubusercontent.com/$Repo/$Branch"
-        
-        # Download files
-        $files = @("packet_capture.py", "auth_token.py", "enums.py", "ble_pairing_helper.py", "ble_scan_helper.py", "requirements.txt")
-        
-        foreach ($file in $files) {
-            Write-Host "INFO: Downloading $file..." -ForegroundColor Blue
-            try {
-                Invoke-WebRequest -Uri "$baseUrl/$file" -OutFile (Join-Path $InstallDir $file) -UseBasicParsing
+    }
+    else {
+        Write-Host "INFO: Downloading repository archive from GitHub ($Repo @ $Branch)..." -ForegroundColor Blue
+        $zipUrl = "https://github.com/$Repo/archive/refs/heads/$Branch.zip"
+        $tmpZip = Join-Path $env:TEMP "meshcore-packet-capture-$Branch.zip"
+        $tmpExtract = Join-Path $env:TEMP "meshcore-packet-capture-extract-$(Get-Random)"
+        try {
+            Invoke-WebRequest -Uri $zipUrl -OutFile $tmpZip -UseBasicParsing
+            Expand-Archive -Path $tmpZip -DestinationPath $tmpExtract -Force
+            $inner = Get-ChildItem -Path $tmpExtract -Directory | Select-Object -First 1
+            if (-not $inner) {
+                throw "Archive contained no top-level directory"
             }
-            catch {
-                Write-Host "ERROR: Failed to download $file from $Repo/$Branch" -ForegroundColor Red
-                Write-Host "ERROR: Please verify the repository and branch exist" -ForegroundColor Red
-                exit 1
+            $root = $inner.FullName
+            Copy-Item "$root\pyproject.toml" $InstallDir\
+            if (Test-Path "$root\README.md") {
+                Copy-Item "$root\README.md" $InstallDir\
             }
+            Copy-Item "$root\src" $InstallDir\src -Recurse -Force
+            Copy-Item "$root\requirements.txt" $InstallDir\
         }
-        
-        # Create version info file
+        catch {
+            Write-Host "ERROR: Failed to download or extract $zipUrl" -ForegroundColor Red
+            Write-Host "ERROR: Set LOCAL_INSTALL to a full git checkout, or verify Repo/Branch." -ForegroundColor Red
+            exit 1
+        }
+        finally {
+            Remove-Item -Path $tmpZip -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $tmpExtract -Recurse -Force -ErrorAction SilentlyContinue
+        }
         New-VersionInfo
-        
-        Write-Host "SUCCESS: Files downloaded and verified" -ForegroundColor Green
+        Write-Host "SUCCESS: Repository archive installed" -ForegroundColor Green
     }
     
     # Set up virtual environment
@@ -608,7 +627,8 @@ function Start-Installation {
     & (Join-Path $InstallDir "venv\Scripts\Activate.ps1")
     & (Join-Path $InstallDir "venv\Scripts\pip.exe") install --quiet --upgrade pip
     & (Join-Path $InstallDir "venv\Scripts\pip.exe") install --quiet -r (Join-Path $InstallDir "requirements.txt")
-    Write-Host "SUCCESS: Python dependencies installed" -ForegroundColor Green
+    & (Join-Path $InstallDir "venv\Scripts\pip.exe") install --quiet $InstallDir
+    Write-Host "SUCCESS: Python dependencies and application package installed" -ForegroundColor Green
     
     # Configuration
     Write-Host ""
@@ -1331,7 +1351,7 @@ PACKETCAPTURE_MQTT1_KEEPALIVE=120
     Write-Host ""
     Write-Host "Configuration file: $InstallDir\.env.local"
     Write-Host ""
-    Write-Host "To run manually: cd $InstallDir; .\venv\Scripts\python.exe packet_capture.py"
+    Write-Host "To run manually: cd $InstallDir; .\venv\Scripts\python.exe -m meshcore_packet_capture"
     Write-Host ""
     Write-Host "SUCCESS: Installation complete!" -ForegroundColor Green
 }

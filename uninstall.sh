@@ -81,20 +81,23 @@ detect_system_type() {
 
 # Remove systemd service
 remove_systemd_service() {
-    if [ -f /etc/systemd/system/meshcore-capture.service ]; then
-        print_info "Stopping and removing systemd service (requires sudo)..."
-        
-        if sudo systemctl is-active --quiet meshcore-capture.service; then
-            sudo systemctl stop meshcore-capture.service
-            print_success "Service stopped"
+    local found=false
+    for unit in meshcore-capture.service meshcore-packet-capture.service; do
+        if [ -f "/etc/systemd/system/$unit" ]; then
+            found=true
+            print_info "Stopping and removing systemd service $unit (requires sudo)..."
+            if sudo systemctl is-active --quiet "$unit"; then
+                sudo systemctl stop "$unit"
+                print_success "Service stopped"
+            fi
+            if sudo systemctl is-enabled --quiet "$unit"; then
+                sudo systemctl disable "$unit"
+                print_success "Service disabled"
+            fi
+            sudo rm -f "/etc/systemd/system/$unit"
         fi
-        
-        if sudo systemctl is-enabled --quiet meshcore-capture.service; then
-            sudo systemctl disable meshcore-capture.service
-            print_success "Service disabled"
-        fi
-        
-        sudo rm -f /etc/systemd/system/meshcore-capture.service
+    done
+    if [ "$found" = true ]; then
         sudo systemctl daemon-reload
         print_success "Service removed"
     else
@@ -104,23 +107,43 @@ remove_systemd_service() {
 
 # Remove launchd service
 remove_launchd_service() {
-    local plist_file="$HOME/Library/LaunchAgents/com.meshcore.packet-capture.plist"
-    
-    if [ -f "$plist_file" ]; then
-        print_info "Stopping and removing launchd service..."
-        
-        if launchctl list | grep -q com.meshcore.packet-capture; then
-            launchctl unload "$plist_file" 2>/dev/null || true
-            print_success "Service unloaded"
+    local label="com.meshcore.meshcore_packet_capture"
+    local daemon_plist="/Library/LaunchDaemons/${label}.plist"
+    local agent_user="${SUDO_USER:-$(whoami)}"
+    local agent_home="$HOME"
+    local found=false
+
+    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+        agent_home=$(eval echo "~$SUDO_USER")
+    fi
+    local agent_plist="$agent_home/Library/LaunchAgents/${label}.plist"
+
+    if [ -f "$daemon_plist" ]; then
+        found=true
+        print_info "Stopping and removing system LaunchDaemon..."
+        sudo launchctl bootout system "$daemon_plist" 2>/dev/null || sudo launchctl unload "$daemon_plist" 2>/dev/null || true
+        sudo rm -f "$daemon_plist"
+        print_success "System LaunchDaemon removed"
+    fi
+
+    if [ -f "$agent_plist" ]; then
+        found=true
+        print_info "Stopping and removing BLE LaunchAgent for $agent_user..."
+        local agent_uid
+        agent_uid=$(id -u "$agent_user" 2>/dev/null || true)
+        if [ -n "$agent_uid" ]; then
+            sudo -u "$agent_user" launchctl bootout "gui/$agent_uid" "$agent_plist" 2>/dev/null || sudo -u "$agent_user" launchctl unload "$agent_plist" 2>/dev/null || true
+        else
+            launchctl unload "$agent_plist" 2>/dev/null || true
         fi
-        
-        rm -f "$plist_file"
-        print_success "Service removed"
-        
-        # Clean up log files
+        rm -f "$agent_plist"
+        print_success "BLE LaunchAgent removed"
+    fi
+
+    if [ "$found" = true ]; then
         if prompt_yes_no "Remove log files?" "y"; then
-            rm -f "$HOME/Library/Logs/meshcore-capture.log"
-            rm -f "$HOME/Library/Logs/meshcore-capture-error.log"
+            sudo rm -f /var/log/meshcore-packet-capture.log /var/log/meshcore-packet-capture-error.log 2>/dev/null || true
+            rm -f "$agent_home/Library/Logs/meshcore-packet-capture.log" "$agent_home/Library/Logs/meshcore-packet-capture-error.log"
             print_success "Log files removed"
         fi
     else
@@ -130,8 +153,8 @@ remove_launchd_service() {
 
 # Remove Docker container and images
 remove_docker_installation() {
-    local container_name="meshcore-capture"
-    local image_name="meshcore-capture"
+    local container_name="meshcore-packet-capture"
+    local image_name="meshcore-packet-capture"
     
     print_info "Checking for Docker installation..."
     
@@ -166,12 +189,12 @@ remove_docker_installation() {
 # Main uninstallation
 main() {
     print_header "MeshCore Packet Capture Uninstaller"
-    
+
     echo "This will remove MeshCore Packet Capture from your system."
     echo ""
     
     # Determine installation directory
-    DEFAULT_INSTALL_DIR="$HOME/.meshcore-packet-capture"
+    DEFAULT_INSTALL_DIR="/opt/meshcore-packet-capture"
     INSTALL_DIR=$(prompt_input "Installation directory" "$DEFAULT_INSTALL_DIR")
     INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"  # Expand tilde
     
@@ -212,91 +235,77 @@ main() {
         print_info "Docker not found - skipping Docker cleanup"
     fi
     
-    # Handle .env.local
+    # Back up the user configuration before any files are removed.
     print_header "Configuration Files"
-    
-    if [ -f "$INSTALL_DIR/.env.local" ]; then
-        echo "Your configuration file contains custom settings:"
+
+    CONFIG_DIR="/etc/meshcore-packet-capture"
+    USER_CONFIG="$CONFIG_DIR/config.d/99-user.toml"
+    # Honor older/dev locations too: the renamed legacy override, then a
+    # bind-mounted/manual .env.local under the install dir.
+    [ -f "$USER_CONFIG" ] || USER_CONFIG="$CONFIG_DIR/config.d/00-user.toml"
+    [ -f "$USER_CONFIG" ] || USER_CONFIG="$INSTALL_DIR/.env.local"
+
+    if [ -f "$USER_CONFIG" ]; then
+        echo "Found user configuration: $USER_CONFIG"
         echo ""
-        cat "$INSTALL_DIR/.env.local" | head -20
-        if [ $(wc -l < "$INSTALL_DIR/.env.local") -gt 20 ]; then
-            echo "..."
-        fi
-        echo ""
-        
-        if prompt_yes_no "Do you want to back up .env.local before uninstalling?" "y"; then
-            BACKUP_FILE="$HOME/meshcore-capture-config-backup-$(date +%Y%m%d-%H%M%S).env"
-            cp "$INSTALL_DIR/.env.local" "$BACKUP_FILE"
-            print_success "Configuration backed up to: $BACKUP_FILE"
-        fi
-        
-        if ! prompt_yes_no "Remove .env.local configuration file?" "y"; then
-            print_info "Keeping .env.local - you'll need to remove it manually"
-            KEEP_CONFIG=true
+        if prompt_yes_no "Back up your configuration before uninstalling?" "y"; then
+            BACKUP_FILE="$HOME/meshcore-capture-config-backup-$(date +%Y%m%d-%H%M%S)-$(basename "$USER_CONFIG")"
+            # The user file is root-owned (0640), so copy via sudo, then hand the
+            # backup to the invoking user.
+            if sudo cp "$USER_CONFIG" "$BACKUP_FILE"; then
+                sudo chown "$(id -un):$(id -gn)" "$BACKUP_FILE" 2>/dev/null || true
+                print_success "Configuration backed up to: $BACKUP_FILE"
+            else
+                print_error "Backup failed - leaving configuration in place"
+            fi
         fi
     fi
     
-    # Handle Python virtual environment
-    if [ -d "$INSTALL_DIR/venv" ]; then
-        print_header "Python Environment"
-        if prompt_yes_no "Remove Python virtual environment?" "y"; then
-            rm -rf "$INSTALL_DIR/venv"
-            print_success "Virtual environment removed"
-        fi
-    fi
-    
-    # Handle meshcore_py directory
-    if [ -d "$INSTALL_DIR/meshcore_py" ]; then
-        print_header "MeshCore Library"
-        if prompt_yes_no "Remove meshcore_py library?" "y"; then
-            rm -rf "$INSTALL_DIR/meshcore_py"
-            print_success "MeshCore library removed"
-        fi
-    fi
-    
-    # Remove installation directory
+    # Remove installation directory (under /opt, owned by the service user -
+    # needs sudo). This also removes the bundled venv and any libraries.
     print_header "Removing Files"
-    
-    if [ "$KEEP_CONFIG" = true ]; then
-        # Remove everything except .env.local
-        print_info "Removing installation files (keeping .env.local)..."
-        
-        find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name '.env.local' -exec rm -rf {} +
-        
-        print_warning ".env.local kept at: $INSTALL_DIR/.env.local"
-        print_info "To complete removal, manually delete: $INSTALL_DIR"
-    else
-        # Remove everything
-        print_info "Removing installation directory..."
-        rm -rf "$INSTALL_DIR"
-        print_success "Installation directory removed"
-    fi
+
+    print_info "Removing installation directory..."
+    sudo rm -rf "$INSTALL_DIR"
+    print_success "Installation directory removed"
     
     # Clean up any remaining system files
     print_header "System Cleanup"
     
     # Remove any remaining log files
-    if [ -f "/var/log/meshcore-capture.log" ]; then
-        if prompt_yes_no "Remove system log file /var/log/meshcore-capture.log?" "y"; then
-            sudo rm -f "/var/log/meshcore-capture.log" 2>/dev/null || true
-            print_success "System log file removed"
+    for logf in /var/log/meshcore-packet-capture.log /var/log/meshcore-packet-capture-error.log; do
+        if [ -f "$logf" ]; then
+            if prompt_yes_no "Remove system log file $logf?" "y"; then
+                sudo rm -f "$logf" 2>/dev/null || true
+                print_success "Removed $logf"
+            fi
+        fi
+    done
+
+    if [ -d "/etc/meshcore-packet-capture" ]; then
+        if prompt_yes_no "Remove system configuration /etc/meshcore-packet-capture?" "y"; then
+            sudo rm -rf /etc/meshcore-packet-capture
+            print_success "System configuration removed"
         fi
     fi
-    
+
+    if [ -d "/var/lib/meshcore-packet-capture" ]; then
+        if prompt_yes_no "Remove state directory /var/lib/meshcore-packet-capture?" "y"; then
+            sudo rm -rf /var/lib/meshcore-packet-capture
+            print_success "State directory removed"
+        fi
+    fi
+
     # Final message
     print_header "Uninstallation Complete"
-    
-    if [ "$KEEP_CONFIG" = true ]; then
-        echo "MeshCore Packet Capture has been removed (configuration kept)."
-        echo "Configuration file: $INSTALL_DIR/.env.local"
-    else
-        echo "MeshCore Packet Capture has been completely removed."
-    fi
-    
+
+    echo "MeshCore Packet Capture has been removed."
+
     echo ""
     print_success "Uninstallation complete!"
     echo ""
-    print_info "If you want to reinstall, run: curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh | bash"
+    print_info "To reinstall, download the installer first, then run it with sudo:"
+    echo "  tmp=\$(mktemp) && curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh -o \"\$tmp\" && sudo bash \"\$tmp\"; rm -f \"\$tmp\""
 }
 
 # Run main

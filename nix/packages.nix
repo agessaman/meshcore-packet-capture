@@ -5,21 +5,25 @@
       # Note: If meshcore is available in nixpkgs, you can override this
       meshcorePackage = pkgs.python3Packages.buildPythonPackage rec {
         pname = "meshcore";
-        version = "2.1.10";
+        version = "2.2.31";
         format = "pyproject";
         
         src = pkgs.python3Packages.fetchPypi {
           inherit pname version;
-          sha256 = "sha256-mnr5WqH/uKzONI8lcm1GQCSlnhx6WQyqsAr12gsMKEI=";
+          sha256 = "sha256-Z0FkdOY9Kv/y2fPXyH266CaWIWLeHwgC+yqSRLZxog8=";
         };
         
         nativeBuildInputs = with pkgs.python3Packages; [
           hatchling
         ];
         
+        # meshcore 2.2.31's wheel requires these at runtime; nixpkgs' Python deps
+        # check (pythonRuntimeDepsCheck) fails the build if they're not provided.
         propagatedBuildInputs = with pkgs.python3Packages; [
           bleak
           pyserial-asyncio
+          pyserial-asyncio-fast
+          pycryptodome
           pycayennelpp
         ];
         
@@ -32,43 +36,28 @@
         pyserial-asyncio
         pycayennelpp
         pexpect
+        pynacl
       ] ++ [meshcorePackage]);
 
       meshcore-packet-capture = pkgs.stdenv.mkDerivation {
         pname = "meshcore-packet-capture";
-        version = "1.0.0";
+        version = "2.0.0";
         src = ./.;
 
         nativeBuildInputs = [pkgs.makeWrapper];
 
-        buildInputs = [pythonEnv pkgs.nodejs_20];
+        # JWT signing is pure-Python (pynacl, in pythonEnv); no Node.js required.
+        buildInputs = [pythonEnv];
 
         installPhase = ''
           mkdir -p $out/bin
           mkdir -p $out/lib/meshcore-packet-capture
+          cp -r ${../src} $out/lib/meshcore-packet-capture/src
 
-          # Copy Python scripts from unpacked source
-          # The source is unpacked to the current directory
-          cp ${../packet_capture.py} $out/lib/meshcore-packet-capture/packet_capture.py
-          cp ${../enums.py} $out/lib/meshcore-packet-capture/enums.py
-          cp ${../auth_token.py} $out/lib/meshcore-packet-capture/auth_token.py
-          cp ${../ble_pairing_helper.py} $out/lib/meshcore-packet-capture/ble_pairing_helper.py
-          cp ${../ble_scan_helper.py} $out/lib/meshcore-packet-capture/ble_scan_helper.py
-          cp ${../scan_meshcore_network.py} $out/lib/meshcore-packet-capture/scan_meshcore_network.py
-          cp ${../debug_ble_connection.py} $out/lib/meshcore-packet-capture/debug_ble_connection.py
-          cp ${../migrate_config.py} $out/lib/meshcore-packet-capture/migrate_config.py
-
-          # Create wrapper script for the main application
           makeWrapper ${pythonEnv}/bin/python $out/bin/meshcore-packet-capture \
-            --set PATH "${pkgs.lib.makeBinPath [pkgs.nodejs_20 pkgs.nodePackages.npm]}:$PATH" \
-            --add-flags "$out/lib/meshcore-packet-capture/packet_capture.py" \
-            --prefix PYTHONPATH : "$out/lib/meshcore-packet-capture:${pythonEnv}/${pythonEnv.sitePackages}"
-
-          # Create a helper script for meshcore-decoder
-          # This will use npx to run it, which handles installation automatically
-          makeWrapper ${pkgs.nodejs_20}/bin/npx $out/bin/meshcore-decoder \
-            --add-flags "-y" \
-            --add-flags "@michaelhart/meshcore-decoder"
+            --prefix PYTHONPATH : "$out/lib/meshcore-packet-capture/src:${pythonEnv}/${pythonEnv.sitePackages}" \
+            --add-flags "-m" \
+            --add-flags "meshcore_packet_capture"
         '';
 
         meta = {

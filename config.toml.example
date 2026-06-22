@@ -1,0 +1,93 @@
+# =============================================================================
+# MeshCore Packet Capture - Configuration Reference
+# =============================================================================
+# Load order (default):
+#   1. /etc/meshcore-packet-capture/config.toml
+#   2. /etc/meshcore-packet-capture/config.d/*.toml (sorted)
+#
+# Put local overrides in config.d/99-user.toml. Presets install as 10-*.toml.
+# Use --config PATH (repeatable) to load only those files, in order.
+# =============================================================================
+
+[general]
+iata = "LOC"
+log_level = "INFO"
+
+[topics]
+status = "meshcore/{IATA}/{PUBLIC_KEY}/status"
+packets = "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+# raw = "meshcore/{IATA}/{PUBLIC_KEY}/raw"
+
+[serial]
+ports = ["/dev/ttyUSB0"]
+baud_rate = 115200
+timeout = 2
+
+[update]
+repo = "agessaman/meshcore-packet-capture"
+branch = "main"
+
+# Connection and runtime options (packet capture specific)
+[capture]
+connection_type = "ble"
+timeout = 30
+tcp_host = "localhost"
+tcp_port = 5000
+# ble_address = "XX:XX:XX:XX:XX:XX"
+# ble_device_name = "MeshCore Device"
+advert_interval_hours = 47
+# State directory for advert_state.json (installer creates and chowns this path)
+data_dir = "/var/lib/meshcore-packet-capture/data"
+max_connection_retries = 5
+connection_retry_delay = 5
+health_check_interval = 30
+max_mqtt_retries = 5
+mqtt_retry_delay = 5
+jwt_renewal_interval = 3600
+jwt_renewal_threshold = 300
+rf_data_timeout = 15.0
+# Additional runtime controls (optional)
+# connection_retry_delay_max = 300
+# connection_retry_backoff_multiplier = 2.0
+# connection_retry_jitter = true
+# drain_messages = true
+# tcp_keepalive_enabled = true
+# tcp_keepalive_idle = 10
+# tcp_keepalive_interval = 5
+# tcp_keepalive_count = 3
+# binary_interface_enabled = false
+# binary_interface_host = "0.0.0.0"
+# binary_interface_port = 5001
+# owner_public_key = ""
+# owner_email = ""
+
+# [[broker]] blocks merge by name across files. See presets/letsmesh.toml.
+
+# [[broker]]
+# name = "example"
+# enabled = false
+# server = "mqtt.example.com"
+# port = 1883
+# transport = "tcp"
+# keepalive = 60
+# qos = 0
+# retain = true
+#
+# [broker.tls]
+# enabled = false
+# verify = true
+#
+# [broker.auth]
+# method = "password"
+# username = ""
+# password = ""
+# topic_token = "" # Optional: used for {TOKEN} placeholder in broker.topics templates
+#
+# For method = "token" brokers:
+# audience = "mqtt.example.com"
+# token_ttl = 3600  # Optional: JWT lifetime in seconds (default 86400 = 24h)
+#
+# Optional per-broker topic overrides (take precedence over the global [topics];
+# unset keys fall back to [topics]). Keys: status, packets, decoded, debug, raw.
+# [broker.topics]
+# packets = "custom/{IATA}/{PUBLIC_KEY}/packets"

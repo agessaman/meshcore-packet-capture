@@ -23,9 +23,49 @@ Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt)
 
 ## Quick Start
 
-### Install
+### Install the app (recommended)
+
+Install the CLI from PyPI with [pipx](https://pipx.pypa.io) (keeps it in its own isolated environment):
+
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh)
+pipx install meshcore-packet-capture
+meshcore-packet-capture --help
+```
+
+This gives you the `meshcore-packet-capture` command for manual runs and development.
+It does **not** create a background service — see below to run it as a managed
+systemd/launchd service.
+
+### Install as a managed service (systemd / launchd)
+
+For a turnkey install that creates a service account, installs a systemd (Linux) or
+launchd (macOS) unit, and writes config under `/etc`, use the bootstrap installer.
+It installs system-wide (under `/opt` and `/etc`) and so must run as root:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh)"
+```
+
+> **Note:** use the bootstrap installer when you want a systemwide managed
+> service. The PyPI/pipx install is for CLI/manual runs and does not create
+> service files or write system configuration.
+>
+> **macOS + BLE:** because macOS grants Bluetooth permission per-user (not to
+> root daemons), a BLE install is set up as a per-user LaunchAgent that runs in
+> your login session. Serial/TCP installs use a system LaunchDaemon.
+
+### Windows (manual / development only)
+
+Windows has no systemd/launchd integration, so `install.ps1` is a manual/dev-only
+path: it installs files and a venv for a manual run (no auto-start service) and
+writes configuration as a legacy `.env.local` file rather than the TOML
+`config.d` model used on Linux/macOS. `.env.local` is still honored at runtime
+(TOML config overrides it where present), so this is intentional. BLE support on
+Windows is limited and currently untested — serial/TCP are the expected
+transports there.
+
+```powershell
+.\install.ps1
 ```
 
 ### Uninstall
@@ -40,7 +80,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 - **Packet Analysis**: Parses packet headers, routes, payloads, and metadata
 - **RF Data**: Captures signal quality metrics (SNR, RSSI)
 - **Status Telemetry Stats**:  MQTT status messages optionally contain battery/uptime/radio metrics
-- **Multi-Broker MQTT**: Supports up to 4 MQTT brokers simultaneously
+- **Multi-Broker MQTT**: Supports any number of sequentially numbered MQTT brokers
 - **Auth Token Authentication**: JWT-based authentication using device private key
 - **TLS/WebSocket Support**: Secure connections with TLS/SSL and WebSocket transport
 - **Topic Templates**: Per-broker topic templates
@@ -48,19 +88,28 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 
 ## Requirements
 
-- Python 3.7+
-- `meshcore` package (official MeshCore Python library) version 2.2.2 or later (required for stats support)
+- Python 3.11+ (installer and recommended runtime)
+- `meshcore` package (official MeshCore Python library) version 2.2.31 or later (required for multi-byte path support and stats)
 - `paho-mqtt` package (for MQTT functionality)
 
 **Note**: For Docker deployment, this application is best deployed on Linux systems due to Bluetooth Low Energy (BLE) and serial device access requirements. While Docker containers can run on macOS and Windows, BLE functionality may be limited or require additional configuration.
 
 ## Installation
 
-### Local Installation
+### From PyPI (CLI/manual use)
 
 ```bash
-pip install meshcore paho-mqtt
+# Isolated CLI install (recommended)
+pipx install meshcore-packet-capture
+
+# …or into the current environment
+pip install meshcore-packet-capture
 ```
+
+This installs the `meshcore-packet-capture` command and all dependencies. Use this for
+manual runs, development, or when you manage the process yourself. To run it as a
+managed background service, use the bootstrap installer (see [Quick Start](#quick-start)
+and [Managed-service installer](#managed-service-installer-linux-and-macos) below).
 
 ### Docker Installation
 
@@ -84,19 +133,71 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 
 ## Configuration
 
-The script uses environment files for configuration.
+**TOML under `/etc/meshcore-packet-capture/` is the primary configuration source**, matching [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt). Configuration is resolved with this precedence (highest first):
 
-### Environment Files
+1. **Process environment** — `PACKETCAPTURE_*` variables already set in the environment (e.g. from a systemd unit, Docker `-e`, or your shell) always win.
+2. **TOML**: `/etc/meshcore-packet-capture/config.toml` plus every `*.toml` in `/etc/meshcore-packet-capture/config.d/` (sorted). Broker entries use the same `[[broker]]` shape as meshcoretomqtt. See `config.toml.example` and bundled `presets/letsmesh.toml` (LetsMesh Packet Analyzer defaults). With **`--config PATH`** (repeatable) only those files are merged, in order, and the automatic `/etc` scan is skipped.
+3. **Legacy `.env` / `.env.local`** (see below) — a development/manual-install convenience, loaded from the working directory. These are overridden by TOML, so they only take effect for keys the TOML config does not set.
 
-The script loads configuration from:
+Values are applied as `PACKETCAPTURE_*` environment variables. See `config.toml.example` for every TOML key, or `.env` for the equivalent flat variable names.
+
+### Managed-service installer (Linux and macOS)
+
+Use the bootstrap installer when you want a systemwide managed background service
+rather than just the CLI: it installs under `/opt/meshcore-packet-capture`, writes
+configuration under `/etc/meshcore-packet-capture`, creates a Linux service
+account, and installs a systemd (Linux) or launchd (macOS) unit. During setup it
+also configures the Companion connection (BLE, serial, or TCP) and offers bundled
+broker presets (default selection: LetsMesh).
+
+From a repo checkout (requires root):
+
+```bash
+export LOCAL_INSTALL=/path/to/meshcore-packet-capture
+sudo bash install.sh
+```
+
+Or bootstrap via curl (downloads the branch and runs `python3 -m installer install`).
+
+#### Upgrading legacy service installs
+
+Older installers placed the app and `.env.local` configuration under
+`~/.meshcore-packet-capture` and created a `meshcore-capture.service` unit. Run the
+managed-service installer to upgrade that layout. It detects the legacy directory,
+converts `.env` / `.env.local` into
+`/etc/meshcore-packet-capture/config.d/99-user.toml`, stops and removes the old
+service unit after the TOML file is written, then continues with the new
+systemwide `/opt` install.
+
+The old `~/.meshcore-packet-capture` directory is left in place for rollback or
+manual cleanup. Standalone `python3 -m installer migrate` only migrates
+configuration and service units; use the full installer when you want the new
+application files and service installed too.
+
+### Legacy environment files (local development)
+
+For development and manual installs, two flat key/value files are still read from the
+working directory (repo root, `/opt/meshcore-packet-capture`, or `/app` in Docker):
+
 1. `.env` - Default configuration (committed to repository)
-2. `.env.local` - Local overrides (not committed, for your specific setup)
+2. `.env.local` - Local overrides (not committed, for your specific setup; `.env.local` wins over `.env`)
 
-All environment variables are prefixed with `PACKETCAPTURE_`. See the `.env` file for all available options.
+All logical keys use the `PACKETCAPTURE_` prefix. These files are **legacy**: the TOML
+config under `/etc/meshcore-packet-capture/` takes precedence over them. For service
+installs, configure via TOML (`config.d/99-user.toml`) instead.
 
 ### Configuration Variables
 
-Configuration is handled via environment variables and `.env` files. The installer will create a `.env.local` file with your settings.
+For systemd installs, prefer editing `/etc/meshcore-packet-capture/config.d/99-user.toml`. Legacy `~/.meshcore-packet-capture` installs can be migrated with `sudo python3 -m installer migrate` from a checkout.
+
+### Unit tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests live under `tests/`. Legacy experiments belong in `old/` (gitignored). Optional developer scripts are in `devtools/`.
 
 
 ### Environment Variables
@@ -125,10 +226,11 @@ Configuration is handled via environment variables and `.env` files. The install
 When enabled, status messages published to MQTT include a `stats` object with battery, uptime, queue depth, and radio runtime metrics refreshed at the configured cadence.
 
 #### MQTT Settings
-The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4, MQTT5, MQTT6). Each broker can be configured independently:
+Brokers are discovered sequentially starting at `MQTT1` and continue until `PACKETCAPTURE_MQTT<n>_ENABLED` is no longer defined — there is no fixed upper limit. (Via TOML, add as many `[[broker]]` blocks as you need; they are flattened to these `MQTT<n>_*` variables.) Each broker can be configured independently:
 
 **Broker 1 (Primary):**
 - `PACKETCAPTURE_MQTT1_ENABLED`: Enable/disable MQTT broker 1
+- `PACKETCAPTURE_MQTT1_NAME`: Optional human-readable broker label for logs (TOML `[[broker]]` `name` is exported automatically; when unset, logs use `SERVER`)
 - `PACKETCAPTURE_MQTT1_SERVER`: MQTT broker address
 - `PACKETCAPTURE_MQTT1_PORT`: MQTT broker port
 - `PACKETCAPTURE_MQTT1_USERNAME`/`PACKETCAPTURE_MQTT1_PASSWORD`: Authentication credentials
@@ -142,7 +244,7 @@ The script supports up to 4 MQTT brokers (MQTT1, MQTT2, MQTT3, MQTT4, MQTT5, MQT
 - `PACKETCAPTURE_MQTT1_RETAIN`: Retain messages
 - `PACKETCAPTURE_MQTT1_KEEPALIVE`: Keep-alive interval
 
-**Brokers 2-6:** Same pattern with `MQTT2_`, `MQTT3_`, `MQTT4_`, `MQTT5_`, `MQTT6_` prefixes
+**Additional brokers:** Use the same pattern with `MQTT2_`, `MQTT3_`, and higher sequential prefixes as needed
 
 **Global MQTT Settings:**
 - `PACKETCAPTURE_MAX_MQTT_RETRIES`: Maximum MQTT connection retry attempts (0 = infinite)
@@ -164,6 +266,30 @@ Topics support template variables:
 Examples:
 - `meshcore/{IATA}/packets` becomes `meshcore/SEA/packets`
 - `meshcore/{IATA_lower}/packets` becomes `meshcore/sea/packets`
+
+#### Per-Broker Topic Overrides
+Topics can be set globally (under `[topics]`) or overridden per broker. A broker's own
+topic takes precedence over the global value; brokers without an override fall back to
+the global topic. The same template variables apply.
+
+In TOML, set them under the broker's `[broker.topics]` table:
+```toml
+[[broker]]
+name = "analyzer"
+enabled = true
+server = "mqtt.example.com"
+
+[broker.topics]
+# This broker's packets go to a custom topic; status/raw fall back to [topics].
+packets = "custom/{IATA}/{PUBLIC_KEY}/packets"
+
+[topics]
+packets = "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+status  = "meshcore/{IATA}/{PUBLIC_KEY}/status"
+```
+These flatten to `PACKETCAPTURE_MQTT<n>_TOPIC_<NAME>` (per broker) and
+`PACKETCAPTURE_TOPIC_<NAME>` (global fallback) — supported names: `STATUS`,
+`PACKETS`, `DECODED`, `DEBUG`, `RAW`.
 
 #### Authentication Methods
 
@@ -209,7 +335,7 @@ PACKETCAPTURE_MAX_MQTT_RETRIES=0
 ```
 
 #### Advert Settings
-- `PACKETCAPTURE_ADVERT_INTERVAL_HOURS`: Send flood adverts at this interval (0 = disabled, default = 11 hours)
+- `PACKETCAPTURE_ADVERT_INTERVAL_HOURS`: Send flood adverts at this interval (0 = disabled, default = 47 hours)
 
 #### Packet Type Filtering
 - `PACKETCAPTURE_UPLOAD_PACKET_TYPES`: Comma-separated list of packet type numbers to upload to MQTT (default: upload all types)
@@ -251,20 +377,21 @@ PACKETCAPTURE_UPLOAD_PACKET_TYPES=0,1,2
 ### Local Usage
 
 ```bash
-# Basic usage
+# Basic usage (after: pip install -e .  or  PYTHONPATH=src)
+python -m meshcore_packet_capture
+
+# From repo root without install:
 python packet_capture.py
 
 # Save output to file
-python packet_capture.py --output packets.json
+python -m meshcore_packet_capture --output packets.json
 
 # Disable MQTT publishing
-python packet_capture.py --no-mqtt
+python -m meshcore_packet_capture --no-mqtt
 
-# Enable verbose output (shows JSON packet data)
-python packet_capture.py --verbose
-
-# Enable debug output (shows all detailed debugging info)
-python packet_capture.py --debug
+# Verbose / debug
+python -m meshcore_packet_capture --verbose
+python -m meshcore_packet_capture --debug
 ```
 
 ## Docker Deployment
@@ -284,10 +411,13 @@ The project includes Docker support for deployment.
    cd meshcore-packet-capture
    ```
 
-2. **Create configuration** (optional):
+2. **Configure** (optional): edit the `environment:` block in `docker-compose.yml`
+   (the recommended approach — `PACKETCAPTURE_*` variables), or bind-mount a TOML
+   config directory at `/etc/meshcore-packet-capture` (uncomment the
+   `./meshcore-etc:/etc/meshcore-packet-capture:ro` volume). A legacy `.env.local`
+   bind-mount is also supported — copy the committed `.env` as a starting point:
    ```bash
-   # Create .env.local file with your settings
-   cp .env.example .env.local
+   cp .env .env.local
    # Edit .env.local with your configuration
    ```
 
@@ -337,7 +467,10 @@ docker run \
 
 ### Configuration in Docker
 
-Configuration can be provided via environment variables or volume-mounted `.env.local` files.
+Configuration can be provided three ways, in precedence order: `PACKETCAPTURE_*`
+environment variables (`-e` / the compose `environment:` block) win, then a
+volume-mounted TOML config at `/etc/meshcore-packet-capture` (recommended for
+non-trivial setups), then a legacy volume-mounted `.env.local`.
 
 ### Platform Considerations
 
@@ -403,9 +536,17 @@ Captured packets are output in JSON format with the following structure:
 
 ## MQTT Topics
 
-- `meshcore/status`: Device online/offline status
-- `meshcore/packets`: Full packet data
-- `meshcore/raw`: Raw packet data (required for map.w0z.is)
+Default topic templates (from the shipped `config.toml`):
+
+- `meshcore/{IATA}/{PUBLIC_KEY}/status`: Device online/offline status (plus optional stats)
+- `meshcore/{IATA}/{PUBLIC_KEY}/packets`: Full packet data
+- `meshcore/{IATA}/{PUBLIC_KEY}/raw`: Raw packet data (commented out by default; enable it for e.g. map.w0z.is)
+
+These are configurable globally or per broker — see [Topic Templates](#topic-templates)
+and [Per-Broker Topic Overrides](#per-broker-topic-overrides). The classic flat form
+(`meshcore/status`, `meshcore/packets`, `meshcore/raw`) still works if you set the
+topics explicitly.
+
 ## Troubleshooting
 
 ### Connection Issues
@@ -432,7 +573,7 @@ Captured packets are output in JSON format with the following structure:
 
 Enable debug mode for detailed logging:
 ```bash
-python packet_capture.py --debug
+python -m meshcore_packet_capture --debug
 ```
 
 This will show:
@@ -441,15 +582,18 @@ This will show:
 - Detailed packet parsing information
 - MQTT connection status
 
-## Files
+## Layout
 
-- `packet_capture.py`: Main capture script
-- `enums.py`: Packet type and flag definitions
-- `install.sh`: Installation script
-- `uninstall.sh`: Uninstallation script
-- `scan_meshcore_network.py`: Network scanner for MeshCore nodes
-- `.env`: Default configuration template
-- `.env.local`: Local configuration (created by installer)
+- `src/meshcore_packet_capture/`: Installable Python package (run with `python -m meshcore_packet_capture`)
+- `packet_capture.py`: Repo-root launcher (adds `src` to `PYTHONPATH` for quick runs)
+- `pyproject.toml`: Package metadata and dependencies
+- `packaging/`: systemd and launchd unit templates
+- `devtools/`: Optional BLE/network debugging helpers (not installed to `/opt` by default)
+- `config.toml.example`: Annotated reference for the TOML config under `/etc`
+- `presets/`: Bundled `[[broker]]` presets installed to `config.d/10-*.toml`
+- `install.sh` / `install.ps1` / `uninstall.sh`: Installation scripts
+- `.env`: Legacy default configuration template (TOML takes precedence)
+- `.env.local`: Legacy local configuration (for dev or Docker bind-mount)
 
 ## Contributing
 

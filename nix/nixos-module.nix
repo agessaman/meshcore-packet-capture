@@ -51,6 +51,21 @@
           default = null;
           description = "Token audience for auth token";
         };
+        tokenTtl = lib.mkOption {
+          type = lib.types.nullOr lib.types.int;
+          default = null;
+          description = "JWT token lifetime in seconds";
+        };
+        tokenOwner = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Per-broker owner public key for JWT tokens (64 hex characters)";
+        };
+        tokenEmail = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          description = "Per-broker owner email for JWT tokens";
+        };
         clientIdPrefix = lib.mkOption {
           type = lib.types.nullOr lib.types.str;
           default = null;
@@ -115,6 +130,9 @@
           ++ ["PACKETCAPTURE_MQTT${toString num}_TLS_VERIFY=${if broker.tlsVerify then "true" else "false"}"]
           ++ ["PACKETCAPTURE_MQTT${toString num}_USE_AUTH_TOKEN=${if broker.useAuthToken then "true" else "false"}"]
           ++ lib.optional (broker.tokenAudience != null) "PACKETCAPTURE_MQTT${toString num}_TOKEN_AUDIENCE=${broker.tokenAudience}"
+          ++ lib.optional (broker.tokenTtl != null) "PACKETCAPTURE_MQTT${toString num}_TOKEN_TTL=${toString broker.tokenTtl}"
+          ++ lib.optional (broker.tokenOwner != null) "PACKETCAPTURE_MQTT${toString num}_TOKEN_OWNER=${broker.tokenOwner}"
+          ++ lib.optional (broker.tokenEmail != null) "PACKETCAPTURE_MQTT${toString num}_TOKEN_EMAIL=${broker.tokenEmail}"
           ++ lib.optional (broker.clientIdPrefix != null) "PACKETCAPTURE_MQTT${toString num}_CLIENT_ID_PREFIX=${broker.clientIdPrefix}"
           ++ ["PACKETCAPTURE_MQTT${toString num}_QOS=${toString broker.qos}"]
           ++ ["PACKETCAPTURE_MQTT${toString num}_RETAIN=${if broker.retain then "true" else "false"}"]
@@ -146,11 +164,15 @@
       ++ lib.optional (cfg.healthCheckInterval != null) "PACKETCAPTURE_HEALTH_CHECK_INTERVAL=${toString cfg.healthCheckInterval}";
 
       otherEnvVars = [
+        "PACKETCAPTURE_DATA_DIR=${cfg.dataDir}"
         "PACKETCAPTURE_LOG_LEVEL=${cfg.logLevel}"
       ] ++ lib.optional (cfg.iata != null) "PACKETCAPTURE_IATA=${cfg.iata}"
       ++ lib.optional (cfg.origin != null) "PACKETCAPTURE_ORIGIN=${cfg.origin}"
       ++ lib.optional (cfg.maxMqttRetries != null) "PACKETCAPTURE_MAX_MQTT_RETRIES=${toString cfg.maxMqttRetries}"
       ++ lib.optional (cfg.mqttRetryDelay != null) "PACKETCAPTURE_MQTT_RETRY_DELAY=${toString cfg.mqttRetryDelay}"
+      ++ lib.optional (cfg.statsInStatusEnabled != null) "PACKETCAPTURE_STATS_IN_STATUS_ENABLED=${if cfg.statsInStatusEnabled then "true" else "false"}"
+      ++ lib.optional (cfg.statsRefreshInterval != null) "PACKETCAPTURE_STATS_REFRESH_INTERVAL=${toString cfg.statsRefreshInterval}"
+      ++ lib.optional (cfg.statsRetryLimit != null) "PACKETCAPTURE_STATS_RETRY_LIMIT=${toString cfg.statsRetryLimit}"
       ++ lib.optional (cfg.exitOnReconnectFail != null) "PACKETCAPTURE_EXIT_ON_RECONNECT_FAIL=${if cfg.exitOnReconnectFail then "true" else "false"}"
       ++ lib.optional (cfg.privateKey != null) "PACKETCAPTURE_PRIVATE_KEY=${cfg.privateKey}"
       ++ lib.optional (cfg.privateKeyFile != null) "PACKETCAPTURE_PRIVATE_KEY_FILE=${cfg.privateKeyFile}"
@@ -336,6 +358,24 @@
         type = lib.types.nullOr lib.types.int;
         default = 5;
         description = "Delay between MQTT reconnection attempts (seconds)";
+      };
+
+      statsInStatusEnabled = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = true;
+        description = "Include device stats in online MQTT status messages";
+      };
+
+      statsRefreshInterval = lib.mkOption {
+        type = lib.types.nullOr lib.types.int;
+        default = 300;
+        description = "Seconds between stats refreshes/status republishes";
+      };
+
+      statsRetryLimit = lib.mkOption {
+        type = lib.types.nullOr lib.types.int;
+        default = 2;
+        description = "Retry limit for non-critical stats queries";
       };
 
       exitOnReconnectFail = lib.mkOption {

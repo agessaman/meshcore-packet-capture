@@ -1,0 +1,35 @@
+[[broker]]
+name = "dutchmeshcore-1"
+enabled = true
+server = "collector1.dutchmeshcore.nl"
+port = 443
+transport = "websockets"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "collector1.dutchmeshcore.nl"
+
+[[broker]]
+name = "dutchmeshcore-2"
+enabled = true
+server = "collector2.dutchmeshcore.nl"
+port = 443
+transport = "websockets"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "collector2.dutchmeshcore.nl"

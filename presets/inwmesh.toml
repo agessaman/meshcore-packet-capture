@@ -1,0 +1,18 @@
+[[broker]]
+name = "inwmesh"
+enabled = true
+server = "scope.inwmesh.org"
+port = 8883
+transport = "tcp"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "password"
+username = "REPLACE_WITH_INWMESH_USERNAME"
+password = "REPLACE_WITH_INWMESH_PASSWORD"

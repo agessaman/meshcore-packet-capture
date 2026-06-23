@@ -1,7 +1,7 @@
 [[broker]]
-name = "analyzer-us"
+name = "nz-analyzer"
 enabled = true
-server = "mqtt-us-v1.letsmesh.net"
+server = "meshcore-mqtt-1.baird.io"
 port = 443
 transport = "websockets"
 keepalive = 55
@@ -14,4 +14,4 @@ verify = true
 
 [broker.auth]
 method = "token"
-audience = "mqtt-us-v1.letsmesh.net"
+audience = "meshcore-mqtt-1.baird.io"

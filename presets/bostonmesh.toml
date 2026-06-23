@@ -1,7 +1,7 @@
 [[broker]]
-name = "analyzer-eu"
+name = "bostonmesh"
 enabled = true
-server = "mqtt-eu-v1.letsmesh.net"
+server = "mqttmc01.bostonme.sh"
 port = 443
 transport = "websockets"
 keepalive = 55
@@ -14,4 +14,4 @@ verify = true
 
 [broker.auth]
 method = "token"
-audience = "mqtt-eu-v1.letsmesh.net"
+audience = "mqttmc01.bostonme.sh"

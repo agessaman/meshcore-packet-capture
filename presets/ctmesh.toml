@@ -1,0 +1,14 @@
+[[broker]]
+name = "ctmesh"
+enabled = true
+server = "mqtt.ctmesh.org"
+port = 1883
+transport = "tcp"
+keepalive = 60
+qos = 0
+retain = true
+
+[broker.auth]
+method = "password"
+username = "meshdev"
+password = "large4cats"

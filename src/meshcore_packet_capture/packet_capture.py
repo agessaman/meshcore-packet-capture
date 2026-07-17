@@ -1300,8 +1300,8 @@ class PacketCapture:
         if global_topic_raw is not None:
             return self.resolve_topic_template(global_topic_raw, broker_num)
 
-        # For RAW/DIRECT/CHANNEL/COMMAND topics, don't provide a default - only publish if explicitly configured
-        if topic_type_upper in {'RAW', 'DIRECT', 'CHANNEL', 'COMMAND'}:
+        # For RAW/DIRECT/CHANNEL/COMMAND/DECODED topics, don't provide a default - only publish if explicitly configured
+        if topic_type_upper in {'RAW', 'DIRECT', 'CHANNEL', 'COMMAND', 'DECODED'}:
             if self.debug:
                 self.logger.debug(
                     f"No {topic_type_upper} topic configured for broker {broker_num}, skipping"

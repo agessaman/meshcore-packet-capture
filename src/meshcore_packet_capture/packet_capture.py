@@ -50,6 +50,9 @@ from .neighbors import (
     discover_neighbors,
     fetch_self_scopes,
 )
+from .direct_capture import direct_topic_enabled_on_any_broker, resolve_direct_topic
+from .channel_capture import channel_topic_enabled_on_any_broker, resolve_channel_topic
+from .decoded_capture import handle_decoded_message_event as handle_decoded_message_event_impl
 
 # Import MQTT client
 try:
@@ -428,6 +431,7 @@ class PacketCapture:
         # MQTT connection
         self.mqtt_clients = []  # List of MQTT client info dictionaries
         self.mqtt_connected = False
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         self.should_exit = False  # Flag to exit when reconnection attempts fail
         
         # Stats/status publishing
@@ -641,9 +645,14 @@ class PacketCapture:
         # Test the logging format
         self.logger.info(f"Logging initialized with level: {log_level_str}")
     
-    def get_env(self, key, fallback=''):
-        """Get environment variable with fallback (all vars are PACKETCAPTURE_ prefixed)"""
+    def get_env(self, key, fallback='', raw=False):
+        """Get environment variable with fallback (all vars are PACKETCAPTURE_ prefixed).
+
+        Set raw=True to return None when the variable is unset.
+        """
         full_key = f"PACKETCAPTURE_{key}"
+        if raw:
+            return os.getenv(full_key)
         return os.getenv(full_key, fallback)
     
     def get_env_bool(self, key, fallback=False):
@@ -1256,7 +1265,7 @@ class PacketCapture:
         # [topics] neighbors template would disable an unrelated broker outright,
         # which also contradicts neighbors_broker_nums() merely skipping
         # unroutable brokers.
-        topic_types = ['STATUS', 'PACKETS', 'DECODED', 'DEBUG', 'RAW']
+        topic_types = ['STATUS', 'PACKETS', 'DECODED', 'DIRECT', 'CHANNEL', 'DEBUG', 'RAW', 'COMMAND']
         if self._broker_wants_neighbors(broker_num):
             topic_types = topic_types + ['NEIGHBORS']
         for topic_type in topic_types:
@@ -1277,21 +1286,26 @@ class PacketCapture:
         """Get topic with template resolution, checking broker-specific override first"""
         topic_type_upper = topic_type.upper()
         
-        # Check broker-specific topic override
+        # Check broker-specific topic override (use raw mode to detect explicit presence)
         if broker_num:
-            broker_topic = self.get_env(f'MQTT{broker_num}_TOPIC_{topic_type_upper}', '')
-            if broker_topic:
-                return self.resolve_topic_template(broker_topic, broker_num)
-        
-        # Fall back to global topic
-        global_topic = self.get_env(f'TOPIC_{topic_type_upper}', '')
-        if global_topic:
-            return self.resolve_topic_template(global_topic, broker_num)
-        
-        # For RAW topic, don't provide a default - only publish if explicitly configured
-        if topic_type_upper == 'RAW':
+            broker_topic_raw = self.get_env(
+                f'MQTT{broker_num}_TOPIC_{topic_type_upper}',
+                raw=True,
+            )
+            if broker_topic_raw is not None:
+                return self.resolve_topic_template(broker_topic_raw, broker_num)
+
+        # Fall back to global topic (raw mode)
+        global_topic_raw = self.get_env(f'TOPIC_{topic_type_upper}', raw=True)
+        if global_topic_raw is not None:
+            return self.resolve_topic_template(global_topic_raw, broker_num)
+
+        # For RAW/DIRECT/CHANNEL/COMMAND topics, don't provide a default - only publish if explicitly configured
+        if topic_type_upper in {'RAW', 'DIRECT', 'CHANNEL', 'COMMAND'}:
             if self.debug:
-                self.logger.debug(f"No RAW topic configured for broker {broker_num}, skipping RAW publish")
+                self.logger.debug(
+                    f"No {topic_type_upper} topic configured for broker {broker_num}, skipping"
+                )
             return None
 
         # NEIGHBORS has no classic flat default: the firmware only routes it on
@@ -3720,7 +3734,20 @@ class PacketCapture:
             publish_metrics["succeeded"] = packet_metrics["succeeded"] + raw_metrics["succeeded"]
 
         return publish_metrics
-    
+
+    async def handle_decoded_message_event(self, event):
+        """Handle decoded MeshCore message events and publish message content."""
+        await handle_decoded_message_event_impl(self, event)
+
+    def _subscribe_event_if_available(self, event_name: str, handler) -> bool:
+        """Subscribe to an EventType by name when available in the current SDK."""
+        event_type = getattr(EventType, event_name, None)
+        if event_type is None:
+            self.logger.debug(f"EventType.{event_name} not available in current meshcore SDK")
+            return False
+        self.meshcore.subscribe(event_type, handler)
+        return True
+
     async def setup_disconnect_handler(self):
         """Set up handler for disconnect events from meshcore"""
         async def on_disconnect(event):
@@ -3747,8 +3774,8 @@ class PacketCapture:
             self.connected = False
             self.logger.info("Connection status updated - connection monitor will handle reconnection")
         
-        self.meshcore.subscribe(EventType.DISCONNECTED, on_disconnect)
-        self.logger.debug("Disconnect event handler registered")
+        if self._subscribe_event_if_available('DISCONNECTED', on_disconnect):
+            self.logger.debug("Disconnect event handler registered")
 
     async def setup_event_handlers(self):
         """Setup event handlers for packet capture"""
@@ -3775,11 +3802,25 @@ class PacketCapture:
                 # Log the status data to see what's available
                 if hasattr(event, 'payload') and event.payload:
                     self.logger.debug(f"Status data: {event.payload}")
+
+        async def on_contact_message(event):
+            if self.debug:
+                self.logger.debug(f"CONTACT_MSG_RECV event received: {event}")
+            await self.handle_decoded_message_event(event)
+
+        async def on_channel_message(event):
+            if self.debug:
+                self.logger.debug(f"CHANNEL_MSG_RECV event received: {event}")
+            await self.handle_decoded_message_event(event)
         
         # Subscribe to events
-        self.meshcore.subscribe(EventType.RX_LOG_DATA, on_rf_data)
-        self.meshcore.subscribe(EventType.RAW_DATA, on_raw_data)
-        self.meshcore.subscribe(EventType.STATUS_RESPONSE, on_status_response)
+        self._subscribe_event_if_available('RX_LOG_DATA', on_rf_data)
+        self._subscribe_event_if_available('RAW_DATA', on_raw_data)
+        self._subscribe_event_if_available('STATUS_RESPONSE', on_status_response)
+        if direct_topic_enabled_on_any_broker(self):
+            self._subscribe_event_if_available('CONTACT_MSG_RECV', on_contact_message)
+        if channel_topic_enabled_on_any_broker(self):
+            self._subscribe_event_if_available('CHANNEL_MSG_RECV', on_channel_message)
         
         # Setup disconnect handler
         await self.setup_disconnect_handler()
@@ -3792,6 +3833,7 @@ class PacketCapture:
     async def start(self):
         """Start packet capture"""
         self.logger.info("Starting MeshCore Packet Capture...")
+        self._event_loop = asyncio.get_running_loop()
         
         # Connect to MeshCore node
         if not await self.connect():

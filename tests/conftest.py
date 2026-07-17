@@ -47,3 +47,10 @@ def isolate_packetcapture_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if key.startswith("PACKETCAPTURE_") or key == "MESHCORE_PACKETCAPTURE_ENV_DIR":
             monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture
+def capture():
+    from meshcore_packet_capture.packet_capture import PacketCapture
+
+    return PacketCapture(enable_mqtt=False)

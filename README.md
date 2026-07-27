@@ -304,7 +304,7 @@ status  = "meshcore/{IATA}/{PUBLIC_KEY}/status"
 ```
 These flatten to `PACKETCAPTURE_MQTT<n>_TOPIC_<NAME>` (per broker) and
 `PACKETCAPTURE_TOPIC_<NAME>` (global fallback) — supported names: `STATUS`,
-`PACKETS`, `DECODED`, `DEBUG`, `RAW`.
+`PACKETS`, `DECODED`, `DEBUG`, `RAW`, `NEIGHBORS`.
 
 #### Authentication Methods
 
@@ -625,11 +625,95 @@ Default topic templates (from the shipped `config.toml`):
 - `meshcore/{IATA}/{PUBLIC_KEY}/status`: Device online/offline status (plus optional stats)
 - `meshcore/{IATA}/{PUBLIC_KEY}/packets`: Full packet data
 - `meshcore/{IATA}/{PUBLIC_KEY}/raw`: Raw packet data (commented out by default; enable it for e.g. map.w0z.is)
+- `meshcore/{IATA}/{PUBLIC_KEY}/neighbors`: Periodic neighbor snapshot (off by default; see [Neighbors Publishing](#neighbors-publishing))
 
 These are configurable globally or per broker — see [Topic Templates](#topic-templates)
 and [Per-Broker Topic Overrides](#per-broker-topic-overrides). The classic flat form
 (`meshcore/status`, `meshcore/packets`, `meshcore/raw`) still works if you set the
 topics explicitly.
+
+## Neighbors Publishing
+
+A port of the observer firmware's neighbors feature. On a long interval the tool asks
+which repeaters it can hear directly, then asks each one for its region scopes, and
+publishes the result to the `neighbors` topic. **Off by default.**
+
+Enable it per broker, since not every broker accepts this topic:
+
+```toml
+[[broker]]
+name = "analyzer"
+enabled = true
+server = "mqtt.example.com"
+neighbors = true          # opt this broker in
+
+[capture]
+neighbors_interval_hours = 24   # clamped to 12-336
+```
+
+The topic needs an IATA code (or an explicit `[broker.topics] neighbors` template) —
+there is no flat `meshcore/neighbors` fallback, matching the firmware, which only routes
+this topic in MeshCore form. Payloads are published non-retained.
+
+Each cycle runs two stages: a zero-hop node-discover collecting responses for
+`neighbors_discover_window` seconds, then one scope request per neighbor. Those requests
+go out **one at a time** — issuing them together makes the replies collide on air. Each
+wait defaults to the device's own airtime estimate (`neighbors_scope_timeout = 0`), with
+`neighbors_scope_gap` seconds between requests and `neighbors_cycle_timeout` bounding the
+whole pass. Neighbors are queried most-recently-heard first, so a truncated cycle still
+covers the most useful ones. See `config.toml.example` for every knob.
+
+```json
+{
+  "timestamp": "2024-01-01T12:00:00.000000+00:00",
+  "origin": "MeshCore-HOWL",
+  "origin_id": "A1B2C3D4E5F67890...",
+  "total_neighbors": 6,
+  "queried_neighbors": 6,
+  "truncated": false,
+  "self": { "scopes": "DEN,APRS" },
+  "neighbors": [
+    {
+      "pubkey": "0011223344556677...",
+      "snr": 9.75,
+      "heard_secs_ago": 42,
+      "scopes": "DEN,APRS",
+      "status": "responded"
+    }
+  ]
+}
+```
+
+### Triggering a cycle manually
+
+The minimum interval is 12 hours, so for testing use the one-shot trigger — the
+equivalent of the firmware's `discover.neighbors` / scope pass:
+
+```bash
+# Run one cycle now, then keep capturing normally
+python -m meshcore_packet_capture --neighbors-now --verbose
+
+# Run one cycle and exit
+python -m meshcore_packet_capture --neighbors-now --neighbors-exit --verbose
+```
+
+It runs after the device and brokers connect, before the scheduler starts, and takes
+roughly `neighbors_discover_window` seconds plus a few seconds per neighbor. Add `--debug`
+to see each discover response and scope reply. A cycle also runs automatically on first
+start, since no previous publish is recorded.
+
+`total_neighbors` is how many were discovered, `queried_neighbors` how many were
+actually asked for scopes, and `truncated` is true when either the `neighbors_max`
+cap or the payload budget dropped some.
+
+`status` is `responded`, `timeout`, or `send_failed` per neighbor. Entries are ordered
+most- to least-useful (most recently heard, then stronger SNR) and the tail is dropped if
+the payload would exceed 10 KB, matching the firmware's buffer.
+
+Two differences from the firmware worth knowing: `heard_secs_ago` is measured within the
+current cycle (this tool keeps no long-lived neighbor table), and `self.scopes` comes from
+the radio's default flood scope name, since a companion radio has no region map — set
+`neighbors_self_scopes` to declare it explicitly.
 
 ## Troubleshooting
 

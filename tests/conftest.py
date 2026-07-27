@@ -11,13 +11,26 @@ import pytest
 def _install_dependency_stubs() -> None:
     if "meshcore" not in sys.modules:
         meshcore_stub = types.ModuleType("meshcore")
-        meshcore_stub.EventType = type("EventType", (), {"ERROR": "ERROR"})
+        # Mirror the real EventType members the package references, so modules
+        # importing them (e.g. neighbors.py) behave the same under the stub.
+        meshcore_stub.EventType = type(
+            "EventType",
+            (),
+            {
+                "ERROR": "ERROR",
+                "DISCOVER_RESPONSE": "discover_response",
+                "DEFAULT_FLOOD_SCOPE": "default_flood_scope",
+            },
+        )
         sys.modules["meshcore"] = meshcore_stub
 
     if "paho" not in sys.modules:
         paho_module = types.ModuleType("paho")
         mqtt_module = types.ModuleType("paho.mqtt")
         mqtt_client_module = types.ModuleType("paho.mqtt.client")
+        # Constants/helpers safe_publish() consults on every publish.
+        mqtt_client_module.MQTT_ERR_SUCCESS = 0
+        mqtt_client_module.error_string = lambda rc: f"rc={rc}"
         mqtt_module.client = mqtt_client_module
         paho_module.mqtt = mqtt_module
         sys.modules["paho"] = paho_module

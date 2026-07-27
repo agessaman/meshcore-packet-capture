@@ -138,6 +138,8 @@ def _broker_to_env_slot(broker: dict[str, Any], slot: int) -> dict[str, str]:
         out[prefix + "IATA"] = str(broker["iata"])
     if "include_decoded" in broker:
         out[prefix + "INCLUDE_DECODED"] = _bool_str(broker["include_decoded"])
+    if "neighbors" in broker:
+        out[prefix + "NEIGHBORS"] = _bool_str(broker["neighbors"])
 
     tls = broker.get("tls") or {}
     if tls:
@@ -271,6 +273,16 @@ def flatten_config_to_env_dict(config: dict[str, Any]) -> dict[str, str]:
         "decode_hashtag_channels": "DECODE_HASHTAG_CHANNELS",
         "decode_channel_keys": "DECODE_CHANNEL_KEYS",
         "decode_include_public": "DECODE_INCLUDE_PUBLIC",
+        # Neighbors publishing (opt in per broker with [[broker]] neighbors = true)
+        "neighbors_interval_hours": "NEIGHBORS_INTERVAL_HOURS",
+        "neighbors_discover_window": "NEIGHBORS_DISCOVER_WINDOW",
+        "neighbors_command_timeout": "NEIGHBORS_COMMAND_TIMEOUT",
+        "neighbors_scope_timeout": "NEIGHBORS_SCOPE_TIMEOUT",
+        "neighbors_scope_min_timeout": "NEIGHBORS_SCOPE_MIN_TIMEOUT",
+        "neighbors_scope_gap": "NEIGHBORS_SCOPE_GAP",
+        "neighbors_cycle_timeout": "NEIGHBORS_CYCLE_TIMEOUT",
+        "neighbors_max": "NEIGHBORS_MAX",
+        "neighbors_self_scopes": "NEIGHBORS_SELF_SCOPES",
         # Packet log rotation
         "log_rotation": "LOG_ROTATION",
         "log_max_bytes": "LOG_MAX_BYTES",

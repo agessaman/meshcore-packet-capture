@@ -344,7 +344,8 @@ class TaskReentrantLock:
     retryable_device_command(), which wants the same lock. A plain asyncio.Lock
     deadlocks there. Re-entry is scoped to the owning task, so genuine
     concurrency from other tasks is still serialised - which is the point, since
-    two overlapping device writes drop the BLE link.
+    a command is a write plus a wait for its reply and the library serialises
+    neither (see device_command_lock in PacketCapture.__init__).
     """
 
     def __init__(self):
@@ -439,12 +440,21 @@ class PacketCapture:
         self.stats_update_task = None
         self.stats_fetch_lock = asyncio.Lock()
 
-        # Serialises device commands. Two overlapping writes to the BLE RX
-        # characteristic drop the link ("BLE write failed: 19" on macOS,
-        # reproduced on hardware). meshcore_py gained a transport-level write lock,
-        # but this keeps us safe on released versions that lack it, where an
-        # unlucky overlap between e.g. a status publish and a neighbors discovery
-        # would take the radio down.
+        # Serialises whole device commands. meshcore_py >= 2.3.8 (now our floor)
+        # serialises the BLE write itself, which is what stops two overlapping
+        # writes from dropping the link ("BLE write failed: 19" on macOS,
+        # reproduced on hardware). That fix makes this lock unnecessary for link
+        # safety, but not redundant, because it guards two things a per-write
+        # lock cannot:
+        #
+        #   - A command is a write *plus* a wait for its reply, and the library
+        #     does not serialise that pair -- CommandHandler.send() takes no lock
+        #     (only mesh/binary requests take _mesh_request_lock) and matches
+        #     replies by event type. Two commands in flight awaiting the same
+        #     event type can therefore take each other's response.
+        #   - Multi-frame sequences that must be atomic across several commands:
+        #     on-device JWT signing is sign_start, N x sign_data, sign_finish,
+        #     and no transport-level lock can express "hold all of these".
         self.device_command_lock = TaskReentrantLock()
         # Extra grace on top of a command's own timeout when queueing for the
         # lock, so a legitimately slow predecessor doesn't cause spurious giveups.
@@ -1611,9 +1621,10 @@ class PacketCapture:
         # The create_jwt_with_private_key() method already logs which method was used
         #
         # Held under the device lock for the whole call: on-device signing is a
-        # multi-frame sequence (sign_start, N x sign_data, sign_finish) and any
-        # other command writing between two chunks means two concurrent writes,
-        # which drops the BLE link.
+        # multi-frame sequence (sign_start, N x sign_data, sign_finish) that has
+        # to complete as a unit. The library's transport-level write lock cannot
+        # supply that -- it serialises single writes, so another command would
+        # still be free to interleave between two signing chunks.
         async with self.device_command_lock:
             jwt_token = await self.create_jwt_with_private_key(
                 audience,
@@ -3985,8 +3996,9 @@ class PacketCapture:
                 return False
             
             self.logger.info("Sending flood advert...")
-            # Under the device lock like every other command: a write overlapping
-            # another one drops the BLE link.
+            # Under the device lock like every other command: send_advert does
+            # not go through retryable_device_command(), so it would otherwise be
+            # the one command able to run concurrently with a reply-awaiting one.
             async with self.device_command_lock:
                 await self.meshcore.commands.send_advert(flood=True)
             self.last_advert_time = time.time()

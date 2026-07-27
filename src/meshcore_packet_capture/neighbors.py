@@ -10,7 +10,12 @@ examples/simple_repeater/MyMesh.cpp). Two stages per cycle:
    scope names.
 
 Both requests are issued through meshcore_py (``send_node_discover_req`` and
-``req_regions_sync``); nothing here re-encodes packets.
+``req_regions_sync``); nothing here re-encodes packets. Stage 2 requires
+meshcore >= 2.3.8, where ``send_anon_req`` requests a zero-hop reply path for a
+destination that is not a known contact -- which a just-discovered neighbor
+never is. Earlier releases refused such a request client-side, and this module
+used to work around that by injecting a synthetic contact into the library's
+cache for the duration of each query.
 
 Stage 2 is deliberately paced. The firmware originally fired every request at
 once and the responses collided, so it moved to one request in flight at a time
@@ -26,7 +31,7 @@ import asyncio
 import json
 import random
 import time
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -46,10 +51,11 @@ NEIGHBORS_JSON_BUDGET = 10240
 async def _maybe_lock(lock):
     """Hold ``lock`` if one was supplied, otherwise do nothing.
 
-    Device commands must not overlap: two concurrent writes to the BLE RX
-    characteristic drop the link. The caller owns the lock so neighbors requests
-    serialise against the app's other device traffic (status publishes, stats,
-    health checks), not just against each other.
+    Device commands must not overlap: a command is a write plus a wait for its
+    reply, and meshcore_py serialises neither, so concurrent commands awaiting
+    the same event type can take each other's response. The caller owns the lock
+    so neighbors requests serialise against the app's other device traffic
+    (status publishes, stats, health checks), not just against each other.
     """
     if lock is None:
         yield
@@ -295,63 +301,6 @@ async def discover_neighbors(
     return sort_entries(list(collected.values()))
 
 
-def _zero_hop_contact(pubkey: str) -> dict[str, Any]:
-    """A synthetic zero-hop contact entry for the library's contact cache.
-
-    ``send_anon_req`` refuses to send unless the target resolves in the client
-    cache, and uses the entry only to build the reply-path bytes. The companion
-    firmware needs no such contact — CMD_SEND_ANON_REQ synthesises a transient
-    one (out_path_len = 0, hidden from CMD_GET_CONTACTS, never persisted; see
-    companion_radio/MyMesh.cpp and BaseChatMesh::allocateContactSlot).
-
-    out_path_len = 0 keeps the library off its out_path_len == -1 branch, so it
-    issues no change_contact_path/reset_path writes to the device, and the
-    request carries an empty reply path -- the zero-hop direct probe the
-    firmware feature sends.
-    """
-    return {
-        "public_key": pubkey,
-        "out_path_len": 0,
-        "out_path": "",
-        "adv_name": "",
-        "type": 0,
-    }
-
-
-@contextmanager
-def zero_hop_contact_override(meshcore, pubkey: str, logger):
-    """Temporarily force ``pubkey`` to resolve as a zero-hop contact.
-
-    Yields True when the override is in place, False when the contact cache is
-    unavailable — callers must treat False as "no request can be sent", because
-    ``req_regions_sync`` would report ``contact_not_found`` and, since it maps
-    every failure to ``None``, that would be indistinguishable from a neighbor
-    that simply didn't answer.
-
-    The cache is keyed by public_key (see MeshCore._update_contacts), so writing
-    under the same key overrides any real contact - including one carrying a
-    stale multi-hop path that would otherwise route the probe the long way - and
-    restores it exactly on exit.
-    """
-    # Public property; returns the same dict object the library mutates.
-    contacts = getattr(meshcore, "contacts", None)
-    if not isinstance(contacts, dict):
-        logger.warning("Neighbors: contact cache unavailable, cannot issue scope requests")
-        yield False
-        return
-
-    had_original = pubkey in contacts
-    original = contacts.get(pubkey)
-    contacts[pubkey] = _zero_hop_contact(pubkey)
-    try:
-        yield True
-    finally:
-        if had_original:
-            contacts[pubkey] = original
-        else:
-            contacts.pop(pubkey, None)
-
-
 async def collect_scopes(
     meshcore,
     entries: list[NeighborEntry],
@@ -367,6 +316,14 @@ async def collect_scopes(
     budget runs out the most useful neighbors have been covered. Anything not
     reached keeps its initial ``timeout`` status, matching the firmware's
     fallback.
+
+    The probe is zero-hop, matching the firmware. That falls out of
+    ``send_anon_req`` (meshcore >= 2.3.8) requesting a zero-hop direct reply path
+    whenever the destination is not a known contact -- and a freshly discovered
+    neighbor never is, because nothing in this app populates the library's
+    contact cache. If that ever changes (an ``ensure_contacts()`` call
+    anywhere), a neighbor holding a stale multi-hop ``out_path`` would have its
+    scope query routed the long way instead of probed directly.
     """
     if not entries:
         return
@@ -391,27 +348,20 @@ async def collect_scopes(
             await asyncio.sleep(cfg.scope_gap)
 
         try:
-            with zero_hop_contact_override(meshcore, entry.pubkey, logger) as injected:
-                if not injected:
-                    # Nothing was transmitted, so this is a send failure, not a
-                    # silent neighbor. Reporting it as a timeout would assert on
-                    # the topic that the neighbor was asked when it never was.
-                    entry.status = STATUS_SEND_FAILED
-                    continue
-                # Locked per request, not for the whole pass: a pass can span
-                # minutes and must not block the app's other device traffic.
-                async with _maybe_lock(command_lock):
-                    # Bounded: this holds the shared device-command lock, and an
-                    # unbounded stall here would block the connection watchdog
-                    # (and everything else) for as long as the write hangs.
-                    scopes = await asyncio.wait_for(
-                        meshcore.commands.req_regions_sync(
-                            entry.pubkey,
-                            timeout=timeout,
-                            min_timeout=cfg.scope_min_timeout,
-                        ),
-                        timeout=cfg.scope_request_budget,
-                    )
+            # Locked per request, not for the whole pass: a pass can span
+            # minutes and must not block the app's other device traffic.
+            async with _maybe_lock(command_lock):
+                # Bounded: this holds the shared device-command lock, and an
+                # unbounded stall here would block the connection watchdog
+                # (and everything else) for as long as the write hangs.
+                scopes = await asyncio.wait_for(
+                    meshcore.commands.req_regions_sync(
+                        entry.pubkey,
+                        timeout=timeout,
+                        min_timeout=cfg.scope_min_timeout,
+                    ),
+                    timeout=cfg.scope_request_budget,
+                )
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:

@@ -1,10 +1,15 @@
 """Serialisation of device commands.
 
-Two overlapping writes to the BLE RX characteristic drop the link outright
-("BLE write failed: 19", reproduced on hardware). Nothing in the app guaranteed
-callers were sequential -- schedulers, health checks, JWT signing and user
-commands all issue independently -- so device commands are funnelled through a
-single lock. It is task-reentrant because the JWT path legitimately nests.
+Nothing in the app guarantees callers are sequential -- schedulers, health
+checks, JWT signing and user commands all issue independently -- so device
+commands are funnelled through a single lock. It is task-reentrant because the
+JWT path legitimately nests.
+
+meshcore_py >= 2.3.8 serialises the BLE write itself, which is what stops two
+overlapping writes from dropping the link ("BLE write failed: 19", reproduced on
+hardware). This lock covers what that cannot: a command is a write *plus* a wait
+for its reply, which the library does not serialise, and multi-frame sequences
+like on-device JWT signing have to be held as a unit.
 """
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ def capture(monkeypatch: pytest.MonkeyPatch) -> PacketCapture:
 
 
 def test_retryable_device_command_serialises(capture: PacketCapture):
-    """Overlapping device commands kill the BLE link; the wrapper must serialise."""
+    """Concurrent commands can take each other's reply; the wrapper must serialise."""
     capture.connected = True
     import types as _types
     capture.meshcore = _types.SimpleNamespace(is_connected=True)

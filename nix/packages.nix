@@ -5,19 +5,19 @@
       # Note: If meshcore is available in nixpkgs, you can override this
       meshcorePackage = pkgs.python3Packages.buildPythonPackage rec {
         pname = "meshcore";
-        version = "2.2.31";
+        version = "2.3.8";
         format = "pyproject";
-        
+
         src = pkgs.python3Packages.fetchPypi {
           inherit pname version;
-          sha256 = "sha256-Z0FkdOY9Kv/y2fPXyH266CaWIWLeHwgC+yqSRLZxog8=";
+          sha256 = "sha256-ItV9u1kYavbtIwP9FJY1AimJpPjchnxymm8KvDStOqs=";
         };
         
         nativeBuildInputs = with pkgs.python3Packages; [
           hatchling
         ];
         
-        # meshcore 2.2.31's wheel requires these at runtime; nixpkgs' Python deps
+        # meshcore's wheel requires these at runtime; nixpkgs' Python deps
         # check (pythonRuntimeDepsCheck) fails the build if they're not provided.
         propagatedBuildInputs = with pkgs.python3Packages; [
           bleak

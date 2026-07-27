@@ -11,7 +11,7 @@ license = { text = "MIT" }
 dynamic = ["version"]
 dependencies = [
     "paho-mqtt>=1.6.0",
-    "meshcore>=2.2.31",
+    "meshcore>=2.3.8",
     "bleak>=0.21.0",
     "pyserial-asyncio>=0.6",
     "pycayennelpp>=1.0.0",

@@ -121,7 +121,7 @@ def test_budget_not_applied_when_payload_fits():
 
 
 # --------------------------------------------------------------------------
-# Zero-hop contact override (the mechanism from plan section 3.1)
+# Shared helpers
 # --------------------------------------------------------------------------
 
 class _FakeLogger:
@@ -132,64 +132,6 @@ class _FakeLogger:
         self.messages.append(str(msg))
 
     debug = info = warning = error = _record
-
-
-def test_zero_hop_contact_is_direct_with_empty_path():
-    contact = nb._zero_hop_contact("aa" * 32)
-    # out_path_len == 0 keeps meshcore_py off its out_path_len == -1 branch, so it
-    # issues no change_contact_path/reset_path writes to the device.
-    assert contact["out_path_len"] == 0
-    assert contact["out_path"] == ""
-    assert contact["public_key"] == "aa" * 32
-
-
-class _ContactCacheMeshCore:
-    """Mirrors MeshCore: `contacts` is a property returning the live dict."""
-
-    def __init__(self, initial=None):
-        self._contacts = dict(initial or {})
-
-    @property
-    def contacts(self):
-        return self._contacts
-
-
-def test_override_injects_then_removes_when_no_prior_contact():
-    mc = _ContactCacheMeshCore()
-    key = "bb" * 32
-    with nb.zero_hop_contact_override(mc, key, _FakeLogger()) as ok:
-        assert ok is True
-        assert mc._contacts[key]["out_path_len"] == 0
-    assert key not in mc._contacts
-
-
-def test_override_restores_preexisting_contact_exactly():
-    key = "cc" * 32
-    real = {"public_key": key, "out_path_len": 3, "out_path": "aabbcc", "adv_name": "repeater"}
-    mc = _ContactCacheMeshCore({key: real})
-    with nb.zero_hop_contact_override(mc, key, _FakeLogger()):
-        # A stale multi-hop path must not route the probe the long way.
-        assert mc._contacts[key]["out_path_len"] == 0
-    assert mc._contacts[key] is real
-    assert mc._contacts[key]["out_path_len"] == 3
-
-
-def test_override_restores_even_when_body_raises():
-    key = "dd" * 32
-    real = {"public_key": key, "out_path_len": 2, "out_path": "1122"}
-    mc = _ContactCacheMeshCore({key: real})
-    with pytest.raises(RuntimeError):
-        with nb.zero_hop_contact_override(mc, key, _FakeLogger()):
-            raise RuntimeError("scope request blew up")
-    assert mc._contacts[key] is real
-
-
-def test_override_reports_false_without_contact_cache():
-    class FakeMeshCore:
-        pass
-
-    with nb.zero_hop_contact_override(FakeMeshCore(), "ee" * 32, _FakeLogger()) as ok:
-        assert ok is False
 
 
 # --------------------------------------------------------------------------
@@ -256,26 +198,6 @@ def test_collect_scopes_assigns_statuses():
     assert (responded.status, responded.scopes) == (nb.STATUS_RESPONDED, "DEN,APRS")
     # None covers a real timeout and a device-level rejection alike.
     assert timed_out.status == nb.STATUS_TIMEOUT
-
-
-def test_collect_scopes_reports_send_failed_when_no_contact_cache():
-    """No contact cache means nothing was transmitted at all.
-
-    Reporting that as a timeout would assert on the topic that the neighbor was
-    asked and stayed silent, when in fact no frame ever left the radio.
-    """
-    class NoCacheMeshCore:
-        def __init__(self):
-            self.commands = _FakeCommands({})
-
-    entry = _entry("a", 5.0, 100.0)
-    mc = NoCacheMeshCore()
-    logger = _FakeLogger()
-    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), logger))
-
-    assert entry.status == nb.STATUS_SEND_FAILED
-    assert mc.commands.calls == []
-    assert any("contact cache unavailable" in m for m in logger.messages)
 
 
 def test_collect_scopes_reports_send_failed_on_transport_exception():
@@ -356,7 +278,16 @@ def test_collect_scopes_handles_empty_list():
     assert mc.commands.calls == []
 
 
-def test_collect_scopes_leaves_contact_cache_clean():
+def test_collect_scopes_never_populates_contact_cache():
+    """Neighbors must stay unknown to the library's contact cache.
+
+    send_anon_req only requests a zero-hop direct reply path when the
+    destination is not a known contact. A neighbor that appeared in the cache
+    carrying a stale multi-hop out_path would have its scope query routed the
+    long way instead of probed directly, silently breaking firmware parity --
+    so the cache staying empty is load-bearing, not incidental. Holds on the
+    error path too.
+    """
     entries = [_entry("a", 1.0, 100.0), _entry("b", 1.0, 90.0)]
     mc = _FakeMeshCore({entries[0].pubkey: "S", entries[1].pubkey: RuntimeError("boom")})
     _run(nb.collect_scopes(mc, entries, nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
@@ -1016,7 +947,10 @@ class _CycleMeshCore:
                 return _FakeEvent("OK", {"tag": tag})
 
             async def req_regions_sync(s, pubkey, timeout=0, min_timeout=0):
-                assert outer._contacts[pubkey]["out_path_len"] == 0
+                # The neighbor must NOT be a known contact: that is exactly what
+                # makes send_anon_req (>= 2.3.8) request a zero-hop direct reply
+                # path, which is the firmware-parity behaviour we want.
+                assert pubkey not in outer._contacts
                 return scopes[pubkey]
 
             async def get_default_flood_scope(s):

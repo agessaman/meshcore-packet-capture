@@ -89,7 +89,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 ## Requirements
 
 - Python 3.11+ (installer and recommended runtime)
-- `meshcore` package (official MeshCore Python library) version 2.2.31 or later (required for multi-byte path support and stats)
+- `meshcore` package (official MeshCore Python library) version 2.3.8 or later (required for multi-byte path support, stats, serialised BLE writes, and the zero-hop anonymous requests the neighbors snapshot depends on)
 - `paho-mqtt` package (for MQTT functionality)
 
 **Note**: For Docker deployment, this application is best deployed on Linux systems due to Bluetooth Low Energy (BLE) and serial device access requirements. While Docker containers can run on macOS and Windows, BLE functionality may be limited or require additional configuration.

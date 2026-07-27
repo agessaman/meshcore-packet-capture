@@ -328,6 +328,51 @@ class _RotatingPacketLog:
             self._fh.close()
 
 
+class TaskReentrantLock:
+    """An asyncio lock that the task already holding it may re-acquire.
+
+    Device commands legitimately nest: JWT creation holds the lock across the
+    whole multi-frame signing sequence, and its private-key fallback goes through
+    retryable_device_command(), which wants the same lock. A plain asyncio.Lock
+    deadlocks there. Re-entry is scoped to the owning task, so genuine
+    concurrency from other tasks is still serialised - which is the point, since
+    two overlapping device writes drop the BLE link.
+    """
+
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._owner = None
+        self._depth = 0
+
+    async def acquire(self) -> bool:
+        task = asyncio.current_task()
+        if self._owner is not None and self._owner is task:
+            self._depth += 1
+            return True
+        await self._lock.acquire()
+        self._owner = task
+        self._depth = 1
+        return True
+
+    def release(self) -> None:
+        if self._depth == 0:
+            raise RuntimeError("release() called on an unlocked TaskReentrantLock")
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.release()
+
+
 class PacketCapture:
     """Standalone packet capture using meshcore package"""
     
@@ -385,6 +430,18 @@ class PacketCapture:
         self.stats_capability_state = None
         self.stats_update_task = None
         self.stats_fetch_lock = asyncio.Lock()
+
+        # Serialises device commands. Two overlapping writes to the BLE RX
+        # characteristic drop the link ("BLE write failed: 19" on macOS,
+        # reproduced on hardware). meshcore_py gained a transport-level write lock,
+        # but this keeps us safe on released versions that lack it, where an
+        # unlucky overlap between e.g. a status publish and a neighbors discovery
+        # would take the radio down.
+        self.device_command_lock = TaskReentrantLock()
+        # Extra grace on top of a command's own timeout when queueing for the
+        # lock, so a legitimately slow predecessor doesn't cause spurious giveups.
+        self.device_lock_wait_margin = self.get_env_float('DEVICE_LOCK_WAIT_MARGIN', 30.0)
+        
         
         # Service-level failure tracking for systemd restart
         self.service_failure_count = 0
@@ -809,11 +866,33 @@ class PacketCapture:
                     await asyncio.sleep(current_delay)
                     current_delay *= backoff_multiplier  # Exponential backoff
                 
-                # Execute command with timeout
-                result = await asyncio.wait_for(
-                    command_func(),
-                    timeout=timeout
-                )
+                # Execute command with timeout. The lock is held only for the
+                # attempt itself, not across retry backoffs, so a retrying command
+                # doesn't lock out the rest of the app.
+                #
+                # Acquiring is bounded too. Waiting unbounded here would let a
+                # stalled holder block the connection watchdog, which is the one
+                # thing that can recover a stalled link -- its own timeout can't
+                # fire while it is still queued for the lock.
+                try:
+                    await asyncio.wait_for(
+                        self.device_command_lock.acquire(),
+                        timeout=timeout + self.device_lock_wait_margin,
+                    )
+                except asyncio.TimeoutError:
+                    last_error = f"{command_name} timed out waiting for the device lock"
+                    self.logger.warning(f"{last_error} (another command appears stalled)")
+                    if attempt < max_retries - 1:
+                        continue
+                    return None
+                try:
+                    result = await asyncio.wait_for(
+                        command_func(),
+                        timeout=timeout
+                    )
+                finally:
+                    self.device_command_lock.release()
+                
                 
                 # Check if result is an error
                 if result and hasattr(result, 'type'):
@@ -1404,11 +1483,17 @@ class PacketCapture:
         expiry_seconds = self.resolve_token_ttl(broker_num)
         # Use on-device signing (preferred) or private key method (fallback)
         # The create_jwt_with_private_key() method already logs which method was used
-        jwt_token = await self.create_jwt_with_private_key(
-            audience,
-            expiry_seconds=expiry_seconds,
-            broker_num=broker_num,
-        )
+        #
+        # Held under the device lock for the whole call: on-device signing is a
+        # multi-frame sequence (sign_start, N x sign_data, sign_finish) and any
+        # other command writing between two chunks means two concurrent writes,
+        # which drops the BLE link.
+        async with self.device_command_lock:
+            jwt_token = await self.create_jwt_with_private_key(
+                audience,
+                expiry_seconds=expiry_seconds,
+                broker_num=broker_num,
+            )
         if jwt_token:
             # Store token with expiry time if broker_num is provided
             if broker_num is not None:
@@ -3748,7 +3833,10 @@ class PacketCapture:
                 return False
             
             self.logger.info("Sending flood advert...")
-            await self.meshcore.commands.send_advert(flood=True)
+            # Under the device lock like every other command: a write overlapping
+            # another one drops the BLE link.
+            async with self.device_command_lock:
+                await self.meshcore.commands.send_advert(flood=True)
             self.last_advert_time = time.time()
             self._save_advert_state()  # Persist the timestamp
             self.logger.info("Flood advert sent successfully!")

@@ -1,6 +1,7 @@
 """Smoke tests for the bootstrap shell scripts (install.sh / uninstall.sh)."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -25,6 +26,11 @@ def test_script_parses(script: str):
 def test_install_sh_default_repo_and_branch():
     text = (REPO_ROOT / "install.sh").read_text()
     assert "agessaman/meshcore-packet-capture" in text
+    assert (
+        'REPO="${MESHCORE_PACKET_CAPTURE_REPO:-'
+        '${MESHCORE_PACKETCAPTURE_REPO:-'
+        '${PACKETCAPTURE_REPO:-agessaman/meshcore-packet-capture}}}"'
+    ) in text
     assert ":-main}" in text  # BRANCH default
     # Runs the Python installer module rather than embedding logic.
     assert "python3 -m installer install" in text
@@ -41,9 +47,45 @@ def test_install_sh_user_service_uses_repo_local_configs():
     assert "--user-service" in text
     assert "MESHCORE_PACKETCAPTURE_ENV_DIR=$REPO_DIR" in text
     assert "CONFIG_ARGS_ESCAPED" in text
-    assert 'ExecStart=$REPO_DIR/.venv/bin/python -m meshcore_packet_capture ${CONFIG_ARGS_ESCAPED[*]}' in text
+    assert "systemd_quote_exec_arg" in text
+    assert "ExecStart=$PYTHON_EXECUTABLE -m meshcore_packet_capture" in text
     assert 'if [ -f "$REPO_DIR/config.toml" ]; then' in text
     assert "config.d" in text
+
+
+def test_install_sh_managed_help_is_forwarded_to_python_installer():
+    env = os.environ.copy()
+    env["LOCAL_INSTALL"] = str(REPO_ROOT)
+
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "install.sh"), "--help"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--config CONFIG_URL" in result.stdout
+    assert "--update" in result.stdout
+
+
+def test_install_sh_user_service_help_stays_in_bootstrap():
+    result = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "install.sh"),
+            "--user-service",
+            "--repo-dir",
+            "/path/does/not/exist",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "install a per-user systemd service" in result.stdout
+    assert "--remove-venv" not in result.stdout
 
 
 def test_install_sh_release_ref_handling():

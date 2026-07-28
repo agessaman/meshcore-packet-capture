@@ -6,7 +6,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="${MESHCORE_PACKETCAPTURE_REPO:-${PACKETCAPTURE_REPO:-agessaman/meshcore-packet-capture}}"
+REPO="${MESHCORE_PACKET_CAPTURE_REPO:-${MESHCORE_PACKETCAPTURE_REPO:-${PACKETCAPTURE_REPO:-agessaman/meshcore-packet-capture}}}"
 # Branch the bootstrap fetches the installer from (default: main = latest
 # installer). The install *payload* defaults to the latest published release
 # unless the user pins --branch/--tag (see installer.system.resolve_install_ref).
@@ -18,6 +18,7 @@ fi
 TAG=""
 TAG_ARGS=()
 USER_SERVICE=false
+SHOW_HELP=false
 REPO_DIR="$SCRIPT_DIR"
 EXTRA_ARGS=()
 
@@ -39,9 +40,34 @@ Notes:
 EOF
 }
 
+systemd_escape_unit_value() {
+    local escaped="$1"
+    if [[ "$escaped" =~ [[:cntrl:]] ]]; then
+        echo "Error: systemd unit values cannot contain control characters" >&2
+        return 1
+    fi
+    escaped=${escaped//\\/\\\\}
+    escaped=${escaped//\"/\\\"}
+    # A single percent starts systemd specifier expansion.
+    escaped=${escaped//%/%%}
+    printf '%s' "$escaped"
+}
+
+systemd_quote_unit_value() {
+    printf '"%s"' "$(systemd_escape_unit_value "$1")"
+}
+
+systemd_quote_exec_arg() {
+    local escaped
+    escaped="$(systemd_escape_unit_value "$1")"
+    # ExecStart performs environment expansion; $$ produces a literal dollar.
+    escaped=${escaped//\$/\$\$}
+    printf '"%s"' "$escaped"
+}
+
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --help|-h) print_usage; exit 0 ;;
+        --help|-h) SHOW_HELP=true; EXTRA_ARGS+=("$1"); shift ;;
         --user-service) USER_SERVICE=true; shift ;;
         --repo-dir) REPO_DIR="$2"; shift 2 ;;
         --repo)   REPO="$2"; shift 2 ;;
@@ -51,7 +77,25 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ "$USER_SERVICE" = true ] && [ "$SHOW_HELP" = true ]; then
+    print_usage
+    exit 0
+fi
+
 if [ "$USER_SERVICE" = true ]; then
+    if [[ "$REPO_DIR" =~ [[:cntrl:]] ]]; then
+        echo "Error: repository path cannot contain control characters" >&2
+        exit 1
+    fi
+    if [ ! -d "$REPO_DIR" ]; then
+        echo "Error: repository directory not found: $REPO_DIR" >&2
+        exit 1
+    fi
+    REPO_DIR="$(cd "$REPO_DIR" >/dev/null && pwd -P)"
+    if [[ "$REPO_DIR" =~ [[:cntrl:]] ]]; then
+        echo "Error: repository path cannot contain control characters" >&2
+        exit 1
+    fi
     if [ ! -f "$REPO_DIR/pyproject.toml" ]; then
         echo "Error: pyproject.toml not found in repo path: $REPO_DIR" >&2
         exit 1
@@ -73,9 +117,11 @@ if [ "$USER_SERVICE" = true ]; then
     # Escape each argument so systemd keeps paths with spaces intact.
     CONFIG_ARGS_ESCAPED=()
     for arg in "${CONFIG_ARGS[@]}"; do
-        escaped_arg=${arg//\\/\\\\}
-        escaped_arg=${escaped_arg//\"/\\\"}
-        CONFIG_ARGS_ESCAPED+=("\"$escaped_arg\"")
+        if [[ "$arg" =~ [[:cntrl:]] ]]; then
+            echo "Error: configuration paths cannot contain control characters" >&2
+            exit 1
+        fi
+        CONFIG_ARGS_ESCAPED+=("$(systemd_quote_exec_arg "$arg")")
     done
 
     echo "Installing package from local checkout"
@@ -84,6 +130,9 @@ if [ "$USER_SERVICE" = true ]; then
 
     UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
     UNIT_PATH="$UNIT_DIR/meshcore-packet-capture.service"
+    WORKING_DIRECTORY="$(systemd_quote_unit_value "$REPO_DIR")"
+    ENV_DIRECTORY="$(systemd_quote_unit_value "MESHCORE_PACKETCAPTURE_ENV_DIR=$REPO_DIR")"
+    PYTHON_EXECUTABLE="$(systemd_quote_exec_arg "$REPO_DIR/.venv/bin/python")"
 
     mkdir -p "$UNIT_DIR"
     cat > "$UNIT_PATH" <<EOF
@@ -94,9 +143,9 @@ Wants=network-online.target
 
 [Service]
 Type=exec
-WorkingDirectory=$REPO_DIR
-Environment=MESHCORE_PACKETCAPTURE_ENV_DIR=$REPO_DIR
-ExecStart=$REPO_DIR/.venv/bin/python -m meshcore_packet_capture ${CONFIG_ARGS_ESCAPED[*]}
+WorkingDirectory=$WORKING_DIRECTORY
+Environment=$ENV_DIRECTORY
+ExecStart=$PYTHON_EXECUTABLE -m meshcore_packet_capture ${CONFIG_ARGS_ESCAPED[*]}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=10
@@ -248,7 +297,9 @@ if [ "$BRANCH_EXPLICIT" = true ]; then
     export INSTALL_BRANCH="$BOOT_REF"
 fi
 cd "$TMP_DIR"
-if [ -r /dev/tty ]; then
+if [ "$_needs_root" != true ]; then
+    python3 -m installer "${TAG_ARGS[@]}" install "${EXTRA_ARGS[@]}"
+elif [ -r /dev/tty ]; then
     python3 -m installer "${TAG_ARGS[@]}" install "${EXTRA_ARGS[@]}" < /dev/tty
 else
     python3 -m installer "${TAG_ARGS[@]}" install "${EXTRA_ARGS[@]}"

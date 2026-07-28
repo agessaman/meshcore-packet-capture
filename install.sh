@@ -130,7 +130,7 @@ if [ "$USER_SERVICE" = true ]; then
 
     UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
     UNIT_PATH="$UNIT_DIR/meshcore-packet-capture.service"
-    WORKING_DIRECTORY="$(systemd_quote_unit_value "$REPO_DIR")"
+    WORKING_DIRECTORY="$(systemd_escape_unit_value "$REPO_DIR")"
     ENV_DIRECTORY="$(systemd_quote_unit_value "MESHCORE_PACKETCAPTURE_ENV_DIR=$REPO_DIR")"
     PYTHON_EXECUTABLE="$(systemd_quote_exec_arg "$REPO_DIR/.venv/bin/python")"
 

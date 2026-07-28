@@ -22,13 +22,16 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
+def _escape_unit_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+
+
 def _quote_unit_value(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    return f'"{escaped}"'
+    return f'"{_escape_unit_value(value)}"'
 
 
 def _quote_exec_arg(value: str) -> str:
-    escaped = _quote_unit_value(value)[1:-1].replace("$", "$$")
+    escaped = _escape_unit_value(value).replace("$", "$$")
     return f'"{escaped}"'
 
 
@@ -93,7 +96,7 @@ def test_user_service_normalizes_and_quotes_repo_path(tmp_path: Path) -> None:
         ]
     )
 
-    assert f"WorkingDirectory={_quote_unit_value(str(repo_dir))}" in unit
+    assert f"WorkingDirectory={_escape_unit_value(str(repo_dir))}" in unit
     assert (
         "Environment="
         + _quote_unit_value(f"MESHCORE_PACKETCAPTURE_ENV_DIR={repo_dir}")

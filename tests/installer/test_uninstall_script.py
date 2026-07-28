@@ -17,3 +17,13 @@ def test_uninstall_launchd_paths_match_installer_label() -> None:
     assert "meshcore-packet-capture.log" in content
     assert "com.meshcore.packet-capture" not in content
     assert "meshcore-capture.log" not in content
+
+
+def test_uninstall_supports_user_service_mode() -> None:
+    content = SCRIPT.read_text()
+
+    assert "--user-service" in content
+    assert "--repo-dir" in content
+    assert "--remove-venv" in content
+    assert "systemctl --user disable --now meshcore-packet-capture" in content
+    assert "systemctl --user daemon-reload" in content

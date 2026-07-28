@@ -4,6 +4,11 @@
 # ============================================================================
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+USER_SERVICE=false
+REPO_DIR="$SCRIPT_DIR"
+REMOVE_VENV=false
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -67,6 +72,44 @@ prompt_input() {
         echo "$response"
     fi
 }
+
+print_usage() {
+    cat <<'EOF'
+Usage: ./uninstall.sh [options]
+
+Options:
+  --user-service        remove the per-user service installed from a local checkout
+  --repo-dir PATH       local repository checkout path for --user-service
+  --remove-venv         remove the local .venv in the repository directory
+  --help                show help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --help|-h)
+            print_usage
+            exit 0
+            ;;
+        --user-service)
+            USER_SERVICE=true
+            shift
+            ;;
+        --repo-dir)
+            REPO_DIR="$2"
+            shift 2
+            ;;
+        --remove-venv)
+            REMOVE_VENV=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            print_usage
+            exit 1
+            ;;
+    esac
+done
 
 # Detect system type
 detect_system_type() {
@@ -192,6 +235,34 @@ main() {
 
     echo "This will remove MeshCore Packet Capture from your system."
     echo ""
+
+    if [ "$USER_SERVICE" = true ]; then
+        REPO_DIR="$(cd "$REPO_DIR" && pwd)"
+        UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+        UNIT_PATH="$UNIT_DIR/meshcore-packet-capture.service"
+
+        if [ -f "$UNIT_PATH" ] || systemctl --user is-enabled --quiet meshcore-packet-capture 2>/dev/null || systemctl --user is-active --quiet meshcore-packet-capture 2>/dev/null; then
+            print_info "Stopping and removing user service meshcore-packet-capture..."
+            systemctl --user disable --now meshcore-packet-capture 2>/dev/null || systemctl --user stop meshcore-packet-capture 2>/dev/null || true
+            rm -f "$UNIT_PATH"
+            systemctl --user daemon-reload 2>/dev/null || true
+            systemctl --user reset-failed 2>/dev/null || true
+            print_success "User service removed"
+        else
+            print_info "No user service found"
+        fi
+
+        if [ "$REMOVE_VENV" = true ] && [ -d "$REPO_DIR/.venv" ]; then
+            rm -rf "$REPO_DIR/.venv"
+            print_success "Removed venv: $REPO_DIR/.venv"
+        fi
+
+        echo ""
+        print_success "User uninstallation complete!"
+        echo ""
+        print_info "To reinstall, run: ./install.sh --user-service"
+        return 0
+    fi
     
     # Determine installation directory
     DEFAULT_INSTALL_DIR="/opt/meshcore-packet-capture"

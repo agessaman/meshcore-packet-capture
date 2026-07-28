@@ -111,6 +111,28 @@ manual runs, development, or when you manage the process yourself. To run it as 
 managed background service, use the bootstrap installer (see [Quick Start](#quick-start)
 and [Managed-service installer](#managed-service-installer-linux-and-macos) below).
 
+For a local checkout on Linux, `./install.sh --user-service` will create a per-user
+systemd service that runs from the repo's `.venv`. Pass `--repo-dir PATH` if the checkout
+is not the current script directory.
+
+To remove that user service, run `./uninstall.sh --user-service` from the same checkout.
+Add `--remove-venv` if you also want the local `.venv` deleted.
+
+When using `--user-service`, keep your config files in the repo itself:
+
+```text
+meshcore-packet-capture/
+  .env
+  .env.local
+  config.toml
+  config.d/
+    10-base.toml
+    99-user.toml
+```
+
+The user-service path loads `.env` and `.env.local` from the repo root, then loads
+`config.toml` and every `config.d/*.toml` file in sorted order.
+
 ### Docker Installation
 
 The project includes Docker support for easy deployment:

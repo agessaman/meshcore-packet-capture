@@ -164,6 +164,9 @@ async def test_jwt_uses_broker_specific_owner_email(monkeypatch: pytest.MonkeyPa
         get_env=lambda key, default="": cap._env.get(key, default),
         resolve_token_ttl=lambda broker_num: 3600,
         _load_client_version=lambda: "meshcore-packet-capture/test",
+        # JWT signing is a multi-frame device sequence and is held under the
+        # device lock, so the stand-in needs one too.
+        device_command_lock=pc_mod.TaskReentrantLock(),
     )
 
     async def _create_jwt_with_private_key(audience, expiry_seconds=86400, broker_num=None):
@@ -215,6 +218,9 @@ async def test_jwt_owner_email_falls_back_to_global(monkeypatch: pytest.MonkeyPa
         get_env=lambda key, default="": cap._env.get(key, default),
         resolve_token_ttl=lambda broker_num: 3600,
         _load_client_version=lambda: "meshcore-packet-capture/test",
+        # JWT signing is a multi-frame device sequence and is held under the
+        # device lock, so the stand-in needs one too.
+        device_command_lock=pc_mod.TaskReentrantLock(),
     )
 
     await PacketCapture.create_jwt_with_private_key(

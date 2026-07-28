@@ -215,3 +215,55 @@ def test_capture_extended_keys_mapped():
     assert env["PACKETCAPTURE_BINARY_INTERFACE_PORT"] == "5001"
     assert env["PACKETCAPTURE_OWNER_PUBLIC_KEY"] == "ABC"
     assert env["PACKETCAPTURE_OWNER_EMAIL"] == "u@example.com"
+
+
+def test_flatten_neighbors_capture_settings():
+    cfg = {
+        "capture": {
+            "neighbors_interval_hours": 48,
+            "neighbors_discover_window": 90.0,
+            "neighbors_command_timeout": 25.0,
+            "neighbors_scope_timeout": 0.0,
+            "neighbors_scope_min_timeout": 8.0,
+            "neighbors_scope_gap": 2.5,
+            "neighbors_cycle_timeout": 900,
+            "neighbors_max": 16,
+            "neighbors_self_scopes": "DEN,APRS",
+        }
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert env["PACKETCAPTURE_NEIGHBORS_INTERVAL_HOURS"] == "48"
+    assert env["PACKETCAPTURE_NEIGHBORS_DISCOVER_WINDOW"] == "90.0"
+    assert env["PACKETCAPTURE_NEIGHBORS_COMMAND_TIMEOUT"] == "25.0"
+    assert env["PACKETCAPTURE_NEIGHBORS_SCOPE_TIMEOUT"] == "0.0"
+    assert env["PACKETCAPTURE_NEIGHBORS_SCOPE_MIN_TIMEOUT"] == "8.0"
+    assert env["PACKETCAPTURE_NEIGHBORS_SCOPE_GAP"] == "2.5"
+    assert env["PACKETCAPTURE_NEIGHBORS_CYCLE_TIMEOUT"] == "900"
+    assert env["PACKETCAPTURE_NEIGHBORS_MAX"] == "16"
+    assert env["PACKETCAPTURE_NEIGHBORS_SELF_SCOPES"] == "DEN,APRS"
+
+
+def test_flatten_per_broker_neighbors_flag_and_topic():
+    cfg = {
+        "broker": [
+            {
+                "name": "analyzer",
+                "enabled": True,
+                "server": "mqtt.example",
+                "neighbors": True,
+                "topics": {"neighbors": "custom/{IATA}/{PUBLIC_KEY}/neighbors"},
+            },
+            {"name": "plain", "enabled": True, "server": "other.example"},
+        ]
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert env["PACKETCAPTURE_MQTT1_NEIGHBORS"] == "true"
+    assert env["PACKETCAPTURE_MQTT1_TOPIC_NEIGHBORS"] == "custom/{IATA}/{PUBLIC_KEY}/neighbors"
+    # Unset means off: no key emitted, so the runtime default (off) applies.
+    assert "PACKETCAPTURE_MQTT2_NEIGHBORS" not in env
+
+
+def test_flatten_per_broker_neighbors_explicit_false():
+    cfg = {"broker": [{"name": "a", "enabled": True, "neighbors": False}]}
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert env["PACKETCAPTURE_MQTT1_NEIGHBORS"] == "false"

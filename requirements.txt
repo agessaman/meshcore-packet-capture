@@ -1,8 +1,13 @@
 # Core dependencies for MeshCore packet capture
 paho-mqtt>=1.6.0
 
-# MeshCore package - multi-byte path support requires 2.2.31+
-meshcore>=2.2.31
+# MeshCore package - 2.3.8+ is required, not merely preferred:
+#   - send_anon_req() falls back to a zero-hop reply path for an unknown
+#     destination, which is what lets neighbors.py ask a freshly discovered
+#     repeater for its scopes. Earlier releases refuse the request client-side.
+#   - ble_cx serialises write_gatt_char() and bounds it. Two overlapping BLE
+#     writes drop the link outright ("BLE write failed: 19").
+meshcore>=2.3.8
 
 # MeshCore package dependencies (installed automatically with meshcore)
 bleak>=0.21.0

@@ -1302,7 +1302,7 @@ def create_venv(install_dir: str, svc_user: str) -> None:
     else:
         run_cmd([
             f"{venv_dir}/bin/pip", "install", "--quiet",
-            "meshcore>=2.2.31", "paho-mqtt", "bleak", "pyserial-asyncio", "pexpect", "pynacl",
+            "meshcore>=2.3.8", "paho-mqtt", "bleak", "pyserial-asyncio", "pexpect", "pynacl",
         ])
         print_success("Python dependencies installed (meshcore stack)")
 

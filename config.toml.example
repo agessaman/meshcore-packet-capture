@@ -73,6 +73,23 @@ rf_data_timeout = 15.0
 # decode_channel_keys = "name=hexOrBase64,other=..."  # Custom channel keys (16-byte hex or base64)
 # decode_include_public = true      # Include the well-known default "Public" channel key
 
+# --- Neighbors publishing (zero-hop neighbor table + each neighbor's region scopes) ---
+# Off by default. Opt in per broker with `neighbors = true` in its [[broker]] block; the
+# cycle only runs when at least one enabled broker has done so. Published non-retained to
+# the `neighbors` topic, which needs an IATA (or an explicit [broker.topics] neighbors).
+# Each cycle: one zero-hop node-discover, then one scope request per neighbor, issued one
+# at a time -- firing them together collides the responses.
+# neighbors_interval_hours = 24     # clamped to 12-336 (matches the observer firmware)
+# neighbors_discover_window = 60    # seconds spent collecting discover responses
+# neighbors_command_timeout = 20    # cap on the discover request itself; a stalled
+#                                   # BLE/serial write can otherwise block indefinitely
+# neighbors_scope_timeout = 0       # per-request wait; 0 = use the device's own estimate
+# neighbors_scope_min_timeout = 8   # floor under the device-suggested timeout
+# neighbors_scope_gap = 2.0         # settle delay between scope requests
+# neighbors_cycle_timeout = 600     # overall budget for the scope pass
+# neighbors_max = 32                # cap on neighbors queried per cycle (most useful first)
+# neighbors_self_scopes = ""        # override for this node's own "self.scopes" value
+
 # --- Packet log rotation (only applies when an output file is given with --output) ---
 # log_rotation = "off"              # off | size | time
 # log_max_bytes = "50MB"            # size mode threshold (accepts 50MB, 10M, ...)
@@ -91,6 +108,7 @@ rf_data_timeout = 15.0
 # qos = 0
 # retain = true
 # include_decoded = true   # Publish the "decoded" object to this broker (default: capture.include_decoded, off)
+# neighbors = false        # Publish the neighbors snapshot to this broker (default off)
 #
 # [broker.tls]
 # enabled = false
@@ -109,6 +127,6 @@ rf_data_timeout = 15.0
 # email = "you@example.com"          # Optional; overrides capture.owner_email for this broker
 #
 # Optional per-broker topic overrides (take precedence over the global [topics];
-# unset keys fall back to [topics]). Keys: status, packets, decoded, debug, raw.
+# unset keys fall back to [topics]). Keys: status, packets, decoded, debug, raw, neighbors.
 # [broker.topics]
 # packets = "custom/{IATA}/{PUBLIC_KEY}/packets"

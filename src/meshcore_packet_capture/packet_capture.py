@@ -42,6 +42,14 @@ from .payload_decode import (
     ChannelKeyStore,
     decode_payload,
 )
+from .neighbors import (
+    NeighborsConfig,
+    build_neighbors_message,
+    clamp_interval_hours,
+    collect_scopes,
+    discover_neighbors,
+    fetch_self_scopes,
+)
 
 # Import MQTT client
 try:
@@ -328,6 +336,52 @@ class _RotatingPacketLog:
             self._fh.close()
 
 
+class TaskReentrantLock:
+    """An asyncio lock that the task already holding it may re-acquire.
+
+    Device commands legitimately nest: JWT creation holds the lock across the
+    whole multi-frame signing sequence, and its private-key fallback goes through
+    retryable_device_command(), which wants the same lock. A plain asyncio.Lock
+    deadlocks there. Re-entry is scoped to the owning task, so genuine
+    concurrency from other tasks is still serialised - which is the point, since
+    a command is a write plus a wait for its reply and the library serialises
+    neither (see device_command_lock in PacketCapture.__init__).
+    """
+
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._owner = None
+        self._depth = 0
+
+    async def acquire(self) -> bool:
+        task = asyncio.current_task()
+        if self._owner is not None and self._owner is task:
+            self._depth += 1
+            return True
+        await self._lock.acquire()
+        self._owner = task
+        self._depth = 1
+        return True
+
+    def release(self) -> None:
+        if self._depth == 0:
+            raise RuntimeError("release() called on an unlocked TaskReentrantLock")
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.release()
+
+
 class PacketCapture:
     """Standalone packet capture using meshcore package"""
     
@@ -385,6 +439,26 @@ class PacketCapture:
         self.stats_capability_state = None
         self.stats_update_task = None
         self.stats_fetch_lock = asyncio.Lock()
+
+        # Serialises whole device commands. meshcore_py >= 2.3.8 (now our floor)
+        # serialises the BLE write itself, which is what stops two overlapping
+        # writes from dropping the link ("BLE write failed: 19" on macOS,
+        # reproduced on hardware). That fix makes this lock unnecessary for link
+        # safety, but not redundant, because it guards two things a per-write
+        # lock cannot:
+        #
+        #   - A command is a write *plus* a wait for its reply, and the library
+        #     does not serialise that pair -- CommandHandler.send() takes no lock
+        #     (only mesh/binary requests take _mesh_request_lock) and matches
+        #     replies by event type. Two commands in flight awaiting the same
+        #     event type can therefore take each other's response.
+        #   - Multi-frame sequences that must be atomic across several commands:
+        #     on-device JWT signing is sign_start, N x sign_data, sign_finish,
+        #     and no transport-level lock can express "hold all of these".
+        self.device_command_lock = TaskReentrantLock()
+        # Extra grace on top of a command's own timeout when queueing for the
+        # lock, so a legitimately slow predecessor doesn't cause spurious giveups.
+        self.device_lock_wait_margin = self.get_env_float('DEVICE_LOCK_WAIT_MARGIN', 30.0)
         
         # Service-level failure tracking for systemd restart
         self.service_failure_count = 0
@@ -431,9 +505,38 @@ class PacketCapture:
         self.advert_interval_hours = self.get_env_int('ADVERT_INTERVAL_HOURS', 47)
         self.last_advert_time = 0
         self.advert_task = None
-        
+
         # Load persisted advert state
         self.last_advert_time = self._load_advert_state()
+
+        # Neighbors publishing (see neighbors.py). Enabled per broker; the cycle
+        # only runs when at least one connected broker has opted in.
+        requested_neighbors_interval = self.get_env_int('NEIGHBORS_INTERVAL_HOURS', 24)
+        self.neighbors_config = NeighborsConfig(
+            interval_hours=requested_neighbors_interval,
+            discover_window=self.get_env_float('NEIGHBORS_DISCOVER_WINDOW', 60.0),
+            command_timeout=self.get_env_float('NEIGHBORS_COMMAND_TIMEOUT', 20.0),
+            scope_timeout=self.get_env_float('NEIGHBORS_SCOPE_TIMEOUT', 0.0),
+            scope_min_timeout=self.get_env_float('NEIGHBORS_SCOPE_MIN_TIMEOUT', 8.0),
+            scope_gap=self.get_env_float('NEIGHBORS_SCOPE_GAP', 2.0),
+            cycle_timeout=self.get_env_float('NEIGHBORS_CYCLE_TIMEOUT', 600.0),
+            max_neighbors=self.get_env_int('NEIGHBORS_MAX', 32),
+            self_scopes=self.get_env('NEIGHBORS_SELF_SCOPES', '').strip(),
+        )
+        # NeighborsConfig clamps out-of-range values; say so rather than silently
+        # running on a number the operator didn't ask for.
+        if self.neighbors_config.interval_hours != requested_neighbors_interval:
+            self.logger.warning(
+                f"neighbors_interval_hours {requested_neighbors_interval} is outside the "
+                f"supported 12-336h range, using {self.neighbors_config.interval_hours}h"
+            )
+        self.neighbors_task = None
+        self.neighbors_capability_state = None
+        self.neighbors_discover_failures = 0
+        # Set by --neighbors-now / --neighbors-exit (see main()).
+        self.neighbors_run_now = False
+        self.neighbors_exit_after_run = False
+        self.last_neighbors_publish = self._load_neighbors_state()
         
         # Packet type filtering for uploads
         upload_types_str = self.get_env('UPLOAD_PACKET_TYPES', '').strip()
@@ -597,6 +700,35 @@ class PacketCapture:
             return self.include_decoded
         return val.strip().lower() in ('true', '1', 'yes', 'on')
 
+    def _broker_wants_neighbors(self, broker_num) -> bool:
+        """Per-broker opt-in for the neighbors topic. Off unless set, like the firmware."""
+        val = self.get_env(f'MQTT{broker_num}_NEIGHBORS', '')
+        return val.strip().lower() in ('true', '1', 'yes', 'on')
+
+    def neighbors_broker_nums(self, warn_unroutable: bool = False) -> list:
+        """Enabled brokers that opted into neighbors publishing *and* can route it.
+
+        A broker that opted in but whose neighbors topic cannot resolve (no IATA
+        and no explicit override) is excluded: including it would spend a full
+        discover window plus one on-air scope request per neighbor every cycle and
+        then discard the result.
+        """
+        opted_in = [
+            n for n in self.iter_configured_mqtt_brokers()
+            if self.get_env_bool(f'MQTT{n}_ENABLED', False) and self._broker_wants_neighbors(n)
+        ]
+        routable = []
+        for n in opted_in:
+            if self.get_topic('NEIGHBORS', n):
+                routable.append(n)
+            elif warn_unroutable:
+                self.logger.warning(
+                    f"{self.get_broker_label(n)} has neighbors enabled but no neighbors topic "
+                    "could be resolved (set an IATA code or a per-broker neighbors topic); "
+                    "skipping it"
+                )
+        return routable
+
     def _get_state_file_path(self):
         """Get the path to the state file for persisting last_advert_time.
         
@@ -620,75 +752,119 @@ class PacketCapture:
         # Fall back to script directory (works for all installation methods)
         return os.path.join(script_dir, 'advert_state.json')
     
-    def _load_advert_state(self):
-        """Load last_advert_time from persistent state file.
-        
-        Returns the timestamp if found, otherwise returns 0.
-        """
+    def _read_state_dict(self) -> dict:
+        """Read the whole state file. Returns {} when missing or unreadable."""
         state_file = self._get_state_file_path()
-        
+
         if not os.path.exists(state_file):
             if self.debug:
-                self.logger.debug(f"Advert state file not found: {state_file}")
-            return 0
-        
+                self.logger.debug(f"State file not found: {state_file}")
+            return {}
+
         try:
             with open(state_file, 'r') as f:
                 state = json.load(f)
-                last_time = state.get('last_advert_time', 0)
-                
-                # Validate the timestamp is reasonable (not in the future, not too old)
-                current_time = time.time()
-                if last_time > current_time:
-                    # Timestamp is in the future, ignore it
-                    if self.debug:
-                        self.logger.debug(f"Advert state timestamp is in the future, ignoring: {last_time}")
-                    return 0
-                
-                # If timestamp is more than 1 year old, treat as invalid
-                if current_time - last_time > 31536000:  # 1 year in seconds
-                    if self.debug:
-                        self.logger.debug(f"Advert state timestamp is too old, ignoring: {last_time}")
-                    return 0
-                
-                if self.debug:
-                    self.logger.debug(f"Loaded last_advert_time from state file: {last_time} ({datetime.fromtimestamp(last_time).isoformat()})")
-                return last_time
-                
+            return state if isinstance(state, dict) else {}
         except (json.JSONDecodeError, IOError, OSError) as e:
-            self.logger.warning(f"Failed to load advert state from {state_file}: {e}")
+            self.logger.warning(f"Failed to load state from {state_file}: {e}")
+            return {}
+
+    def _validate_state_timestamp(self, value, label: str) -> float:
+        """Reject timestamps in the future or more than a year old."""
+        try:
+            timestamp = float(value or 0)
+        except (TypeError, ValueError):
             return 0
-    
-    def _save_advert_state(self):
-        """Save last_advert_time to persistent state file."""
+
+        if timestamp <= 0:
+            return 0
+
+        current_time = time.time()
+        if timestamp > current_time:
+            if self.debug:
+                self.logger.debug(f"{label} is in the future, ignoring: {timestamp}")
+            return 0
+        if current_time - timestamp > 31536000:  # 1 year in seconds
+            if self.debug:
+                self.logger.debug(f"{label} is too old, ignoring: {timestamp}")
+            return 0
+        return timestamp
+
+    def _write_state_updates(self, updates: dict, label: str) -> None:
+        """Merge ``updates`` into the state file and write it atomically.
+
+        Merging matters because advert and neighbors timestamps share one file;
+        a wholesale overwrite would drop whichever key wasn't being saved.
+        """
         state_file = self._get_state_file_path()
         state_dir = os.path.dirname(state_file)
-        
+
         try:
             # Create directory if it doesn't exist (for data subdirectory case)
             if state_dir and not os.path.exists(state_dir):
                 os.makedirs(state_dir, mode=0o755, exist_ok=True)
-            
-            state = {
-                'last_advert_time': self.last_advert_time,
-                'updated_at': time.time()
-            }
-            
+
+            state = self._read_state_dict()
+            state.update(updates)
+            state['updated_at'] = time.time()
+
             # Write atomically using a temporary file
             temp_file = state_file + '.tmp'
             with open(temp_file, 'w') as f:
                 json.dump(state, f, indent=2)
-            
+
             # Atomic rename
             os.replace(temp_file, state_file)
-            
+
             if self.debug:
-                self.logger.debug(f"Saved last_advert_time to state file: {self.last_advert_time} ({datetime.fromtimestamp(self.last_advert_time).isoformat()})")
-                
+                self.logger.debug(f"Saved {label} to state file: {updates}")
+
         except (IOError, OSError) as e:
-            self.logger.warning(f"Failed to save advert state to {state_file}: {e}")
-    
-    
+            self.logger.warning(f"Failed to save {label} to {state_file}: {e}")
+
+    def _load_advert_state(self):
+        """Load last_advert_time from persistent state file.
+
+        Returns the timestamp if found, otherwise returns 0.
+        """
+        last_time = self._validate_state_timestamp(
+            self._read_state_dict().get('last_advert_time', 0), 'Advert state timestamp'
+        )
+        if last_time and self.debug:
+            self.logger.debug(
+                f"Loaded last_advert_time from state file: {last_time} "
+                f"({datetime.fromtimestamp(last_time).isoformat()})"
+            )
+        return last_time
+
+    def _save_advert_state(self):
+        """Save last_advert_time to persistent state file."""
+        self._write_state_updates({'last_advert_time': self.last_advert_time}, 'last_advert_time')
+
+    def _load_neighbors_state(self):
+        """Load last_neighbors_publish from persistent state file.
+
+        Neighbors intervals are long (12-336h), so surviving a restart is what
+        keeps the schedule honest instead of republishing on every boot.
+        """
+        last_time = self._validate_state_timestamp(
+            self._read_state_dict().get('last_neighbors_publish', 0),
+            'Neighbors state timestamp',
+        )
+        if last_time and self.debug:
+            self.logger.debug(
+                f"Loaded last_neighbors_publish from state file: {last_time} "
+                f"({datetime.fromtimestamp(last_time).isoformat()})"
+            )
+        return last_time
+
+    def _save_neighbors_state(self):
+        """Save last_neighbors_publish to persistent state file."""
+        self._write_state_updates(
+            {'last_neighbors_publish': self.last_neighbors_publish}, 'last_neighbors_publish'
+        )
+
+
     def calculate_connection_retry_delay(self, attempt: int) -> float:
         """Calculate exponential backoff delay with jitter for connection retries"""
         import random
@@ -809,11 +985,32 @@ class PacketCapture:
                     await asyncio.sleep(current_delay)
                     current_delay *= backoff_multiplier  # Exponential backoff
                 
-                # Execute command with timeout
-                result = await asyncio.wait_for(
-                    command_func(),
-                    timeout=timeout
-                )
+                # Execute command with timeout. The lock is held only for the
+                # attempt itself, not across retry backoffs, so a retrying command
+                # doesn't lock out the rest of the app.
+                #
+                # Acquiring is bounded too. Waiting unbounded here would let a
+                # stalled holder block the connection watchdog, which is the one
+                # thing that can recover a stalled link -- its own timeout can't
+                # fire while it is still queued for the lock.
+                try:
+                    await asyncio.wait_for(
+                        self.device_command_lock.acquire(),
+                        timeout=timeout + self.device_lock_wait_margin,
+                    )
+                except asyncio.TimeoutError:
+                    last_error = f"{command_name} timed out waiting for the device lock"
+                    self.logger.warning(f"{last_error} (another command appears stalled)")
+                    if attempt < max_retries - 1:
+                        continue
+                    return None
+                try:
+                    result = await asyncio.wait_for(
+                        command_func(),
+                        timeout=timeout
+                    )
+                finally:
+                    self.device_command_lock.release()
                 
                 # Check if result is an error
                 if result and hasattr(result, 'type'):
@@ -1054,8 +1251,14 @@ class PacketCapture:
         if self.is_letsmesh_broker(broker_num):
             return True
         
-        # Check if any configured topics use IATA placeholders
+        # Check if any configured topics use IATA placeholders. NEIGHBORS counts
+        # only when this broker actually opted in: otherwise a global
+        # [topics] neighbors template would disable an unrelated broker outright,
+        # which also contradicts neighbors_broker_nums() merely skipping
+        # unroutable brokers.
         topic_types = ['STATUS', 'PACKETS', 'DECODED', 'DEBUG', 'RAW']
+        if self._broker_wants_neighbors(broker_num):
+            topic_types = topic_types + ['NEIGHBORS']
         for topic_type in topic_types:
             # Check broker-specific topic
             broker_topic = self.get_env(f'MQTT{broker_num}_TOPIC_{topic_type}', '')
@@ -1090,6 +1293,17 @@ class PacketCapture:
             if self.debug:
                 self.logger.debug(f"No RAW topic configured for broker {broker_num}, skipping RAW publish")
             return None
+
+        # NEIGHBORS has no classic flat default: the firmware only routes it on
+        # MeshCore-style topics, which require an IATA. Without one, the broker
+        # must set the topic explicitly.
+        if topic_type_upper == 'NEIGHBORS' and not self.has_configured_iata(broker_num):
+            if self.debug:
+                self.logger.debug(
+                    f"No NEIGHBORS topic configured for broker {broker_num} and no IATA set, "
+                    "skipping NEIGHBORS publish"
+                )
+            return None
         
         # Defaulting policy adjustment:
         # - Never use classic defaults (meshcore/status, meshcore/packets, etc.) for Let's Mesh Analyzer brokers
@@ -1103,7 +1317,8 @@ class PacketCapture:
             'STATUS': 'meshcore/{IATA}/{PUBLIC_KEY}/status',
             'PACKETS': 'meshcore/{IATA}/{PUBLIC_KEY}/packets',
             'DECODED': 'meshcore/{IATA}/{PUBLIC_KEY}/decoded',
-            'DEBUG': 'meshcore/{IATA}/{PUBLIC_KEY}/debug'
+            'DEBUG': 'meshcore/{IATA}/{PUBLIC_KEY}/debug',
+            'NEIGHBORS': 'meshcore/{IATA}/{PUBLIC_KEY}/neighbors'
         }
         classic_defaults = {
             'STATUS': 'meshcore/status',
@@ -1404,11 +1619,18 @@ class PacketCapture:
         expiry_seconds = self.resolve_token_ttl(broker_num)
         # Use on-device signing (preferred) or private key method (fallback)
         # The create_jwt_with_private_key() method already logs which method was used
-        jwt_token = await self.create_jwt_with_private_key(
-            audience,
-            expiry_seconds=expiry_seconds,
-            broker_num=broker_num,
-        )
+        #
+        # Held under the device lock for the whole call: on-device signing is a
+        # multi-frame sequence (sign_start, N x sign_data, sign_finish) that has
+        # to complete as a unit. The library's transport-level write lock cannot
+        # supply that -- it serialises single writes, so another command would
+        # still be free to interleave between two signing chunks.
+        async with self.device_command_lock:
+            jwt_token = await self.create_jwt_with_private_key(
+                audience,
+                expiry_seconds=expiry_seconds,
+                broker_num=broker_num,
+            )
         if jwt_token:
             # Store token with expiry time if broker_num is provided
             if broker_num is not None:
@@ -2807,6 +3029,15 @@ class PacketCapture:
                     self.logger.warning(f"{broker_label} client not connected - skipping publish")
                     continue
 
+                # Neighbors is opt-in per broker (the firmware defaults it off too).
+                if topic_type and topic_type.upper() == 'NEIGHBORS' \
+                        and not self._broker_wants_neighbors(current_broker_num):
+                    if self.debug:
+                        self.logger.debug(
+                            f"Skipping NEIGHBORS publish to {broker_label} - not enabled for this broker"
+                        )
+                    continue
+
                 # CRITICAL FIX: Resolve topic properly
                 if topic_type:
                     resolved_topic = self.get_topic(topic_type, current_broker_num)
@@ -3598,8 +3829,18 @@ class PacketCapture:
         # Start stats refresh scheduler
         if self.stats_status_enabled and self.stats_refresh_interval > 0:
             self.stats_update_task = asyncio.create_task(self.stats_refresh_scheduler())
-        
-        
+
+        # Manual one-shot neighbors run (--neighbors-now), before the scheduler so a
+        # test run can't race a scheduled cycle for the device's request lock.
+        if self.neighbors_run_now:
+            await self.run_manual_neighbors_cycle()
+
+        # Start neighbors scheduler (only if a broker opted in and can route it)
+        if (not self.should_exit and self.enable_mqtt
+                and self.neighbors_broker_nums(warn_unroutable=True)):
+            self.neighbors_task = asyncio.create_task(self.neighbors_scheduler())
+
+
         try:
             while not self.should_exit:
                 current_time = time.time()
@@ -3635,7 +3876,9 @@ class PacketCapture:
                 self.jwt_renewal_task.cancel()
             if self.stats_update_task:
                 self.stats_update_task.cancel()
-            
+            if self.neighbors_task:
+                self.neighbors_task.cancel()
+
             # Cancel all tracked active tasks
             for task in self.active_tasks.copy():
                 task.cancel()
@@ -3660,7 +3903,12 @@ class PacketCapture:
                     await self.stats_update_task
                 except asyncio.CancelledError:
                     pass
-            
+            if self.neighbors_task:
+                try:
+                    await self.neighbors_task
+                except asyncio.CancelledError:
+                    pass
+
             # Wait for all active tasks to complete
             if self.active_tasks:
                 await asyncio.gather(*self.active_tasks, return_exceptions=True)
@@ -3748,7 +3996,11 @@ class PacketCapture:
                 return False
             
             self.logger.info("Sending flood advert...")
-            await self.meshcore.commands.send_advert(flood=True)
+            # Under the device lock like every other command: send_advert does
+            # not go through retryable_device_command(), so it would otherwise be
+            # the one command able to run concurrently with a reply-awaiting one.
+            async with self.device_command_lock:
+                await self.meshcore.commands.send_advert(flood=True)
             self.last_advert_time = time.time()
             self._save_advert_state()  # Persist the timestamp
             self.logger.info("Flood advert sent successfully!")
@@ -3798,6 +4050,216 @@ class PacketCapture:
                 if await self.wait_with_shutdown(60):
                     break  # Shutdown was requested
     
+    def neighbors_commands_available(self) -> bool:
+        """Detect whether the connected build exposes the neighbors commands.
+
+        ``send_node_discover_req`` needs companion CMD_SEND_CONTROL_DATA (v8+) and
+        ``req_regions_sync`` needs CMD_SEND_ANON_REQ; older firmware or older
+        meshcore_py lacks them. Logged once per state change, like stats.
+        """
+        if not self.meshcore or not hasattr(self.meshcore, "commands"):
+            return False
+
+        commands = self.meshcore.commands
+        required = ["send_node_discover_req", "req_regions_sync"]
+        available = all(callable(getattr(commands, attr, None)) for attr in required)
+        state = "available" if available else "missing"
+        if state != self.neighbors_capability_state:
+            if available:
+                self.logger.info("MeshCore neighbors commands detected - neighbors publishing enabled")
+            else:
+                self.logger.warning(
+                    "MeshCore neighbors commands not available - neighbors publishing disabled"
+                )
+            self.neighbors_capability_state = state
+        return available
+
+    async def run_neighbors_cycle(self) -> bool:
+        """Run one discover + scopes pass and publish the result.
+
+        Returns True when a payload was published. Mirrors the firmware's
+        two-stage cycle (see neighbors.py and MyMesh::loopNeighborDiscover).
+        """
+        if not self._ensure_connected("neighbors cycle", "debug"):
+            return False
+        if not self.enable_mqtt or not self.mqtt_connected:
+            if self.debug:
+                self.logger.debug("Neighbors cycle skipped: MQTT not connected")
+            return False
+        if not self.neighbors_broker_nums():
+            if self.debug:
+                self.logger.debug("Neighbors cycle skipped: no broker has neighbors enabled")
+            return False
+        if not self.neighbors_commands_available():
+            return False
+
+        cfg = self.neighbors_config
+        self.logger.info("Neighbors: starting discovery cycle")
+
+        # A reconnect swaps in a fresh MeshCore object and clears every event
+        # subscription, so a cycle spanning one is collecting into a dead handler.
+        session = self.meshcore
+
+        def session_intact():
+            return self.meshcore is session and self.connected
+
+        entries = await discover_neighbors(
+            self.meshcore,
+            cfg,
+            self.device_public_key,
+            self.logger,
+            debug=self.debug,
+            still_valid=session_intact,
+            command_lock=self.device_command_lock,
+        )
+        if entries is None:
+            # A build that rejects the discover command fails every cycle; warn once
+            # rather than every wakeup forever.
+            self.neighbors_discover_failures += 1
+            if self.neighbors_discover_failures == 1:
+                self.logger.warning(
+                    "Neighbors: discovery request failed; will keep retrying quietly "
+                    "on the configured interval"
+                )
+            else:
+                self.logger.debug(
+                    f"Neighbors: discovery request failed "
+                    f"({self.neighbors_discover_failures} consecutive)"
+                )
+            return False
+        self.neighbors_discover_failures = 0
+
+        total_discovered = len(entries)
+        if len(entries) > cfg.max_neighbors:
+            self.logger.info(
+                f"Neighbors: {len(entries)} discovered, querying the {cfg.max_neighbors} most useful"
+            )
+            entries = entries[:cfg.max_neighbors]
+
+        self.logger.info(f"Neighbors: {len(entries)} neighbor(s) discovered, collecting scopes")
+        await collect_scopes(self.meshcore, entries, cfg, self.logger, debug=self.debug,
+                             command_lock=self.device_command_lock)
+
+        if not session_intact():
+            self.logger.warning(
+                "Neighbors: device session was reset during scope collection, "
+                "discarding this cycle rather than publishing partial data"
+            )
+            return False
+
+        self_scopes = await fetch_self_scopes(self.meshcore, cfg, self.logger,
+                                              self.device_command_lock)
+        origin_id = (
+            self.device_public_key.upper()
+            if self.device_public_key and self.device_public_key != 'Unknown'
+            else 'DEVICE'
+        )
+        message, dropped = build_neighbors_message(
+            self.device_name or self.get_env('ORIGIN', 'MeshCore Device'),
+            origin_id, self_scopes, entries,
+            total_neighbors=total_discovered,
+        )
+        if dropped:
+            self.logger.warning(
+                f"Neighbors: payload budget reached, dropped {dropped} least-useful entry(ies)"
+            )
+
+        # Non-retained: a snapshot taken every 12-336h is not a useful last-will value.
+        metrics = self.safe_publish(
+            None, json.dumps(message), retain=False, topic_type="neighbors"
+        )
+        responded = sum(1 for e in entries if e.status == 'responded')
+        if metrics['attempted'] == 0:
+            # Discovery cost real airtime, so a silent no-op here is worth flagging.
+            self.logger.warning(
+                f"Neighbors: collected {len(entries)} neighbor(s) but no broker accepted the "
+                "publish (check that a neighbors-enabled broker is connected)"
+            )
+        else:
+            self.logger.info(
+                f"Neighbors: published {len(message['neighbors'])} entry(ies) "
+                f"({responded} with scopes) to "
+                f"{metrics['succeeded']}/{metrics['attempted']} broker(s)"
+            )
+
+        # Record the attempt even if no broker accepted it, so a persistently
+        # failing publish can't turn into a discovery loop on every wakeup.
+        self.last_neighbors_publish = time.time()
+        self._save_neighbors_state()
+        return metrics['succeeded'] > 0
+
+    async def run_manual_neighbors_cycle(self):
+        """Handle --neighbors-now (and --neighbors-exit).
+
+        Extracted from start() so it is directly testable: a test-side copy of
+        this logic would pass while start() itself was broken.
+        """
+        if not self.enable_mqtt:
+            self.logger.error("--neighbors-now requires MQTT (remove --no-mqtt)")
+        elif not self.neighbors_broker_nums(warn_unroutable=True):
+            self.logger.error(
+                "--neighbors-now: no enabled broker has neighbors = true with a "
+                "resolvable neighbors topic"
+            )
+        else:
+            self.logger.info("Neighbors: running one cycle on request (--neighbors-now)")
+            # Hard cap: this runs inline before the main loop, so an unbounded
+            # stall here would hang startup outright. Derived from the same terms
+            # collect_scopes can actually spend, plus the self-scope query.
+            cfg = self.neighbors_config
+            budget = (cfg.discover_window + cfg.command_timeout + cfg.cycle_timeout
+                      + cfg.scope_request_budget + cfg.scope_gap + cfg.command_timeout)
+            try:
+                await asyncio.wait_for(self.run_neighbors_cycle(), timeout=budget)
+            except asyncio.TimeoutError:
+                self.logger.error(
+                    f"Neighbors: manual cycle exceeded {budget:.0f}s and was abandoned"
+                )
+            except Exception as e:
+                self.logger.error(f"Neighbors: manual cycle failed: {e}", exc_info=True)
+
+        if self.neighbors_exit_after_run:
+            self.logger.info("Neighbors: manual cycle complete, exiting (--neighbors-exit)")
+            self.should_exit = True
+
+    async def neighbors_scheduler(self):
+        """Background task publishing the neighbors topic on the configured interval."""
+        interval_seconds = self.neighbors_config.interval_seconds
+        if self.debug:
+            self.logger.debug(
+                f"Starting neighbors scheduler "
+                f"({clamp_interval_hours(self.neighbors_config.interval_hours)}h interval)"
+            )
+
+        while not self.should_exit:
+            try:
+                time_since_last = time.time() - self.last_neighbors_publish
+                if time_since_last < interval_seconds:
+                    sleep_time = interval_seconds - time_since_last
+                    if self.debug:
+                        self.logger.debug(f"Next neighbors publish in {sleep_time/3600:.1f} hours")
+                    if await self.wait_with_shutdown(sleep_time):
+                        break
+                    continue
+
+                await self.run_neighbors_cycle()
+
+                # run_neighbors_cycle stamps last_neighbors_publish on success. If it
+                # bailed early (not connected, no broker), back off before retrying
+                # so we re-check periodically rather than spinning.
+                if (time.time() - self.last_neighbors_publish) >= interval_seconds:
+                    if await self.wait_with_shutdown(300):
+                        break
+
+            except asyncio.CancelledError:
+                if self.debug:
+                    self.logger.debug("Neighbors scheduler cancelled")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in neighbors scheduler: {e}")
+                if await self.wait_with_shutdown(300):
+                    break
+
     def seconds_until_next_renewal(self) -> float:
         """Seconds to sleep before the next JWT renewal check.
 
@@ -3861,6 +4323,18 @@ async def main():
     parser.add_argument('--debug', action='store_true', help='Enable debug output (shows all detailed debugging info)')
     parser.add_argument('--no-mqtt', action='store_true', help='Disable MQTT publishing')
     parser.add_argument(
+        '--neighbors-now',
+        action='store_true',
+        help='Run one neighbors discovery + scopes cycle immediately, ignoring the '
+             'schedule (the equivalent of the firmware\'s "discover.neighbors"). '
+             'Combine with --neighbors-exit to run just that and quit.',
+    )
+    parser.add_argument(
+        '--neighbors-exit',
+        action='store_true',
+        help='With --neighbors-now, exit once the cycle finishes instead of continuing to capture.',
+    )
+    parser.add_argument(
         '--config',
         action='append',
         dest='config_files',
@@ -3896,6 +4370,14 @@ async def main():
         enable_mqtt=not args.no_mqtt,
         shutdown_event=shutdown_event
     )
+
+    # Manual neighbors trigger: the firmware has a `discover.neighbors` CLI command,
+    # and the 12h minimum interval makes waiting for the scheduler impractical when
+    # testing. Runs once the device and brokers are up.
+    capture.neighbors_run_now = args.neighbors_now
+    capture.neighbors_exit_after_run = args.neighbors_exit
+    if args.neighbors_exit and not args.neighbors_now:
+        capture.logger.warning("--neighbors-exit has no effect without --neighbors-now")
     
     # Command line arguments override environment variable
     if args.debug:

@@ -145,7 +145,7 @@ Wants=network-online.target
 Type=exec
 WorkingDirectory=$WORKING_DIRECTORY
 Environment=$ENV_DIRECTORY
-ExecStart=/usr/bin/env $PYTHON_EXECUTABLE -m meshcore_packet_capture ${CONFIG_ARGS_ESCAPED[*]}
+ExecStart=env $PYTHON_EXECUTABLE -m meshcore_packet_capture ${CONFIG_ARGS_ESCAPED[*]}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=10

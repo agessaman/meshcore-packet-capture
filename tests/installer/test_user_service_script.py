@@ -88,7 +88,7 @@ def test_user_service_normalizes_and_quotes_repo_path(tmp_path: Path) -> None:
     unit = unit_path.read_text()
     expected_exec = " ".join(
         [
-            "/usr/bin/env",
+            "env",
             _quote_exec_arg(str(python)),
             "-m",
             "meshcore_packet_capture",

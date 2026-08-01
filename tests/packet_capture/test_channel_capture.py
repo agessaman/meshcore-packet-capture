@@ -54,6 +54,32 @@ async def test_handle_decoded_message_event_routes_channel_topic_per_broker(
     assert published[1][0] == "meshcore/private/ABC123/channel/3"
 
 
+def test_resolve_channel_topic_rejects_invalid_indices(capture: PacketCapture):
+    from meshcore_packet_capture.channel_capture import resolve_channel_topic
+
+    def _get_topic(topic_type, broker_num=None):
+        if topic_type == "channel":
+            return "meshcore/private/channel/{CHANNEL}"
+        return None
+
+    capture.get_topic = _get_topic  # type: ignore[method-assign]
+
+    # Valid
+    assert resolve_channel_topic(capture, 1, 0) == "meshcore/private/channel/0"
+    assert resolve_channel_topic(capture, 1, 3) == "meshcore/private/channel/3"
+    assert resolve_channel_topic(capture, 1, "5") == "meshcore/private/channel/5"
+    assert resolve_channel_topic(capture, 1, 255) == "meshcore/private/channel/255"
+
+    # Invalid -> None, preventing channel 0 fallback
+    assert resolve_channel_topic(capture, 1, None) is None
+    assert resolve_channel_topic(capture, 1, "") is None
+    assert resolve_channel_topic(capture, 1, "   ") is None
+    assert resolve_channel_topic(capture, 1, "abc") is None
+    assert resolve_channel_topic(capture, 1, -1) is None
+    assert resolve_channel_topic(capture, 1, 256) is None
+    assert resolve_channel_topic(capture, 1, 999) is None
+
+
 @pytest.mark.asyncio
 async def test_setup_event_handlers_subscribes_channel_when_channel_configured(
     monkeypatch: pytest.MonkeyPatch, capture: PacketCapture

@@ -709,6 +709,17 @@ class PacketCapture:
             return self.include_decoded
         return val.strip().lower() in ('true', '1', 'yes', 'on')
 
+    def _broker_wants_decoded_raw(self, broker_num) -> bool:
+        """Per-broker opt-in for raw SDK event_payload export (default: include_decoded_raw).
+
+        Raw payload is off by default; enabling requires explicit per-broker opt-in
+        to avoid leaking SDK metadata across mixed-trust brokers.
+        """
+        val = self.get_env(f'MQTT{broker_num}_INCLUDE_DECODED_RAW', '')
+        if val != '':
+            return val.strip().lower() in ('true', '1', 'yes', 'on')
+        return self.get_env_bool('INCLUDE_DECODED_RAW', False)
+
     def _broker_wants_neighbors(self, broker_num) -> bool:
         """Per-broker opt-in for the neighbors topic. Off unless set, like the firmware."""
         val = self.get_env(f'MQTT{broker_num}_NEIGHBORS', '')

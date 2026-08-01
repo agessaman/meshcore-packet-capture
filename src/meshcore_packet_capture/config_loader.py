@@ -138,6 +138,8 @@ def _broker_to_env_slot(broker: dict[str, Any], slot: int) -> dict[str, str]:
         out[prefix + "IATA"] = str(broker["iata"])
     if "include_decoded" in broker:
         out[prefix + "INCLUDE_DECODED"] = _bool_str(broker["include_decoded"])
+    if "include_decoded_raw" in broker:
+        out[prefix + "INCLUDE_DECODED_RAW"] = _bool_str(broker["include_decoded_raw"])
     if "neighbors" in broker:
         out[prefix + "NEIGHBORS"] = _bool_str(broker["neighbors"])
 
@@ -273,6 +275,9 @@ def flatten_config_to_env_dict(config: dict[str, Any]) -> dict[str, str]:
         "decode_hashtag_channels": "DECODE_HASHTAG_CHANNELS",
         "decode_channel_keys": "DECODE_CHANNEL_KEYS",
         "decode_include_public": "DECODE_INCLUDE_PUBLIC",
+        # Decoded message capture hardening
+        "log_decoded_content": "LOG_DECODED_CONTENT",
+        "include_decoded_raw": "INCLUDE_DECODED_RAW",
         # Neighbors publishing (opt in per broker with [[broker]] neighbors = true)
         "neighbors_interval_hours": "NEIGHBORS_INTERVAL_HOURS",
         "neighbors_discover_window": "NEIGHBORS_DISCOVER_WINDOW",

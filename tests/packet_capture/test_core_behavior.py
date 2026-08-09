@@ -111,6 +111,61 @@ async def test_connect_passes_configured_ble_pin(
 
 
 @pytest.mark.asyncio
+async def test_connect_mqtt_broker_uses_configured_websocket_path(
+    monkeypatch: pytest.MonkeyPatch,
+    capture: PacketCapture,
+) -> None:
+    clients = []
+
+    class _MQTTClient:
+        def __init__(self, *_args, **_kwargs):
+            self.websocket_path = None
+            clients.append(self)
+
+        def enable_logger(self, _logger):
+            pass
+
+        def reconnect_delay_set(self, **_kwargs):
+            pass
+
+        def user_data_set(self, _data):
+            pass
+
+        def will_set(self, *_args, **_kwargs):
+            pass
+
+        def ws_set_options(self, *, path, headers):
+            self.websocket_path = path
+
+        def connect(self, *_args, **_kwargs):
+            pass
+
+        def loop_start(self):
+            pass
+
+    monkeypatch.setattr(pc_mod.mqtt, "Client", _MQTTClient, raising=False)
+    monkeypatch.setattr(
+        pc_mod.mqtt,
+        "CallbackAPIVersion",
+        types.SimpleNamespace(VERSION2=2),
+        raising=False,
+    )
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_ENABLED", "true")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_SERVER", "mqtt.example.com")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_PORT", "443")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_TRANSPORT", "websockets")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_WEBSOCKET_PATH", "/mqtt")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_USE_TLS", "false")
+    capture.device_name = "test"
+    capture.device_public_key = "ABCDEF"
+
+    result = await capture.connect_mqtt_broker(1)
+
+    assert result is not None
+    assert clients[0].websocket_path == "/mqtt"
+
+
+@pytest.mark.asyncio
 async def test_wait_with_shutdown_event_returns_true(capture: PacketCapture) -> None:
     capture.shutdown_event = asyncio.Event()
     capture.shutdown_event.set()

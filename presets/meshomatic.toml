@@ -4,6 +4,7 @@ enabled = true
 server = "us-east.meshomatic.net"
 port = 443
 transport = "websockets"
+websocket_path = "/mqtt"
 keepalive = 55
 qos = 0
 retain = true

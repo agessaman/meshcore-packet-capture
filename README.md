@@ -272,6 +272,7 @@ Brokers are discovered sequentially starting at `MQTT1` and continue until `PACK
 - `PACKETCAPTURE_MQTT1_PORT`: MQTT broker port
 - `PACKETCAPTURE_MQTT1_USERNAME`/`PACKETCAPTURE_MQTT1_PASSWORD`: Authentication credentials
 - `PACKETCAPTURE_MQTT1_TRANSPORT`: Transport type (`tcp` or `websockets`)
+- `PACKETCAPTURE_MQTT1_WEBSOCKET_PATH`: WebSocket endpoint path (default: `/`)
 - `PACKETCAPTURE_MQTT1_USE_TLS`: Enable TLS/SSL encryption
 - `PACKETCAPTURE_MQTT1_TLS_VERIFY`: Verify TLS certificates (default: true)
 - `PACKETCAPTURE_MQTT1_USE_AUTH_TOKEN`: Use auth token authentication

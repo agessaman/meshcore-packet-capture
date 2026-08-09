@@ -126,6 +126,8 @@ def _broker_to_env_slot(broker: dict[str, Any], slot: int) -> dict[str, str]:
         out[prefix + "PORT"] = str(int(broker["port"]))
     if "transport" in broker:
         out[prefix + "TRANSPORT"] = str(broker["transport"])
+    if "websocket_path" in broker:
+        out[prefix + "WEBSOCKET_PATH"] = str(broker["websocket_path"])
     if "keepalive" in broker:
         out[prefix + "KEEPALIVE"] = str(int(broker["keepalive"]))
     if "qos" in broker:

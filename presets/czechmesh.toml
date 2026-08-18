@@ -1,0 +1,42 @@
+[[broker]]
+name = "MQTT1 Czech"
+enabled = true
+server = "mqtt1.meshcore.cz"
+port = 443
+transport = "websockets"
+keepalive = 120
+qos = 0
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt1.meshcore.cz"
+
+[broker.topics]
+status = "meshcore/{IATA}/{PUBLIC_KEY}/status"
+packets = "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+
+
+[[broker]]
+name = "MQTT2 Czech"
+enabled = true
+server = "mqtt2.meshcore.website"
+port = 443
+transport = "websockets"
+keepalive = 120
+qos = 0
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt2.meshcore.website"
+
+[broker.topics]
+status = "meshcore/{IATA}/{PUBLIC_KEY}/status"
+packets = "meshcore/{IATA}/{PUBLIC_KEY}/packets"

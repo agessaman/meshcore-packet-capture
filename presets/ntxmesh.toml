@@ -2,7 +2,7 @@
 name = "ntxmesh"
 enabled = true
 server = "ntxmesh.dhovin.me"
-port = 443
+port = 8883
 transport = "websockets"
 keepalive = 55
 qos = 0

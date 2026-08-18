@@ -104,6 +104,7 @@ rf_data_timeout = 15.0
 # server = "mqtt.example.com"
 # port = 1883
 # transport = "tcp"
+# websocket_path = "/" # Optional WebSocket endpoint path; ignored for TCP
 # keepalive = 60
 # qos = 0
 # retain = true

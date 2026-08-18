@@ -2717,8 +2717,9 @@ class PacketCapture:
             
             # Handle WebSocket transport
             if transport == "websockets":
+                websocket_path = self.get_env(f'MQTT{broker_num}_WEBSOCKET_PATH', '/')
                 mqtt_client.ws_set_options(
-                    path="/",
+                    path=websocket_path,
                     headers=None
                 )
             

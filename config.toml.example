@@ -73,6 +73,14 @@ rf_data_timeout = 15.0
 # decode_channel_keys = "name=hexOrBase64,other=..."  # Custom channel keys (16-byte hex or base64)
 # decode_include_public = true      # Include the well-known default "Public" channel key
 
+# --- Companion inbox export (decrypted DMs / subscribed channels via MQTT) ---
+# This is not RF decode. It republishes messages already decrypted by THIS
+# companion identity. Off unless a broker sets direct = true or channel = true.
+# A global [topics] direct/channel string is only a template, never an enable.
+# MQTT payloads include plaintext once a broker is opted in. Logs stay
+# metadata-only unless log_decoded_content = true.
+# log_decoded_content = false
+
 # --- Neighbors publishing (zero-hop neighbor table + each neighbor's region scopes) ---
 # Off by default. Opt in per broker with `neighbors = true` in its [[broker]] block; the
 # cycle only runs when at least one enabled broker has done so. Published non-retained to
@@ -110,6 +118,9 @@ rf_data_timeout = 15.0
 # retain = true
 # include_decoded = true   # Publish the "decoded" object to this broker (default: capture.include_decoded, off)
 # neighbors = false        # Publish the neighbors snapshot to this broker (default off)
+# direct = false           # Publish decrypted companion DMs to this broker (default off)
+# channel = false          # Publish decrypted companion channel messages (default off)
+# include_decoded_raw = false  # Attach raw SDK event_payload; per-broker only, default off
 #
 # [broker.tls]
 # enabled = false
@@ -128,6 +139,10 @@ rf_data_timeout = 15.0
 # email = "you@example.com"          # Optional; overrides capture.owner_email for this broker
 #
 # Optional per-broker topic overrides (take precedence over the global [topics];
-# unset keys fall back to [topics]). Keys: status, packets, decoded, debug, raw, neighbors.
+# unset keys fall back to [topics]). Keys: status, packets, decoded, debug, raw,
+# neighbors, direct, channel. direct/channel templates do not enable export;
+# the broker still needs direct = true / channel = true.
 # [broker.topics]
 # packets = "custom/{IATA}/{PUBLIC_KEY}/packets"
+# direct = "meshcore/{IATA}/{PUBLIC_KEY}/direct"
+# channel = "meshcore/{IATA}/{PUBLIC_KEY}/channel/{CHANNEL}"

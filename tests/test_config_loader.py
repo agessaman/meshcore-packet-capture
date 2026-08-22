@@ -269,3 +269,32 @@ def test_flatten_per_broker_neighbors_explicit_false():
     cfg = {"broker": [{"name": "a", "enabled": True, "neighbors": False}]}
     env = cl.flatten_config_to_env_dict(cfg)
     assert env["PACKETCAPTURE_MQTT1_NEIGHBORS"] == "false"
+
+
+def test_flatten_per_broker_direct_channel_and_raw_flags():
+    cfg = {
+        "capture": {"log_decoded_content": True},
+        "broker": [
+            {
+                "name": "trusted",
+                "enabled": True,
+                "direct": True,
+                "channel": True,
+                "include_decoded_raw": True,
+                "topics": {
+                    "direct": "meshcore/{IATA}/{PUBLIC_KEY}/direct",
+                    "channel": "meshcore/{IATA}/{PUBLIC_KEY}/channel/{CHANNEL}",
+                },
+            },
+            {"name": "community", "enabled": True},
+        ],
+    }
+    env = cl.flatten_config_to_env_dict(cfg)
+    assert env["PACKETCAPTURE_LOG_DECODED_CONTENT"] == "true"
+    assert env["PACKETCAPTURE_MQTT1_DIRECT"] == "true"
+    assert env["PACKETCAPTURE_MQTT1_CHANNEL"] == "true"
+    assert env["PACKETCAPTURE_MQTT1_INCLUDE_DECODED_RAW"] == "true"
+    assert env["PACKETCAPTURE_MQTT1_TOPIC_DIRECT"] == "meshcore/{IATA}/{PUBLIC_KEY}/direct"
+    assert "PACKETCAPTURE_MQTT2_DIRECT" not in env
+    assert "PACKETCAPTURE_MQTT2_CHANNEL" not in env
+    assert "PACKETCAPTURE_INCLUDE_DECODED_RAW" not in env

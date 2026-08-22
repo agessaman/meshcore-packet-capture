@@ -9,12 +9,19 @@ from meshcore_packet_capture import packet_capture as pc_mod
 from meshcore_packet_capture.packet_capture import PacketCapture
 
 
+@pytest.fixture
+def capture_channel(monkeypatch: pytest.MonkeyPatch, capture: PacketCapture) -> PacketCapture:
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_CHANNEL", "true")
+    return capture
+
+
 @pytest.mark.asyncio
 async def test_handle_decoded_message_event_routes_channel_topic_per_broker(
-    capture: PacketCapture,
+    capture_channel: PacketCapture,
 ) -> None:
     published: list[tuple[str | None, str]] = []
 
+    capture = capture_channel
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -54,7 +61,7 @@ async def test_handle_decoded_message_event_routes_channel_topic_per_broker(
     assert published[1][0] == "meshcore/private/ABC123/channel/3"
 
 
-def test_resolve_channel_topic_rejects_invalid_indices(capture: PacketCapture):
+def test_resolve_channel_topic_rejects_invalid_indices(capture_channel: PacketCapture):
     from meshcore_packet_capture.channel_capture import resolve_channel_topic
 
     def _get_topic(topic_type, broker_num=None):
@@ -62,6 +69,7 @@ def test_resolve_channel_topic_rejects_invalid_indices(capture: PacketCapture):
             return "meshcore/private/channel/{CHANNEL}"
         return None
 
+    capture = capture_channel
     capture.get_topic = _get_topic  # type: ignore[method-assign]
 
     # Valid
@@ -80,6 +88,18 @@ def test_resolve_channel_topic_rejects_invalid_indices(capture: PacketCapture):
     assert resolve_channel_topic(capture, 1, 999) is None
 
 
+def test_resolve_channel_topic_requires_per_broker_opt_in(capture: PacketCapture):
+    from meshcore_packet_capture.channel_capture import resolve_channel_topic
+
+    def _get_topic(topic_type, broker_num=None):
+        if topic_type == "channel":
+            return "meshcore/community/channel/{CHANNEL}"
+        return None
+
+    capture.get_topic = _get_topic  # type: ignore[method-assign]
+    assert resolve_channel_topic(capture, 1, 3) is None
+
+
 @pytest.mark.asyncio
 async def test_setup_event_handlers_subscribes_channel_when_channel_configured(
     monkeypatch: pytest.MonkeyPatch, capture: PacketCapture
@@ -96,6 +116,7 @@ async def test_setup_event_handlers_subscribes_channel_when_channel_configured(
     )
     monkeypatch.setattr(pc_mod, "EventType", event_type)
     monkeypatch.setenv("PACKETCAPTURE_MQTT1_ENABLED", "true")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_CHANNEL", "true")
     monkeypatch.setenv("PACKETCAPTURE_MQTT1_TOPIC_CHANNEL", "meshcore/private/{PUBLIC_KEY}/channel/{CHANNEL}")
 
     capture.meshcore = types.SimpleNamespace(

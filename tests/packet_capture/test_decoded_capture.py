@@ -10,16 +10,29 @@ from meshcore_packet_capture import packet_capture as pc_mod
 from meshcore_packet_capture.packet_capture import PacketCapture
 
 
+@pytest.fixture
+def capture_direct(monkeypatch: pytest.MonkeyPatch, capture: PacketCapture) -> PacketCapture:
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
+    return capture
+
+
+@pytest.fixture
+def capture_channel(monkeypatch: pytest.MonkeyPatch, capture: PacketCapture) -> PacketCapture:
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_CHANNEL", "true")
+    return capture
+
+
 def test_get_topic_decoded_requires_explicit_config(capture: PacketCapture) -> None:
     assert capture.get_topic("decoded", broker_num=1) is None
 
 
 @pytest.mark.asyncio
 async def test_handle_decoded_message_event_publishes_decoded_payload(
-    capture: PacketCapture,
+    capture_direct: PacketCapture,
 ) -> None:
     published: list[tuple[str | None, str, object | None, int | None]] = []
 
+    capture = capture_direct
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.device_name = "node"
@@ -71,10 +84,11 @@ async def test_handle_decoded_message_event_publishes_decoded_payload(
 
 @pytest.mark.asyncio
 async def test_handle_decoded_message_event_includes_payload_signal(
-    capture: PacketCapture,
+    capture_direct: PacketCapture,
 ) -> None:
     published: list[tuple[str | None, str]] = []
 
+    capture = capture_direct
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -115,10 +129,11 @@ async def test_handle_decoded_message_event_includes_payload_signal(
 
 @pytest.mark.asyncio
 async def test_handle_decoded_message_event_does_not_use_rf_cache_signal(
-    capture: PacketCapture,
+    capture_direct: PacketCapture,
 ) -> None:
     published: list[tuple[str | None, str]] = []
 
+    capture = capture_direct
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -166,10 +181,11 @@ async def test_handle_decoded_message_event_does_not_use_rf_cache_signal(
 
 @pytest.mark.asyncio
 async def test_handle_decoded_message_event_reads_metadata_signal(
-    capture: PacketCapture,
+    capture_direct: PacketCapture,
 ) -> None:
     published: list[tuple[str | None, str]] = []
 
+    capture = capture_direct
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -214,11 +230,13 @@ async def test_handle_decoded_message_event_reads_metadata_signal(
 
 @pytest.mark.asyncio
 async def test_cross_broker_isolation_direct_not_leaked_to_decoded_only_broker(
+    monkeypatch: pytest.MonkeyPatch,
     capture: PacketCapture,
 ) -> None:
     """Broker with only decoded topic must not receive direct messages intended for another broker."""
     published: list[tuple[str | None, int | None]] = []
 
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [
@@ -262,10 +280,12 @@ async def test_cross_broker_isolation_direct_not_leaked_to_decoded_only_broker(
 
 @pytest.mark.asyncio
 async def test_cross_broker_isolation_channel_not_leaked(
+    monkeypatch: pytest.MonkeyPatch,
     capture: PacketCapture,
 ) -> None:
     published: list[tuple[str | None, int | None]] = []
 
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_CHANNEL", "true")
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [
@@ -307,11 +327,12 @@ async def test_cross_broker_isolation_channel_not_leaked(
 
 @pytest.mark.asyncio
 async def test_invalid_channel_idx_rejected(
-    capture: PacketCapture,
+    capture_channel: PacketCapture,
 ) -> None:
     """Malformed or out-of-range channel indices must not route to channel 0."""
     published: list[tuple[str | None, str]] = []
 
+    capture = capture_channel
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -348,10 +369,11 @@ async def test_invalid_channel_idx_rejected(
 
 @pytest.mark.asyncio
 async def test_valid_channel_idx_accepted(
-    capture: PacketCapture,
+    capture_channel: PacketCapture,
 ) -> None:
     published: list[tuple[str | None, str]] = []
 
+    capture = capture_channel
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -388,13 +410,14 @@ async def test_valid_channel_idx_accepted(
 
 @pytest.mark.asyncio
 async def test_logging_metadata_only_by_default(
-    capture: PacketCapture, caplog: pytest.LogCaptureFixture
+    capture_direct: PacketCapture, caplog: pytest.LogCaptureFixture
 ) -> None:
     """INFO logs should not contain decrypted message bodies by default."""
     import logging
 
     published: list[tuple[str | None, str]] = []
 
+    capture = capture_direct
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -435,11 +458,12 @@ async def test_logging_metadata_only_by_default(
 
 @pytest.mark.asyncio
 async def test_logging_with_content_option_includes_sanitized_body(
-    capture: PacketCapture, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    capture_direct: PacketCapture, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     import logging
 
     published: list[tuple[str | None, str]] = []
+    capture = capture_direct
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -477,11 +501,12 @@ async def test_logging_with_content_option_includes_sanitized_body(
 
 @pytest.mark.asyncio
 async def test_default_payload_excludes_raw_and_has_version(
-    capture: PacketCapture,
+    capture_direct: PacketCapture,
 ) -> None:
     """Allowlisted schema by default, versioned, no raw event_payload."""
     published: list[tuple[str | None, str]] = []
 
+    capture = capture_direct
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
@@ -545,6 +570,8 @@ async def test_raw_payload_opt_in_per_broker(
     capture.get_topic = _get_topic  # type: ignore[method-assign]
     capture.safe_publish = _publish
 
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT2_DIRECT", "true")
     monkeypatch.setenv("PACKETCAPTURE_MQTT2_INCLUDE_DECODED_RAW", "true")
 
     event = types.SimpleNamespace(
@@ -568,3 +595,96 @@ async def test_raw_payload_opt_in_per_broker(
         else:
             assert "event_payload" in data
             assert data["event_payload"]["sdk_meta"] == "raw value"
+
+
+@pytest.mark.asyncio
+async def test_global_include_decoded_raw_does_not_enable_any_broker(
+    monkeypatch: pytest.MonkeyPatch,
+    capture: PacketCapture,
+) -> None:
+    published: list[str] = []
+
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
+    monkeypatch.setenv("PACKETCAPTURE_INCLUDE_DECODED_RAW", "true")
+    capture.enable_mqtt = True
+    capture.mqtt_connected = True
+    capture.mqtt_clients = [{"client": object(), "broker_num": 1, "label": "mqtt1"}]
+
+    def _get_topic(topic_type, broker_num=None):
+        if topic_type == "direct":
+            return "meshcore/private/direct"
+        return None
+
+    def _publish(topic, payload, **kwargs):
+        published.append(payload)
+        return {"attempted": 1, "succeeded": 1}
+
+    capture.get_topic = _get_topic  # type: ignore[method-assign]
+    capture.safe_publish = _publish
+
+    event = types.SimpleNamespace(
+        type="CONTACT_MSG_RECV",
+        payload={"type": "PRIV", "text": "hello", "from": "node-a", "msg_id": "msg-1"},
+    )
+    await capture.handle_decoded_message_event(event)
+
+    assert published
+    assert "event_payload" not in json.loads(published[0])
+
+
+@pytest.mark.asyncio
+async def test_global_direct_topic_does_not_publish_without_per_broker_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    capture: PacketCapture,
+) -> None:
+    """Real get_topic: global [topics] direct is a template, not an ACL."""
+    published: list[tuple[str | None, int | None]] = []
+
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_ENABLED", "true")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_TOPIC_DIRECT", "meshcore/private/direct")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT2_ENABLED", "true")
+    monkeypatch.setenv("PACKETCAPTURE_TOPIC_DIRECT", "meshcore/community/direct")
+
+    capture.enable_mqtt = True
+    capture.mqtt_connected = True
+    capture.mqtt_clients = [
+        {"client": object(), "broker_num": 1, "label": "private"},
+        {"client": object(), "broker_num": 2, "label": "community"},
+    ]
+
+    def _publish(topic, payload, **kwargs):
+        published.append((topic, kwargs.get("broker_num")))
+        return {"attempted": 1, "succeeded": 1}
+
+    capture.safe_publish = _publish  # type: ignore[method-assign]
+    capture.device_public_key = "abc123"
+
+    event = types.SimpleNamespace(
+        type="CONTACT_MSG_RECV",
+        payload={
+            "type": "PRIV",
+            "text": "secret private message",
+            "from": "node-a",
+            "msg_id": "msg-private",
+        },
+    )
+
+    await capture.handle_decoded_message_event(event)
+
+    broker_nums = [bnum for _, bnum in published]
+    assert broker_nums == [1]
+    assert published[0][0] == "meshcore/private/direct"
+
+
+def test_broker_requires_iata_ignores_global_direct_unless_opted_in(
+    monkeypatch: pytest.MonkeyPatch,
+    capture: PacketCapture,
+) -> None:
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_ENABLED", "true")
+    monkeypatch.setenv("PACKETCAPTURE_TOPIC_DIRECT", "meshcore/{IATA}/{PUBLIC_KEY}/direct")
+
+    assert capture.broker_requires_iata(1) is False
+
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
+    assert capture.broker_requires_iata(1) is True

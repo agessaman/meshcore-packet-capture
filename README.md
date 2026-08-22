@@ -466,6 +466,33 @@ protect the containing TOML or environment file accordingly. See
 `config.toml.example` for TOML settings and `.env` for environment-variable
 equivalents.
 
+#### Companion inbox export (direct and channel MQTT)
+
+This is a separate feature from passive RF decode. When enabled, the companion
+SDK events `CONTACT_MSG_RECV` and `CHANNEL_MSG_RECV` are republished to MQTT.
+Those events are messages already decrypted for **this node's identity** — not
+over-the-air `TXT_MSG` frames.
+
+Opt in **per broker**. A global `[topics] direct` / `[topics] channel` string is
+only a topic template; it does not enable export on every broker:
+
+```toml
+[capture]
+log_decoded_content = false   # INFO logs stay metadata-only unless true
+
+[[broker]]
+name = "trusted"
+direct = true
+channel = true
+include_decoded_raw = false   # raw SDK event_payload; per-broker only
+[broker.topics]
+direct = "meshcore/{IATA}/{PUBLIC_KEY}/direct"
+channel = "meshcore/{IATA}/{PUBLIC_KEY}/channel/{CHANNEL}"
+```
+
+Once a broker is opted in, MQTT payloads include the plaintext message body.
+Do not enable `direct` or `channel` on community or mixed-trust brokers.
+
 #### Packet Log Rotation
 
 `--output PATH` normally truncates `PATH` when the process starts, matching the

@@ -85,14 +85,11 @@ def _should_log_content(capture: Any) -> bool:
 def _broker_wants_raw(capture: Any, broker_num: int) -> bool:
     """Per-broker opt-in for raw SDK event_payload export.
 
-    Defaults to global INCLUDE_DECODED_RAW, which itself defaults to False.
-    Raw payload is only exported when explicitly enabled per-broker.
+    Requires an explicit per-broker flag. A global INCLUDE_DECODED_RAW value
+    is not inherited.
     """
     try:
-        raw_val = capture.get_env(f"MQTT{broker_num}_INCLUDE_DECODED_RAW", "")
-        if raw_val != "":
-            return str(raw_val).strip().lower() in ("true", "1", "yes", "on")
-        return bool(capture.get_env_bool("INCLUDE_DECODED_RAW", False))
+        return bool(capture._broker_wants_decoded_raw(broker_num))
     except Exception:
         return False
 
@@ -102,21 +99,21 @@ async def handle_decoded_message_event(capture: Any, event: Any) -> None:
 
     Security properties enforced:
     - Cross-broker isolation: a broker receives a direct/channel message only when
-      it explicitly enables that message type (DIRECT or CHANNEL topic). This prevents
-      a private direct message configured for broker 1 from leaking to broker 2 via
-      its generic decoded topic.
+      it sets ``direct = true`` / ``channel = true``. A global [topics] template
+      is not an enable. This prevents a private inbox message from leaking to a
+      community broker via inherited topic strings or a generic decoded topic.
     - Channel validation: invalid or missing channel indices are rejected (no fallback
       to channel 0) to prevent misrouting / ACL bypass.
     - Logging: metadata only by default, sanitized to prevent log injection.
       Full message bodies require LOG_DECODED_CONTENT=true.
     - Payload schema: allowlisted, versioned schema by default. Raw SDK payload
-      (event_payload) is only exported when per-broker INCLUDE_DECODED_RAW is enabled.
+      (event_payload) is only exported when that broker sets include_decoded_raw.
     """
     try:
         payload = getattr(event, "payload", None)
         if not isinstance(payload, dict):
             if capture.debug:
-                capture.logger.debug(f"Skipping message event without dict payload: {payload}")
+                capture.logger.debug("Skipping message event without dict payload")
             return
 
         event_type_name = str(getattr(event, "type", "UNKNOWN")).split(".")[-1]
@@ -182,64 +179,55 @@ async def handle_decoded_message_event(capture: Any, event: Any) -> None:
         for mqtt_client_info in capture.mqtt_clients:
             broker_num = mqtt_client_info["broker_num"]
             mqtt_client = mqtt_client_info["client"]
-
-            # Resolve direction-specific topic – this is the explicit opt-in check.
-            # Each broker only receives message content when it explicitly enables that type.
-            if direction == "channel":
-                message_topic = resolve_channel_topic(
-                    capture,
-                    broker_num,
-                    payload.get("channel_idx"),
-                )
-                # If channel_idx invalid/missing or broker has no channel topic, skip broker
-                if message_topic is None:
-                    if capture.debug:
-                        # Distinguish invalid channel vs missing config
-                        has_channel_cfg = capture.get_topic("channel", broker_num) is not None
-                        if has_channel_cfg:
+            try:
+                # Opt-in is the per-broker boolean, not topic-string presence.
+                if direction == "channel":
+                    message_topic = resolve_channel_topic(
+                        capture,
+                        broker_num,
+                        payload.get("channel_idx"),
+                    )
+                    if message_topic is None:
+                        if capture.debug:
                             capture.logger.debug(
                                 f"Skipping channel message for broker {broker_num}: "
-                                f"invalid channel_idx={payload.get('channel_idx')!r}"
+                                "not opted in, no topic, or invalid channel_idx"
                             )
-                        else:
+                        continue
+                else:
+                    message_topic = resolve_direct_topic(capture, broker_num)
+                    if message_topic is None:
+                        if capture.debug:
                             capture.logger.debug(
-                                f"Skipping channel message for broker {broker_num}: "
-                                "channel topic not configured (cross-broker isolation)"
+                                f"Skipping direct message for broker {broker_num}: "
+                                "not opted in or direct topic not configured"
                             )
-                    continue
-            else:
-                message_topic = resolve_direct_topic(capture, broker_num)
-                if message_topic is None:
-                    if capture.debug:
-                        capture.logger.debug(
-                            f"Skipping direct message for broker {broker_num}: "
-                            "direct topic not configured (cross-broker isolation)"
-                        )
-                    continue
+                        continue
 
-            # Build per-broker payload with optional raw export
-            per_broker_data = dict(message_data)
-            if _broker_wants_raw(capture, broker_num):
-                per_broker_data["event_payload"] = payload
+                per_broker_data = dict(message_data)
+                if _broker_wants_raw(capture, broker_num):
+                    per_broker_data["event_payload"] = payload
 
-            payload_json = json.dumps(per_broker_data)
+                payload_json = json.dumps(per_broker_data)
 
-            decoded_topic = capture.get_topic("decoded", broker_num)
-            # Publish to decoded topic only for brokers that explicitly enabled this type
-            # (prevents private direct messages leaking via generic decoded topic on other brokers)
-            if decoded_topic:
-                capture.safe_publish(
-                    decoded_topic,
-                    payload_json,
-                    client=mqtt_client,
-                    broker_num=broker_num,
-                )
-            if message_topic:
-                capture.safe_publish(
-                    message_topic,
-                    payload_json,
-                    client=mqtt_client,
-                    broker_num=broker_num,
+                decoded_topic = capture.get_topic("decoded", broker_num)
+                if decoded_topic:
+                    capture.safe_publish(
+                        decoded_topic,
+                        payload_json,
+                        client=mqtt_client,
+                        broker_num=broker_num,
+                    )
+                if message_topic:
+                    capture.safe_publish(
+                        message_topic,
+                        payload_json,
+                        client=mqtt_client,
+                        broker_num=broker_num,
+                    )
+            except Exception as e:
+                capture.logger.error(
+                    f"Error publishing decoded message to broker {broker_num}: {e}"
                 )
 
     except Exception as e:

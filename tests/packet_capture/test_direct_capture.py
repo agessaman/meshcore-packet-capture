@@ -9,12 +9,19 @@ from meshcore_packet_capture import packet_capture as pc_mod
 from meshcore_packet_capture.packet_capture import PacketCapture
 
 
+@pytest.fixture
+def capture_direct(monkeypatch: pytest.MonkeyPatch, capture: PacketCapture) -> PacketCapture:
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
+    return capture
+
+
 @pytest.mark.asyncio
 async def test_handle_decoded_message_event_routes_direct_topic_per_broker(
-    capture: PacketCapture,
+    capture_direct: PacketCapture,
 ) -> None:
     published: list[tuple[str | None, str, object | None, int | None]] = []
 
+    capture = capture_direct
     capture.enable_mqtt = True
     capture.mqtt_connected = True
     client_obj = object()
@@ -102,6 +109,7 @@ async def test_setup_event_handlers_subscribes_contact_when_direct_configured(
     )
     monkeypatch.setattr(pc_mod, "EventType", event_type)
     monkeypatch.setenv("PACKETCAPTURE_MQTT1_ENABLED", "true")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
     monkeypatch.setenv("PACKETCAPTURE_MQTT1_TOPIC_DIRECT", "meshcore/private/{PUBLIC_KEY}/direct")
 
     capture.meshcore = types.SimpleNamespace(
@@ -115,3 +123,33 @@ async def test_setup_event_handlers_subscribes_contact_when_direct_configured(
     subscribed_names = {name for name, _handler in subscribed}
     assert "CONTACT_MSG_RECV" in subscribed_names
     assert "CHANNEL_MSG_RECV" not in subscribed_names
+
+
+@pytest.mark.asyncio
+async def test_setup_event_handlers_ignores_global_direct_topic_without_opt_in(
+    monkeypatch: pytest.MonkeyPatch, capture: PacketCapture
+) -> None:
+    subscribed: list[tuple[str, object]] = []
+
+    event_type = types.SimpleNamespace(
+        RX_LOG_DATA="RX_LOG_DATA",
+        RAW_DATA="RAW_DATA",
+        STATUS_RESPONSE="STATUS_RESPONSE",
+        CONTACT_MSG_RECV="CONTACT_MSG_RECV",
+        CHANNEL_MSG_RECV="CHANNEL_MSG_RECV",
+        DISCONNECTED="DISCONNECTED",
+    )
+    monkeypatch.setattr(pc_mod, "EventType", event_type)
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_ENABLED", "true")
+    monkeypatch.setenv("PACKETCAPTURE_TOPIC_DIRECT", "meshcore/{IATA}/{PUBLIC_KEY}/direct")
+
+    capture.meshcore = types.SimpleNamespace(
+        subscribe=lambda event_name, handler: subscribed.append((event_name, handler)),
+        dispatcher=types.SimpleNamespace(subscriptions=[]),
+        unsubscribe=lambda _subscription: None,
+    )
+
+    await capture.setup_event_handlers()
+
+    subscribed_names = {name for name, _handler in subscribed}
+    assert "CONTACT_MSG_RECV" not in subscribed_names

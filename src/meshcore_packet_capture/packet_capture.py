@@ -50,8 +50,8 @@ from .neighbors import (
     discover_neighbors,
     fetch_self_scopes,
 )
-from .direct_capture import direct_topic_enabled_on_any_broker, resolve_direct_topic
-from .channel_capture import channel_topic_enabled_on_any_broker, resolve_channel_topic
+from .direct_capture import direct_topic_enabled_on_any_broker
+from .channel_capture import channel_topic_enabled_on_any_broker
 from .decoded_capture import handle_decoded_message_event as handle_decoded_message_event_impl
 
 # Import MQTT client
@@ -431,7 +431,6 @@ class PacketCapture:
         # MQTT connection
         self.mqtt_clients = []  # List of MQTT client info dictionaries
         self.mqtt_connected = False
-        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
         self.should_exit = False  # Flag to exit when reconnection attempts fail
         
         # Stats/status publishing
@@ -710,15 +709,23 @@ class PacketCapture:
         return val.strip().lower() in ('true', '1', 'yes', 'on')
 
     def _broker_wants_decoded_raw(self, broker_num) -> bool:
-        """Per-broker opt-in for raw SDK event_payload export (default: include_decoded_raw).
+        """Per-broker opt-in for raw SDK event_payload export.
 
-        Raw payload is off by default; enabling requires explicit per-broker opt-in
-        to avoid leaking SDK metadata across mixed-trust brokers.
+        Off unless this broker sets include_decoded_raw / MQTT{n}_INCLUDE_DECODED_RAW.
+        A global INCLUDE_DECODED_RAW value is not inherited.
         """
         val = self.get_env(f'MQTT{broker_num}_INCLUDE_DECODED_RAW', '')
-        if val != '':
-            return val.strip().lower() in ('true', '1', 'yes', 'on')
-        return self.get_env_bool('INCLUDE_DECODED_RAW', False)
+        return val.strip().lower() in ('true', '1', 'yes', 'on')
+
+    def _broker_wants_direct(self, broker_num) -> bool:
+        """Per-broker opt-in for decrypted direct-message export. Off unless set."""
+        val = self.get_env(f'MQTT{broker_num}_DIRECT', '')
+        return val.strip().lower() in ('true', '1', 'yes', 'on')
+
+    def _broker_wants_channel(self, broker_num) -> bool:
+        """Per-broker opt-in for decrypted channel-message export. Off unless set."""
+        val = self.get_env(f'MQTT{broker_num}_CHANNEL', '')
+        return val.strip().lower() in ('true', '1', 'yes', 'on')
 
     def _broker_wants_neighbors(self, broker_num) -> bool:
         """Per-broker opt-in for the neighbors topic. Off unless set, like the firmware."""
@@ -1276,9 +1283,13 @@ class PacketCapture:
         # [topics] neighbors template would disable an unrelated broker outright,
         # which also contradicts neighbors_broker_nums() merely skipping
         # unroutable brokers.
-        topic_types = ['STATUS', 'PACKETS', 'DECODED', 'DIRECT', 'CHANNEL', 'DEBUG', 'RAW', 'COMMAND']
+        topic_types = ['STATUS', 'PACKETS', 'DECODED', 'DEBUG', 'RAW']
         if self._broker_wants_neighbors(broker_num):
             topic_types = topic_types + ['NEIGHBORS']
+        if self._broker_wants_direct(broker_num):
+            topic_types = topic_types + ['DIRECT']
+        if self._broker_wants_channel(broker_num):
+            topic_types = topic_types + ['CHANNEL']
         for topic_type in topic_types:
             # Check broker-specific topic
             broker_topic = self.get_env(f'MQTT{broker_num}_TOPIC_{topic_type}', '')
@@ -1311,8 +1322,8 @@ class PacketCapture:
         if global_topic_raw is not None:
             return self.resolve_topic_template(global_topic_raw, broker_num)
 
-        # For RAW/DIRECT/CHANNEL/COMMAND/DECODED topics, don't provide a default - only publish if explicitly configured
-        if topic_type_upper in {'RAW', 'DIRECT', 'CHANNEL', 'COMMAND', 'DECODED'}:
+        # For RAW/DIRECT/CHANNEL/DECODED topics, don't provide a default - only publish if explicitly configured
+        if topic_type_upper in {'RAW', 'DIRECT', 'CHANNEL', 'DECODED'}:
             if self.debug:
                 self.logger.debug(
                     f"No {topic_type_upper} topic configured for broker {broker_num}, skipping"
@@ -3817,12 +3828,16 @@ class PacketCapture:
 
         async def on_contact_message(event):
             if self.debug:
-                self.logger.debug(f"CONTACT_MSG_RECV event received: {event}")
+                payload = getattr(event, "payload", None)
+                msg_id = payload.get("msg_id") if isinstance(payload, dict) else None
+                self.logger.debug(f"CONTACT_MSG_RECV event received msg_id={msg_id}")
             await self.handle_decoded_message_event(event)
 
         async def on_channel_message(event):
             if self.debug:
-                self.logger.debug(f"CHANNEL_MSG_RECV event received: {event}")
+                payload = getattr(event, "payload", None)
+                msg_id = payload.get("msg_id") if isinstance(payload, dict) else None
+                self.logger.debug(f"CHANNEL_MSG_RECV event received msg_id={msg_id}")
             await self.handle_decoded_message_event(event)
         
         # Subscribe to events
@@ -3845,8 +3860,7 @@ class PacketCapture:
     async def start(self):
         """Start packet capture"""
         self.logger.info("Starting MeshCore Packet Capture...")
-        self._event_loop = asyncio.get_running_loop()
-        
+
         # Connect to MeshCore node
         if not await self.connect():
             self.logger.error("Failed to connect to MeshCore node")

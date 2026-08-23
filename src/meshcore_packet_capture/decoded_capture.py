@@ -119,8 +119,9 @@ async def handle_decoded_message_event(capture: Any, event: Any) -> None:
         event_type_name = str(getattr(event, "type", "UNKNOWN")).split(".")[-1]
         message_type = payload.get("type", "")
 
-        is_channel = message_type == "CHAN" or event_type_name == "CHANNEL_MSG_RECV"
-        direction = "channel" if is_channel else "direct"
+        # Trust the SDK event type, not payload["type"]. A contact event with
+        # type=CHAN would otherwise publish a DM to channel-opted brokers.
+        direction = "channel" if event_type_name == "CHANNEL_MSG_RECV" else "direct"
         snr, rssi = _best_effort_message_signal(payload)
 
         # Allowlisted, versioned schema by default

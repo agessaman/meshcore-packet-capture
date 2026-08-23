@@ -677,6 +677,53 @@ async def test_global_direct_topic_does_not_publish_without_per_broker_opt_in(
     assert published[0][0] == "meshcore/private/direct"
 
 
+@pytest.mark.asyncio
+async def test_contact_event_ignores_payload_type_chan(
+    monkeypatch: pytest.MonkeyPatch,
+    capture: PacketCapture,
+) -> None:
+    """CONTACT_MSG_RECV must not follow payload type=CHAN onto channel brokers."""
+    published: list[tuple[str | None, int | None]] = []
+
+    monkeypatch.setenv("PACKETCAPTURE_MQTT1_DIRECT", "true")
+    monkeypatch.setenv("PACKETCAPTURE_MQTT2_CHANNEL", "true")
+    capture.enable_mqtt = True
+    capture.mqtt_connected = True
+    capture.mqtt_clients = [
+        {"client": object(), "broker_num": 1, "label": "private"},
+        {"client": object(), "broker_num": 2, "label": "community"},
+    ]
+
+    def _get_topic(topic_type, broker_num=None):
+        if broker_num == 1 and topic_type == "direct":
+            return "meshcore/private/direct"
+        if broker_num == 2 and topic_type == "channel":
+            return "meshcore/community/channel/{CHANNEL}"
+        return None
+
+    def _publish(topic, payload, **kwargs):
+        published.append((topic, kwargs.get("broker_num")))
+        return {"attempted": 1, "succeeded": 1}
+
+    capture.get_topic = _get_topic  # type: ignore[method-assign]
+    capture.safe_publish = _publish
+
+    event = types.SimpleNamespace(
+        type="CONTACT_MSG_RECV",
+        payload={
+            "type": "CHAN",
+            "text": "secret private message",
+            "from": "node-a",
+            "channel_idx": 3,
+            "msg_id": "msg-spoof",
+        },
+    )
+
+    await capture.handle_decoded_message_event(event)
+
+    assert published == [("meshcore/private/direct", 1)]
+
+
 def test_broker_requires_iata_ignores_global_direct_unless_opted_in(
     monkeypatch: pytest.MonkeyPatch,
     capture: PacketCapture,

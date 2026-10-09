@@ -23,20 +23,7 @@ Based on the original [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt)
 
 ## Quick Start
 
-### Install the app (recommended)
-
-Install the CLI from PyPI with [pipx](https://pipx.pypa.io) (keeps it in its own isolated environment):
-
-```bash
-pipx install meshcore-packet-capture
-meshcore-packet-capture --help
-```
-
-This gives you the `meshcore-packet-capture` command for manual runs and development.
-It does **not** create a background service — see below to run it as a managed
-systemd/launchd service.
-
-### Install as a managed service (systemd / launchd)
+### Install as a managed service (recommended)
 
 For a turnkey install that creates a service account, installs a systemd (Linux) or
 launchd (macOS) unit, and writes config under `/etc`, use the bootstrap installer.
@@ -46,10 +33,6 @@ It installs system-wide (under `/opt` and `/etc`) and so must run as root:
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-capture/main/install.sh)"
 ```
 
-> **Note:** use the bootstrap installer when you want a systemwide managed
-> service. The PyPI/pipx install is for CLI/manual runs and does not create
-> service files or write system configuration.
->
 > **macOS + BLE:** because macOS grants Bluetooth permission per-user (not to
 > root daemons), a BLE install is set up as a per-user LaunchAgent that runs in
 > your login session. Serial/TCP installs use a system LaunchDaemon.
@@ -96,20 +79,22 @@ bash <(curl -fsSL https://raw.githubusercontent.com/agessaman/meshcore-packet-ca
 
 ## Installation
 
-### From PyPI (CLI/manual use)
+### From a git checkout (CLI / manual use)
 
 ```bash
-# Isolated CLI install (recommended)
-pipx install meshcore-packet-capture
-
-# …or into the current environment
-pip install meshcore-packet-capture
+git clone https://github.com/agessaman/meshcore-packet-capture.git
+cd meshcore-packet-capture
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+meshcore-packet-capture --help
 ```
 
-This installs the `meshcore-packet-capture` command and all dependencies. Use this for
-manual runs, development, or when you manage the process yourself. To run it as a
-managed background service, use the bootstrap installer (see [Quick Start](#quick-start)
-and [Managed-service installer](#managed-service-installer-linux-and-macos) below).
+This installs the `meshcore-packet-capture` command and its dependencies into a
+local virtualenv. Use it for manual runs, development, or when you manage the
+process yourself. To run it as a managed background service, use the bootstrap
+installer (see [Quick Start](#quick-start) and
+[Managed-service installer](#managed-service-installer-linux-and-macos) below).
 
 For a local checkout on Linux, `./install.sh --user-service` will create a per-user
 systemd service that runs from the repo's `.venv`. Pass `--repo-dir PATH` if the checkout
@@ -188,7 +173,7 @@ get a stable, tagged version rather than the moving branch tip. (If the project
 has no releases yet, it falls back to the `main` branch.) You can override this:
 
 ```bash
-sudo bash install.sh --tag v2.1.0      # pin to a specific release
+sudo bash install.sh --tag v2.2.1      # pin to a specific release
 sudo bash install.sh --branch main     # track a branch (development)
 ```
 

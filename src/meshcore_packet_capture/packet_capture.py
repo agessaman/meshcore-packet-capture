@@ -253,7 +253,7 @@ def load_env_files():
 _environment_initialized = False
 
 
-def init_environment(config_paths: list[str] | None = None) -> None:
+def init_environment(config_paths: list[str] | None = None, *, user_config: bool = False) -> None:
     """Load config into os.environ.
 
     Precedence (highest first): real process env > TOML (/etc + config.d, or
@@ -265,7 +265,7 @@ def init_environment(config_paths: list[str] | None = None) -> None:
     preexisting = set(os.environ)
     load_env_files()
     if apply_config_to_environ is not None:
-        apply_config_to_environ(config_paths, protected=preexisting)
+        apply_config_to_environ(config_paths, protected=preexisting, user_config=user_config)
     _environment_initialized = True
 
 
@@ -4342,9 +4342,16 @@ async def main():
         metavar='PATH',
         help='TOML config file (repeatable). If set, only these files are loaded, not /etc defaults.',
     )
+    parser.add_argument(
+        '--user-config',
+        action='store_true',
+        help='Discover checkout-local TOML using MESHCORE_PACKETCAPTURE_ENV_DIR, '
+             'or overlay /etc config with XDG user config. --config and '
+             'PACKETCAPTURE_CONFIG_DIR take precedence.',
+    )
 
     args = parser.parse_args()
-    init_environment(args.config_files if args.config_files else None)
+    init_environment(args.config_files if args.config_files else None, user_config=args.user_config)
 
     # Command line arguments will be handled after PacketCapture instantiation
     

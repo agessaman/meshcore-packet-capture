@@ -115,8 +115,27 @@ meshcore-packet-capture/
     99-user.toml
 ```
 
-The user-service path loads `.env` and `.env.local` from the repo root, then loads
-`config.toml` and every `config.d/*.toml` file in sorted order.
+The user-service path loads `.env` and `.env.local` from the repo root. It discovers
+`config.toml` and every `config.d/*.toml` file in sorted order at each startup, so
+new files take effect after `systemctl --user restart meshcore-packet-capture`.
+If the checkout has no TOML files, it loads the system config under `/etc` and
+then overlays user config under `${XDG_CONFIG_HOME:-$HOME/.config}/meshcore-packet-capture/`.
+Checkout-local TOML takes precedence over that system/user discovery.
+
+To select a different TOML tree, set `PACKETCAPTURE_CONFIG_DIR` when installing
+the user service; the installer saves it in the generated unit:
+
+```bash
+mkdir -p "$HOME/.config/meshcore-packet-capture/config.d"
+PACKETCAPTURE_CONFIG_DIR="$HOME/.config/meshcore-packet-capture" ./install.sh --user-service
+```
+
+The installer also saves an explicitly set `XDG_CONFIG_HOME`. Changing these
+variables in your shell later does not change an installed unit; rerun the
+installer or edit its service environment and run `systemctl --user daemon-reload`.
+
+**Existing user services:** rerun `./install.sh --user-service` once after
+upgrading to replace the old fixed `--config` file list with startup discovery.
 
 ### Docker Installation
 
@@ -147,6 +166,40 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 3. **Legacy `.env` / `.env.local`** (see below) — a development/manual-install convenience, loaded from the working directory. These are overridden by TOML, so they only take effect for keys the TOML config does not set.
 
 Values are applied as `PACKETCAPTURE_*` environment variables. See `config.toml.example` for every TOML key, or `.env` for the equivalent flat variable names.
+
+### Selecting a TOML configuration tree
+
+TOML sources are selected in this order:
+
+1. Repeatable `--config PATH` loads only the listed files, in order, regardless
+   of directory variables or user discovery.
+2. A non-empty `PACKETCAPTURE_CONFIG_DIR` loads only that directory's
+   `config.toml` and sorted `config.d/*.toml`. It does not merge `/etc` or XDG
+   config. `~` is expanded; relative paths resolve against the working directory
+   (the user-service installer saves them as absolute paths). A missing directory
+   or a path pointing to a file fails startup. An existing empty directory is
+   allowed; it supplies no TOML settings. Empty or whitespace-only values leave
+   default discovery enabled.
+3. With `--user-config`, checkout-local TOML is selected if present in
+   `MESHCORE_PACKETCAPTURE_ENV_DIR`. Otherwise `/etc/meshcore-packet-capture/`
+   is loaded first and the user tree is overlaid. The user tree is
+   `$XDG_CONFIG_HOME/meshcore-packet-capture/` when `XDG_CONFIG_HOME` is absolute;
+   otherwise it is `~/.config/meshcore-packet-capture/`.
+4. Without `--user-config`, default discovery uses only `/etc/meshcore-packet-capture/`.
+
+The checkout user-service installer enables `--user-config`. Manual CLI users
+can opt in with `meshcore-packet-capture --user-config`. Managed Linux/macOS
+services keep their existing system-only discovery. The managed installer, BLE
+cleanup helper, and uninstaller continue using `/etc`; the new variable selects
+runtime TOML sources rather than relocating managed installation files.
+
+User overlays merge brokers by name: unmatched system brokers remain configured.
+Use `enabled = false` on a matching broker to disable it, or select an isolated
+tree with `PACKETCAPTURE_CONFIG_DIR` to exclude system TOML entirely. Legacy
+`.env` loading and process-environment precedence still apply in all modes.
+Matching TOML files are read at startup, so malformed new files prevent startup;
+the error log identifies the file. Keep unfinished files outside `config.d` or
+use a suffix other than `.toml` until they are ready.
 
 ### Managed-service installer (Linux and macOS)
 

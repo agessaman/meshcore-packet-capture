@@ -56,9 +56,13 @@ def test_init_environment_keeps_existing_env_over_toml(
     assert os.environ["PACKETCAPTURE_IATA"] == "PROCESS"
 
 
+@pytest.mark.parametrize("user_config", [False, True])
+@pytest.mark.parametrize("explicit_configs", [False, True])
 @pytest.mark.asyncio
-async def test_main_parses_repeatable_config_and_no_mqtt(monkeypatch: pytest.MonkeyPatch) -> None:
-    init_calls: list[list[str] | None] = []
+async def test_main_parses_repeatable_config_and_no_mqtt(
+    monkeypatch: pytest.MonkeyPatch, user_config: bool, explicit_configs: bool,
+) -> None:
+    init_calls: list[tuple[list[str] | None, bool]] = []
     created: list[object] = []
 
     class _DummyCapture:
@@ -78,7 +82,7 @@ async def test_main_parses_repeatable_config_and_no_mqtt(monkeypatch: pytest.Mon
         async def stop(self) -> None:
             return
 
-    monkeypatch.setattr(pc, "init_environment", lambda cfg=None: init_calls.append(cfg))
+    monkeypatch.setattr(pc, "init_environment", lambda cfg=None, **kw: init_calls.append((cfg, kw["user_config"])))
     monkeypatch.setattr(pc, "PacketCapture", _DummyCapture)
     monkeypatch.setattr(signal, "signal", lambda *_a, **_k: None)
     monkeypatch.setattr(
@@ -86,18 +90,52 @@ async def test_main_parses_repeatable_config_and_no_mqtt(monkeypatch: pytest.Mon
         "argv",
         [
             "packet_capture.py",
-            "--config",
-            "a.toml",
-            "--config",
-            "b.toml",
+            *(["--config", "a.toml", "--config", "b.toml"] if explicit_configs else []),
             "--no-mqtt",
             "--verbose",
+            *(["--user-config"] if user_config else []),
         ],
     )
 
     await pc.main()
 
-    assert init_calls == [["a.toml", "b.toml"]]
+    assert init_calls == [(["a.toml", "b.toml"] if explicit_configs else None, user_config)]
     assert len(created) == 1
     assert created[0].enable_mqtt is False
     assert created[0].verbose is True
+
+
+@pytest.mark.parametrize("process_value", [None, "PROCESS"])
+def test_selected_tree_keeps_env_precedence_and_legacy_env_directory(tmp_path, monkeypatch, process_value):
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / ".env").write_text("PACKETCAPTURE_IATA=ENV\nPACKETCAPTURE_CONNECTION_TYPE=tcp\n")
+    (legacy / ".env.local").write_text(
+        "PACKETCAPTURE_IATA=LOCAL\nPACKETCAPTURE_TCP_HOST=legacy.example\n"
+        "PACKETCAPTURE_CONFIG_DIR=/invalid/legacy/path\n"
+    )
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    (selected / "config.toml").write_text('[general]\niata="TOML"\n')
+    monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", str(legacy))
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(selected))
+    monkeypatch.setattr(pc, "_environment_initialized", False)
+    if process_value:
+        monkeypatch.setenv("PACKETCAPTURE_IATA", process_value)
+    pc.init_environment(user_config=True)
+    assert os.environ["PACKETCAPTURE_IATA"] == (process_value or "TOML")
+    assert os.environ["PACKETCAPTURE_CONNECTION_TYPE"] == "tcp"
+    assert os.environ["PACKETCAPTURE_TCP_HOST"] == "legacy.example"
+
+
+def test_directory_selector_can_come_from_env_local(tmp_path, monkeypatch):
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    (selected / "config.toml").write_text('[general]\niata="SELECTED"\n')
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / ".env.local").write_text(f"PACKETCAPTURE_CONFIG_DIR={selected}\n")
+    monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", str(legacy))
+    monkeypatch.setattr(pc, "_environment_initialized", False)
+    pc.init_environment()
+    assert os.environ["PACKETCAPTURE_IATA"] == "SELECTED"

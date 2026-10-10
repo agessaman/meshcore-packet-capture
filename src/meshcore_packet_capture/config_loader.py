@@ -2,6 +2,7 @@
 
 Mirrors meshcoretomqtt merge semantics (deep merge, [[broker]] by name).
 Default paths: /etc/meshcore-packet-capture/config.toml + config.d/*.toml.
+PACKETCAPTURE_CONFIG_DIR selects an alternative tree; user discovery is opt-in.
 """
 
 from __future__ import annotations
@@ -64,8 +65,12 @@ def _apply_override(config: dict[str, Any], override: dict[str, Any]) -> dict[st
 
 
 def _load_toml(path: str | Path) -> dict[str, Any]:
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.error("Unable to load TOML config: %s", path)
+        raise
 
 
 def _load_config_dir(config: dict[str, Any], config_d: Path) -> dict[str, Any]:
@@ -83,8 +88,13 @@ def load_config(
     *,
     base_path: str = DEFAULT_CONFIG_FILE,
     config_d: str = DEFAULT_CONFIG_D,
+    user_config: bool = False,
 ) -> dict[str, Any]:
-    """Load and merge TOML. If config_paths is set, load only those files in order."""
+    """Load explicit files, a selected tree, or the default system tree.
+
+    With user_config, checkout-local TOML takes precedence over system/XDG
+    discovery. MESHCORE_PACKETCAPTURE_ENV_DIR identifies that checkout.
+    """
     if config_paths:
         config: dict[str, Any] = {}
         for path in config_paths:
@@ -96,6 +106,20 @@ def load_config(
             config = _apply_override(config, override)
         return config
 
+    selected_dir = os.environ.get("PACKETCAPTURE_CONFIG_DIR", "")
+    if selected_dir.strip():
+        root = Path(selected_dir).expanduser()
+        if not root.is_dir():
+            raise NotADirectoryError(f"PACKETCAPTURE_CONFIG_DIR is not a directory: {root}")
+        return _load_config_tree(root)
+
+    if user_config:
+        checkout_dir = os.environ.get("MESHCORE_PACKETCAPTURE_ENV_DIR", "")
+        if checkout_dir.strip():
+            root = Path(checkout_dir).expanduser()
+            if _tree_config_paths(root):
+                return _load_config_tree(root)
+
     config = {}
     if os.path.exists(base_path):
         config = _load_toml(base_path)
@@ -104,6 +128,29 @@ def load_config(
         logger.warning("Base config not found at %s, using defaults", base_path)
 
     config = _load_config_dir(config, Path(config_d))
+    if user_config:
+        xdg_home = os.environ.get("XDG_CONFIG_HOME", "")
+        user_root = (
+            Path(xdg_home) if xdg_home and Path(xdg_home).is_absolute()
+            else Path.home() / ".config"
+        )
+        user_root /= "meshcore-packet-capture"
+        config = _load_config_tree(user_root, config)
+    return config
+
+
+def _tree_config_paths(root: Path) -> list[str]:
+    paths = [root / "config.toml"] if (root / "config.toml").is_file() else []
+    paths.extend(sorted(path for path in (root / "config.d").glob("*.toml") if path.is_file()))
+    return [str(path) for path in paths]
+
+
+def _load_config_tree(root: Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    if config is None:
+        config = {}
+    for path in _tree_config_paths(root):
+        logger.info("Loading config: %s", path)
+        config = _apply_override(config, _load_toml(path))
     return config
 
 
@@ -329,6 +376,7 @@ def apply_config_to_environ(
     base_path: str = DEFAULT_CONFIG_FILE,
     config_d: str = DEFAULT_CONFIG_D,
     protected: set[str] | None = None,
+    user_config: bool = False,
 ) -> dict[str, Any]:
     """Load TOML and apply it to os.environ as PACKETCAPTURE_* keys.
 
@@ -339,7 +387,7 @@ def apply_config_to_environ(
     overwritten by the TOML value. When ``protected`` is ``None`` the legacy
     behavior is used: only keys absent from ``os.environ`` are set.
     """
-    cfg = load_config(config_paths, base_path=base_path, config_d=config_d)
+    cfg = load_config(config_paths, base_path=base_path, config_d=config_d, user_config=user_config)
     for key, value in flatten_config_to_env_dict(cfg).items():
         if protected is None:
             if key not in os.environ:

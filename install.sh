@@ -104,24 +104,19 @@ if [ "$USER_SERVICE" = true ]; then
         echo "Creating venv: $REPO_DIR/.venv"
         python3 -m venv "$REPO_DIR/.venv"
     fi
-    CONFIG_ARGS=()
-    if [ -f "$REPO_DIR/config.toml" ]; then
-        CONFIG_ARGS+=("--config" "$REPO_DIR/config.toml")
-    fi
-    if [ -d "$REPO_DIR/config.d" ]; then
-        while IFS= read -r -d '' cfg; do
-            CONFIG_ARGS+=("--config" "$cfg")
-        done < <(find "$REPO_DIR/config.d" -maxdepth 1 -type f -name '*.toml' -print0 | sort -z)
-    fi
-
-    # Escape each argument so systemd keeps paths with spaces intact.
-    CONFIG_ARGS_ESCAPED=()
-    for arg in "${CONFIG_ARGS[@]}"; do
-        if [[ "$arg" =~ [[:cntrl:]] ]]; then
-            echo "Error: configuration paths cannot contain control characters" >&2
-            exit 1
+    CONFIG_ENVIRONMENT=""
+    for config_variable in PACKETCAPTURE_CONFIG_DIR XDG_CONFIG_HOME; do
+        config_value="${!config_variable}"
+        if [ -n "$config_value" ]; then
+            if [[ "$config_value" =~ [[:cntrl:]] ]]; then
+                echo "Error: configuration paths cannot contain control characters" >&2
+                exit 1
+            fi
+            if [ "$config_variable" = PACKETCAPTURE_CONFIG_DIR ] && [[ "$config_value" != /* && "$config_value" != '~'* && "$config_value" =~ [^[:space:]] ]]; then
+                config_value="$PWD/$config_value"
+            fi
+            CONFIG_ENVIRONMENT+="Environment=$(systemd_quote_unit_value "$config_variable=$config_value")"$'\n'
         fi
-        CONFIG_ARGS_ESCAPED+=("$(systemd_quote_exec_arg "$arg")")
     done
 
     echo "Installing package from local checkout"
@@ -145,7 +140,7 @@ Wants=network-online.target
 Type=exec
 WorkingDirectory=$WORKING_DIRECTORY
 Environment=$ENV_DIRECTORY
-ExecStart=env $PYTHON_EXECUTABLE -m meshcore_packet_capture ${CONFIG_ARGS_ESCAPED[*]}
+${CONFIG_ENVIRONMENT}ExecStart=env $PYTHON_EXECUTABLE -m meshcore_packet_capture --user-config
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=10

@@ -5,8 +5,206 @@ import os
 from pathlib import Path
 
 import pytest
+import tomllib
 
 import meshcore_packet_capture.config_loader as cl
+
+
+def _write_tree(root: Path, value: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "config.toml").write_text(f'[general]\niata = "{value}"\n')
+    return root
+
+
+@pytest.fixture
+def config_trees(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    system = _write_tree(tmp_path / "system", "SYSTEM")
+    xdg = tmp_path / "xdg"
+    _write_tree(xdg / "meshcore-packet-capture", "USER")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    return system, xdg
+
+
+def _load_system(root: Path, **kwargs):
+    return cl.load_config(base_path=str(root / "config.toml"), config_d=str(root / "config.d"), **kwargs)
+
+
+def test_user_discovery_is_opt_in(config_trees):
+    system, _ = config_trees
+    assert _load_system(system)["general"]["iata"] == "SYSTEM"
+    assert _load_system(system, user_config=True)["general"]["iata"] == "USER"
+
+
+def test_system_overrides_and_user_fallback_preserve_defaults(config_trees, monkeypatch):
+    system, xdg = config_trees
+    config_d = system / "config.d"
+    config_d.mkdir()
+    (config_d / "99-later.toml").write_text('[general]\niata="SYSTEM-LATER"\n')
+    (config_d / "10-earlier.toml").write_text('[general]\niata="SYSTEM-EARLIER"\n')
+    assert _load_system(system)["general"]["iata"] == "SYSTEM-LATER"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg / "missing"))
+    assert _load_system(system, user_config=True)["general"]["iata"] == "SYSTEM-LATER"
+
+
+def test_user_config_d_works_without_either_base_file(config_trees):
+    system, xdg = config_trees
+    (system / "config.toml").unlink()
+    user = xdg / "meshcore-packet-capture"
+    (user / "config.toml").unlink()
+    (user / "config.d").mkdir()
+    (user / "config.d" / "99-user.toml").write_text('[general]\niata="USER-ONLY"\n')
+    assert _load_system(system, user_config=True) == {"general": {"iata": "USER-ONLY"}}
+
+
+def test_directory_selection_is_resolved_on_each_load(config_trees, tmp_path, monkeypatch):
+    system, _ = config_trees
+    for value in ("FIRST", "SECOND"):
+        selected = _write_tree(tmp_path / value, value)
+        monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(selected))
+        assert _load_system(system)["general"]["iata"] == value
+    monkeypatch.delenv("PACKETCAPTURE_CONFIG_DIR")
+    assert _load_system(system)["general"]["iata"] == "SYSTEM"
+
+
+@pytest.mark.parametrize("xdg_value", [None, "", "relative/path"])
+def test_user_discovery_home_fallback(config_trees, monkeypatch, xdg_value):
+    system, _ = config_trees
+    home_tree = Path.home() / ".config" / "meshcore-packet-capture"
+    _write_tree(home_tree, "HOME")
+    if xdg_value is None:
+        monkeypatch.delenv("XDG_CONFIG_HOME")
+    else:
+        monkeypatch.setenv("XDG_CONFIG_HOME", xdg_value)
+    assert _load_system(system, user_config=True)["general"]["iata"] == "HOME"
+
+
+def test_user_tree_overlays_system_brokers_by_name(config_trees):
+    system, xdg = config_trees
+    (system / "config.toml").write_text(
+        '[[broker]]\nname="shared"\nserver="system.example"\nport=1883\n'
+        '[[broker]]\nname="system-only"\nserver="retained.example"\n'
+    )
+    user = xdg / "meshcore-packet-capture"
+    (user / "config.toml").write_text('[[broker]]\nname="shared"\nport=8883\n')
+    (user / "config.d").mkdir()
+    (user / "config.d" / "10-user.toml").write_text('[[broker]]\nname="user-only"\nserver="user.example"\n')
+    cfg = _load_system(system, user_config=True)
+    assert cfg["broker"] == [
+        {"name": "shared", "server": "system.example", "port": 8883},
+        {"name": "system-only", "server": "retained.example"},
+        {"name": "user-only", "server": "user.example"},
+    ]
+
+
+@pytest.mark.parametrize("user_config", [False, True])
+def test_directory_override_selects_only_its_tree(config_trees, tmp_path, monkeypatch, user_config):
+    system, _ = config_trees
+    selected = _write_tree(tmp_path / "selected", "SELECTED")
+    checkout = _write_tree(tmp_path / "checkout", "CHECKOUT")
+    (system / "config.toml").write_text('[general]\niata="SYSTEM"\n[[broker]]\nname="system-only"\n')
+    monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", str(checkout))
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(selected))
+    assert _load_system(system, user_config=user_config) == {"general": {"iata": "SELECTED"}}
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_directory_override_keeps_default_discovery(config_trees, monkeypatch, value):
+    system, _ = config_trees
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", value)
+    assert _load_system(system)["general"]["iata"] == "SYSTEM"
+
+
+@pytest.mark.parametrize("path_kind", ["relative", "tilde", "spaces"])
+def test_directory_override_path_handling(config_trees, tmp_path, monkeypatch, path_kind):
+    system, _ = config_trees
+    monkeypatch.chdir(tmp_path)
+    if path_kind == "relative":
+        selected = _write_tree(tmp_path / "selected", "SELECTED")
+        value = "selected"
+    elif path_kind == "tilde":
+        selected = _write_tree(Path.home() / "selected", "SELECTED")
+        value = "~/selected"
+    else:
+        selected = _write_tree(tmp_path / " directory with spaces ", "SELECTED")
+        value = str(selected)
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", value)
+    assert _load_system(system)["general"]["iata"] == "SELECTED"
+
+
+def test_empty_selected_tree_does_not_fall_back(config_trees, tmp_path, monkeypatch):
+    system, _ = config_trees
+    selected = tmp_path / "empty"
+    selected.mkdir()
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(selected))
+    assert _load_system(system, user_config=True) == {}
+
+
+@pytest.mark.parametrize("kind", ["missing", "file"])
+def test_invalid_selected_directory_fails(config_trees, tmp_path, monkeypatch, kind):
+    system, _ = config_trees
+    selected = tmp_path / kind
+    if kind == "file":
+        selected.write_text("not a directory")
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(selected))
+    with pytest.raises(NotADirectoryError, match="PACKETCAPTURE_CONFIG_DIR"):
+        _load_system(system, user_config=True)
+
+
+def test_explicit_files_bypass_directory_and_user_discovery(config_trees, monkeypatch):
+    system, _ = config_trees
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", "/does/not/exist")
+    cfg = cl.load_config([str(system / "config.toml")], user_config=True)
+    assert cfg == {"general": {"iata": "SYSTEM"}}
+
+
+def test_directory_discovery_add_change_remove_and_sort(config_trees, tmp_path, monkeypatch):
+    system, _ = config_trees
+    selected = _write_tree(tmp_path / "selected", "BASE")
+    config_d = selected / "config.d"
+    config_d.mkdir()
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(selected))
+    assert _load_system(system)["general"]["iata"] == "BASE"
+    later = config_d / "99-later.toml"
+    earlier = config_d / "10-earlier.toml"
+    later.write_text('[general]\niata="LATER"\n')
+    earlier.write_text('[general]\niata="EARLIER"\n')
+    (config_d / "ignored.toml.bak").write_text("invalid TOML")
+    (config_d / "nested").mkdir()
+    (config_d / "nested" / "100-nested.toml").write_text("invalid TOML")
+    assert _load_system(system)["general"]["iata"] == "LATER"
+    later.write_text('[general]\niata="CHANGED"\n')
+    assert _load_system(system)["general"]["iata"] == "CHANGED"
+    later.unlink()
+    assert _load_system(system)["general"]["iata"] == "EARLIER"
+
+
+@pytest.mark.parametrize("location", ["selected", "user", "checkout"])
+def test_malformed_config_reports_filename(config_trees, tmp_path, monkeypatch, caplog, location):
+    system, xdg = config_trees
+    if location == "user":
+        root = xdg / "meshcore-packet-capture"
+    else:
+        root = _write_tree(tmp_path / location, "BASE")
+        variable = "PACKETCAPTURE_CONFIG_DIR" if location == "selected" else "MESHCORE_PACKETCAPTURE_ENV_DIR"
+        monkeypatch.setenv(variable, str(root))
+    (root / "config.d").mkdir()
+    bad = root / "config.d" / "99-bad.toml"
+    bad.write_text("invalid TOML")
+    with pytest.raises(tomllib.TOMLDecodeError):
+        _load_system(system, user_config=True)
+    assert str(bad) in caplog.text
+
+
+def test_checkout_discovery_precedes_xdg_and_preserves_no_config_fallback(config_trees, tmp_path, monkeypatch):
+    system, _ = config_trees
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", str(checkout))
+    assert _load_system(system, user_config=True)["general"]["iata"] == "USER"
+    _write_tree(checkout, "CHECKOUT")
+    assert _load_system(system, user_config=True) == {"general": {"iata": "CHECKOUT"}}
+    assert _load_system(system)["general"]["iata"] == "SYSTEM"
 
 
 def test_deep_merge_nested():

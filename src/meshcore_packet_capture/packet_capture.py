@@ -29,7 +29,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
-import argparse
+from .cli import parse_args
 
 # Import meshcore from PyPI
 import meshcore
@@ -4316,41 +4316,12 @@ class PacketCapture:
 
 
 
-async def main():
+async def main(args=None):
     """Main entry point"""
-    parser = argparse.ArgumentParser(description='MeshCore Packet Capture Script')
-    parser.add_argument('--output', help='Output file path (optional)')
-    parser.add_argument('--verbose', action='store_true', help='Enable verbose output (shows JSON packet data)')
-    parser.add_argument('--debug', action='store_true', help='Enable debug output (shows all detailed debugging info)')
-    parser.add_argument('--no-mqtt', action='store_true', help='Disable MQTT publishing')
-    parser.add_argument(
-        '--neighbors-now',
-        action='store_true',
-        help='Run one neighbors discovery + scopes cycle immediately, ignoring the '
-             'schedule (the equivalent of the firmware\'s "discover.neighbors"). '
-             'Combine with --neighbors-exit to run just that and quit.',
-    )
-    parser.add_argument(
-        '--neighbors-exit',
-        action='store_true',
-        help='With --neighbors-now, exit once the cycle finishes instead of continuing to capture.',
-    )
-    parser.add_argument(
-        '--config',
-        action='append',
-        dest='config_files',
-        metavar='PATH',
-        help='TOML config file (repeatable). If set, only these files are loaded, not /etc defaults.',
-    )
-    parser.add_argument(
-        '--user-config',
-        action='store_true',
-        help='Discover checkout-local TOML using MESHCORE_PACKETCAPTURE_ENV_DIR, '
-             'or overlay /etc config with XDG user config. --config and '
-             'PACKETCAPTURE_CONFIG_DIR take precedence.',
-    )
-
-    args = parser.parse_args()
+    if args is None:
+        args = parse_args()
+    if args is None:
+        return
     init_environment(args.config_files if args.config_files else None, user_config=args.user_config)
 
     # Command line arguments will be handled after PacketCapture instantiation

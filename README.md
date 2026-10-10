@@ -92,9 +92,59 @@ meshcore-packet-capture --help
 
 This installs the `meshcore-packet-capture` command and its dependencies into a
 local virtualenv. Use it for manual runs, development, or when you manage the
-process yourself. To run it as a managed background service, use the bootstrap
-installer (see [Quick Start](#quick-start) and
+process yourself. For a system service, use the bootstrap installer (see
+[Quick Start](#quick-start) and
 [Managed-service installer](#managed-service-installer-linux-and-macos) below).
+
+#### User service from a wheel or uv install (Linux)
+
+The installed CLI can generate a user systemd unit without a repository checkout:
+
+```bash
+uv tool install "git+https://github.com/agessaman/meshcore-packet-capture"
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+meshcore-packet-capture --print-systemd-unit --user \
+  > "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/meshcore-packet-capture.service"
+systemd-analyze --user verify "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/meshcore-packet-capture.service"
+systemctl --user daemon-reload
+systemctl --user enable --now meshcore-packet-capture
+```
+
+Generation only prints the unit to stdout. It does not read config files, connect
+to a radio, install a service, or start one. The unit uses the Python executable
+from the CLI's installed environment, so no path edits are needed.
+
+Put TOML configuration in
+`${XDG_CONFIG_HOME:-$HOME/.config}/meshcore-packet-capture/config.toml` and
+`config.d/*.toml`. The service enables `--user-config`, which overlays user TOML
+on readable system config. New, edited, or removed config files take effect after
+`systemctl --user restart meshcore-packet-capture` without regenerating the unit.
+
+To select another directory, set `PACKETCAPTURE_CONFIG_DIR` during generation.
+To select specific files instead, pass repeatable `--config PATH` arguments;
+their order is preserved and relative paths are saved as absolute paths.
+Capture options such as `--no-mqtt`, `--debug`, and `--output PATH` are also
+saved in the generated command. Shell settings for `PACKETCAPTURE_CONFIG_DIR`,
+`XDG_CONFIG_HOME`, and `MESHCORE_PACKETCAPTURE_ENV_DIR` are saved when explicitly
+set; other `PACKETCAPTURE_*` settings should go in TOML or the service environment.
+
+Runtime state goes in `${XDG_STATE_HOME:-$HOME/.local/state}/meshcore-packet-capture/`.
+An explicitly set `PACKETCAPTURE_DATA_DIR` overrides that directory. The unit sets
+this environment variable, which takes precedence over a TOML data-directory
+setting. The capture process creates the state directory when saving state.
+The working directory is the user's home, or the selected checkout when
+`MESHCORE_PACKETCAPTURE_ENV_DIR` is set. Relative XDG directory values are ignored.
+
+Regenerate the unit and run `systemctl --user daemon-reload` followed by a restart
+if the installed Python path or saved directory selections change. For startup
+without logging in, enable lingering with `loginctl enable-linger "$USER"`
+(this may require administrator authorization). Radio access still requires the
+user's normal serial-device or Bluetooth permissions.
+
+Only `--print-systemd-unit --user` is supported. System services use the managed
+installer, which sets up the service account and permissions.
+
+#### User service from a local checkout (Linux)
 
 For a local checkout on Linux, `./install.sh --user-service` will create a per-user
 systemd service that runs from the repo's `.venv`. Pass `--repo-dir PATH` if the checkout
@@ -133,6 +183,9 @@ PACKETCAPTURE_CONFIG_DIR="$HOME/.config/meshcore-packet-capture" ./install.sh --
 The installer also saves an explicitly set `XDG_CONFIG_HOME`. Changing these
 variables in your shell later does not change an installed unit; rerun the
 installer or edit its service environment and run `systemctl --user daemon-reload`.
+
+The checkout installer uses the CLI renderer above and the same user state
+directory defaults.
 
 **Existing user services:** rerun `./install.sh --user-service` once after
 upgrading to replace the old fixed `--config` file list with startup discovery.

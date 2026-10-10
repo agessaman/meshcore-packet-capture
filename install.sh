@@ -40,31 +40,6 @@ Notes:
 EOF
 }
 
-systemd_escape_unit_value() {
-    local escaped="$1"
-    if [[ "$escaped" =~ [[:cntrl:]] ]]; then
-        echo "Error: systemd unit values cannot contain control characters" >&2
-        return 1
-    fi
-    escaped=${escaped//\\/\\\\}
-    escaped=${escaped//\"/\\\"}
-    # A single percent starts systemd specifier expansion.
-    escaped=${escaped//%/%%}
-    printf '%s' "$escaped"
-}
-
-systemd_quote_unit_value() {
-    printf '"%s"' "$(systemd_escape_unit_value "$1")"
-}
-
-systemd_quote_exec_arg() {
-    local escaped
-    escaped="$(systemd_escape_unit_value "$1")"
-    # ExecStart performs environment expansion; $$ produces a literal dollar.
-    escaped=${escaped//\$/\$\$}
-    printf '"%s"' "$escaped"
-}
-
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help|-h) SHOW_HELP=true; EXTRA_ARGS+=("$1"); shift ;;
@@ -104,7 +79,6 @@ if [ "$USER_SERVICE" = true ]; then
         echo "Creating venv: $REPO_DIR/.venv"
         python3 -m venv "$REPO_DIR/.venv"
     fi
-    CONFIG_ENVIRONMENT=""
     for config_variable in PACKETCAPTURE_CONFIG_DIR XDG_CONFIG_HOME; do
         config_value="${!config_variable}"
         if [ -n "$config_value" ]; then
@@ -112,10 +86,6 @@ if [ "$USER_SERVICE" = true ]; then
                 echo "Error: configuration paths cannot contain control characters" >&2
                 exit 1
             fi
-            if [ "$config_variable" = PACKETCAPTURE_CONFIG_DIR ] && [[ "$config_value" != /* && "$config_value" != '~'* && "$config_value" =~ [^[:space:]] ]]; then
-                config_value="$PWD/$config_value"
-            fi
-            CONFIG_ENVIRONMENT+="Environment=$(systemd_quote_unit_value "$config_variable=$config_value")"$'\n'
         fi
     done
 
@@ -125,31 +95,14 @@ if [ "$USER_SERVICE" = true ]; then
 
     UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
     UNIT_PATH="$UNIT_DIR/meshcore-packet-capture.service"
-    WORKING_DIRECTORY="$(systemd_escape_unit_value "$REPO_DIR")"
-    ENV_DIRECTORY="$(systemd_quote_unit_value "MESHCORE_PACKETCAPTURE_ENV_DIR=$REPO_DIR")"
-    PYTHON_EXECUTABLE="$(systemd_quote_exec_arg "$REPO_DIR/.venv/bin/python")"
-
     mkdir -p "$UNIT_DIR"
-    cat > "$UNIT_PATH" <<EOF
-[Unit]
-Description=MeshCore Packet Capture (user)
-After=network-online.target bluetooth.target
-Wants=network-online.target
-
-[Service]
-Type=exec
-WorkingDirectory=$WORKING_DIRECTORY
-Environment=$ENV_DIRECTORY
-${CONFIG_ENVIRONMENT}ExecStart=env $PYTHON_EXECUTABLE -m meshcore_packet_capture --user-config
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-Restart=always
-RestartSec=10
-NoNewPrivileges=true
-PrivateTmp=true
-
-[Install]
-WantedBy=default.target
-EOF
+    UNIT_TEMP="$(mktemp "$UNIT_DIR/.meshcore-packet-capture.XXXXXX")"
+    trap 'rm -f "$UNIT_TEMP"' EXIT
+    MESHCORE_PACKETCAPTURE_ENV_DIR="$REPO_DIR" "$REPO_DIR/.venv/bin/python" \
+        -m meshcore_packet_capture --print-systemd-unit --user > "$UNIT_TEMP"
+    chmod 644 "$UNIT_TEMP"
+    mv "$UNIT_TEMP" "$UNIT_PATH"
+    trap - EXIT
 
     echo "Created unit: $UNIT_PATH"
     systemctl --user daemon-reload

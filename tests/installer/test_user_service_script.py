@@ -25,6 +25,21 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
+def _write_python(path: Path) -> None:
+    code = (
+        'import sys; sys.executable = sys.argv[1]; '
+        'sys.argv = ["meshcore-packet-capture", *sys.argv[2:]]; '
+        'from meshcore_packet_capture.__main__ import cli; cli()'
+    )
+    _write_executable(path, '\n'.join([
+        '#!/bin/bash',
+        'if [ "${2:-}" = "pip" ]; then exit 0; fi',
+        f'export PYTHONPATH={shlex.quote(str(REPO_ROOT / "src"))}',
+        f'exec {shlex.quote(sys.executable)} -c {shlex.quote(code)} "$0" "${{@:3}}"',
+        '',
+    ]))
+
+
 def _escape_unit_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
 
@@ -43,7 +58,7 @@ def test_user_service_normalizes_and_quotes_repo_path(tmp_path: Path) -> None:
     repo_dir = cdpath_root / 'repo with spaces %n $HOME "quoted" back\\slash'
     python = repo_dir / ".venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
-    _write_executable(python, "#!/bin/bash\nexit 0\n")
+    _write_python(python)
     (repo_dir / "pyproject.toml").write_text("[project]\nname = 'test'\n")
     (repo_dir / "config.toml").write_text("[capture]\n")
 
@@ -94,13 +109,13 @@ def test_user_service_normalizes_and_quotes_repo_path(tmp_path: Path) -> None:
         [
             "env",
             _quote_exec_arg(str(python)),
-            "-m",
-            "meshcore_packet_capture",
-            "--user-config",
+            _quote_exec_arg("-m"),
+            _quote_exec_arg("meshcore_packet_capture"),
+            _quote_exec_arg("--user-config"),
         ]
     )
 
-    assert f"WorkingDirectory={_escape_unit_value(str(repo_dir))}" in unit
+    assert f"WorkingDirectory={_quote_unit_value(str(repo_dir))}" in unit
     assert (
         "Environment="
         + _quote_unit_value(f"MESHCORE_PACKETCAPTURE_ENV_DIR={repo_dir}")
@@ -151,7 +166,7 @@ def _install_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, local_c
     repo = tmp_path / "checkout"
     python = repo / ".venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
-    _write_executable(python, "#!/bin/bash\nexit 0\n")
+    _write_python(python)
     (repo / "pyproject.toml").write_text("[project]\nname='fixture'\n")
     if local_config:
         (repo / "config.toml").write_text('[general]\niata="BASE"\n')
@@ -264,3 +279,18 @@ def test_generated_unit_resolves_relative_directory_at_install_time(tmp_path, mo
     _, _, unit = _install_fixture(tmp_path, monkeypatch)
     assert "Environment=" + _quote_unit_value(f"PACKETCAPTURE_CONFIG_DIR={selected}") in unit.read_text()
     assert _restart_config(unit)["general"]["iata"] == "RELATIVE"
+
+
+def test_failed_render_preserves_existing_unit(tmp_path, monkeypatch):
+    repo, _, unit = _install_fixture(tmp_path, monkeypatch)
+    original = unit.read_text()
+    # The renderer validates state overrides, which the shell does not inspect.
+    monkeypatch.setenv('PACKETCAPTURE_DATA_DIR', '/invalid\nstate')
+    result = subprocess.run(
+        ['bash', str(SCRIPT), '--user-service', '--repo-dir', str(repo)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert 'control characters' in result.stderr
+    assert unit.read_text() == original
+    assert list(unit.parent.glob('.meshcore-packet-capture.*')) == []

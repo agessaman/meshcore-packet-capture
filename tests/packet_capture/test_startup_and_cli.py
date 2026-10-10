@@ -12,6 +12,20 @@ import pytest
 import meshcore_packet_capture.packet_capture as pc
 
 
+@pytest.mark.asyncio
+async def test_main_prints_unit_before_environment_or_capture(monkeypatch, capsys):
+    def unexpected(*args, **kwargs):
+        pytest.fail('unit generation started capture or loaded configuration')
+
+    monkeypatch.setattr(pc, 'init_environment', unexpected)
+    monkeypatch.setattr(pc, 'PacketCapture', unexpected)
+    monkeypatch.setattr(sys, 'argv', ['packet_capture.py', '--print-systemd-unit', '--user'])
+    await pc.main()
+    result = capsys.readouterr()
+    assert result.out.startswith('[Unit]\n')
+    assert result.err == ''
+
+
 def test_load_env_files_uses_explicit_dir_and_local_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

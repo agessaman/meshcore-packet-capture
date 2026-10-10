@@ -45,9 +45,8 @@ def test_install_sh_user_service_uses_repo_local_configs():
     text = (REPO_ROOT / "install.sh").read_text()
 
     assert "--user-service" in text
-    assert "MESHCORE_PACKETCAPTURE_ENV_DIR=$REPO_DIR" in text
-    assert "systemd_quote_exec_arg" in text
-    assert "ExecStart=env $PYTHON_EXECUTABLE -m meshcore_packet_capture --user-config" in text
+    assert 'MESHCORE_PACKETCAPTURE_ENV_DIR="$REPO_DIR"' in text
+    assert "-m meshcore_packet_capture --print-systemd-unit --user" in text
 
 
 def test_install_sh_managed_help_is_forwarded_to_python_installer():

@@ -194,6 +194,11 @@ cleanup helper, and uninstaller continue using `/etc`; the new variable selects
 runtime TOML sources rather than relocating managed installation files.
 
 User overlays merge brokers by name: unmatched system brokers remain configured.
+In user-discovery mode with user TOML present, unreadable system TOML files are
+skipped with a warning, so a root-owned system override does not prevent loading
+your user config. Without user TOML, system permission failures still stop startup.
+Unreadable explicit files, selected-tree files, and user-tree files still fail
+startup, as do malformed TOML files in every mode.
 Use `enabled = false` on a matching broker to disable it, or select an isolated
 tree with `PACKETCAPTURE_CONFIG_DIR` to exclude system TOML entirely. Legacy
 `.env` loading and process-environment precedence still apply in all modes.

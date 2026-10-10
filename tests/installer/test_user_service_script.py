@@ -173,6 +173,8 @@ def _install_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, local_c
 
 
 def _restart_config(unit: Path, *, system: Path | None = None):
+    if system is None:
+        system = unit.parent / "empty-system"
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("PACKETCAPTURE_") and key not in ("MESHCORE_PACKETCAPTURE_ENV_DIR", "XDG_CONFIG_HOME")}
     for line in unit.read_text().splitlines():
@@ -191,7 +193,7 @@ def _restart_config(unit: Path, *, system: Path | None = None):
         "'config_d': str(Path(sys.argv[1]) / 'config.d')}\n"
         "print(json.dumps(load_config(user_config=True, **kwargs)))\n"
     )
-    result = subprocess.run([sys.executable, "-c", code, *([str(system)] if system else [])],
+    result = subprocess.run([sys.executable, "-c", code, str(system)],
                             env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)

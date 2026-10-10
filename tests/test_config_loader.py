@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import builtins
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,68 @@ def test_directory_selection_is_resolved_on_each_load(config_trees, tmp_path, mo
         assert _load_system(system)["general"]["iata"] == value
     monkeypatch.delenv("PACKETCAPTURE_CONFIG_DIR")
     assert _load_system(system)["general"]["iata"] == "SYSTEM"
+
+
+@pytest.fixture
+def deny_config_read(monkeypatch):
+    real_open = builtins.open
+    def deny(path):
+        def guarded_open(file, *args, **kwargs):
+            if Path(file) == path:
+                raise PermissionError(f"Permission denied: {path}")
+            return real_open(file, *args, **kwargs)
+        monkeypatch.setattr(builtins, "open", guarded_open)
+    return deny
+
+
+@pytest.mark.parametrize("location", ["base", "override"])
+def test_user_discovery_skips_unreadable_system_files(config_trees, deny_config_read, caplog, location):
+    system, _ = config_trees
+    unreadable = system / "config.toml"
+    if location == "override":
+        (system / "config.d").mkdir()
+        unreadable = system / "config.d" / "99-private.toml"
+        unreadable.write_text('[general]\niata="PRIVATE"\n')
+    deny_config_read(unreadable)
+    assert _load_system(system, user_config=True)["general"]["iata"] == "USER"
+    assert f"Skipping unreadable system config: {unreadable}" in caplog.text
+    with pytest.raises(PermissionError):
+        _load_system(system)
+
+
+@pytest.mark.parametrize("mode", ["explicit", "selected", "user", "checkout"])
+def test_user_discovery_does_not_hide_unreadable_user_configs(
+    config_trees, tmp_path, monkeypatch, deny_config_read, mode,
+):
+    system, xdg = config_trees
+    root = xdg / "meshcore-packet-capture" if mode == "user" else _write_tree(tmp_path / mode, "PRIVATE")
+    deny_config_read(root / "config.toml")
+    if mode == "selected":
+        monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(root))
+    elif mode == "checkout":
+        monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", str(root))
+    with pytest.raises(PermissionError):
+        if mode == "explicit":
+            cl.load_config([str(root / "config.toml")], user_config=True)
+        else:
+            _load_system(system, user_config=True)
+
+
+def test_user_discovery_does_not_hide_malformed_system_config(config_trees):
+    system, _ = config_trees
+    (system / "config.toml").write_text("invalid TOML")
+    with pytest.raises(tomllib.TOMLDecodeError):
+        _load_system(system, user_config=True)
+
+
+def test_user_discovery_without_user_toml_preserves_system_permission_failure(
+    config_trees, monkeypatch, deny_config_read,
+):
+    system, xdg = config_trees
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg / "missing"))
+    deny_config_read(system / "config.toml")
+    with pytest.raises(PermissionError):
+        _load_system(system, user_config=True)
 
 
 @pytest.mark.parametrize("xdg_value", [None, "", "relative/path"])

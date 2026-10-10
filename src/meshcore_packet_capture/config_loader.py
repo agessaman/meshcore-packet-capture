@@ -64,21 +64,29 @@ def _apply_override(config: dict[str, Any], override: dict[str, Any]) -> dict[st
     return config
 
 
-def _load_toml(path: str | Path) -> dict[str, Any]:
+def _load_toml(path: str | Path, *, skip_permission_errors: bool = False) -> dict[str, Any]:
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
+    except PermissionError:
+        if skip_permission_errors:
+            logger.warning("Skipping unreadable system config: %s", path)
+            return {}
+        logger.error("Unable to load TOML config: %s", path)
+        raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.error("Unable to load TOML config: %s", path)
         raise
 
 
-def _load_config_dir(config: dict[str, Any], config_d: Path) -> dict[str, Any]:
+def _load_config_dir(
+    config: dict[str, Any], config_d: Path, *, skip_permission_errors: bool = False,
+) -> dict[str, Any]:
     if not config_d.is_dir():
         return config
     for override_file in sorted(config_d.glob("*.toml")):
         logger.info("Loading config override: %s", override_file)
-        override = _load_toml(override_file)
+        override = _load_toml(override_file, skip_permission_errors=skip_permission_errors)
         config = _apply_override(config, override)
     return config
 
@@ -86,8 +94,8 @@ def _load_config_dir(config: dict[str, Any], config_d: Path) -> dict[str, Any]:
 def load_config(
     config_paths: list[str] | None = None,
     *,
-    base_path: str = DEFAULT_CONFIG_FILE,
-    config_d: str = DEFAULT_CONFIG_D,
+    base_path: str | None = None,
+    config_d: str | None = None,
     user_config: bool = False,
 ) -> dict[str, Any]:
     """Load explicit files, a selected tree, or the default system tree.
@@ -113,28 +121,31 @@ def load_config(
             raise NotADirectoryError(f"PACKETCAPTURE_CONFIG_DIR is not a directory: {root}")
         return _load_config_tree(root)
 
+    user_root = None
     if user_config:
         checkout_dir = os.environ.get("MESHCORE_PACKETCAPTURE_ENV_DIR", "")
         if checkout_dir.strip():
             root = Path(checkout_dir).expanduser()
             if _tree_config_paths(root):
                 return _load_config_tree(root)
-
-    config = {}
-    if os.path.exists(base_path):
-        config = _load_toml(base_path)
-        logger.info("Loaded base config from %s", base_path)
-    else:
-        logger.warning("Base config not found at %s, using defaults", base_path)
-
-    config = _load_config_dir(config, Path(config_d))
-    if user_config:
         xdg_home = os.environ.get("XDG_CONFIG_HOME", "")
         user_root = (
             Path(xdg_home) if xdg_home and Path(xdg_home).is_absolute()
             else Path.home() / ".config"
-        )
-        user_root /= "meshcore-packet-capture"
+        ) / "meshcore-packet-capture"
+
+    base_path = DEFAULT_CONFIG_FILE if base_path is None else base_path
+    config_d = DEFAULT_CONFIG_D if config_d is None else config_d
+    skip_system_permission_errors = user_root is not None and bool(_tree_config_paths(user_root))
+    config = {}
+    if os.path.exists(base_path):
+        config = _load_toml(base_path, skip_permission_errors=skip_system_permission_errors)
+        logger.info("Loaded base config from %s", base_path)
+    else:
+        logger.warning("Base config not found at %s, using defaults", base_path)
+
+    config = _load_config_dir(config, Path(config_d), skip_permission_errors=skip_system_permission_errors)
+    if user_root is not None:
         config = _load_config_tree(user_root, config)
     return config
 
@@ -373,8 +384,8 @@ def flatten_config_to_env_dict(config: dict[str, Any]) -> dict[str, str]:
 def apply_config_to_environ(
     config_paths: list[str] | None = None,
     *,
-    base_path: str = DEFAULT_CONFIG_FILE,
-    config_d: str = DEFAULT_CONFIG_D,
+    base_path: str | None = None,
+    config_d: str | None = None,
     protected: set[str] | None = None,
     user_config: bool = False,
 ) -> dict[str, Any]:

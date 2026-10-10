@@ -47,3 +47,10 @@ def isolate_packetcapture_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if key.startswith("PACKETCAPTURE_") or key == "MESHCORE_PACKETCAPTURE_ENV_DIR":
             monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def isolate_system_config(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    from meshcore_packet_capture import config_loader
+    monkeypatch.setattr(config_loader, "DEFAULT_CONFIG_FILE", str(tmp_path / "system/config.toml"))
+    monkeypatch.setattr(config_loader, "DEFAULT_CONFIG_D", str(tmp_path / "system/config.d"))

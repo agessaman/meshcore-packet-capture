@@ -336,13 +336,15 @@ async def _restore_contact_path(change, contact, path, mode, cfg, pubkey, logger
     write = asyncio.ensure_future(change(contact, path, mode))
     pending_cancel = None
     try:
-        result = await asyncio.wait_for(asyncio.shield(write), timeout=cfg.command_timeout)
+        async with asyncio.timeout(cfg.command_timeout):
+            result = await asyncio.shield(write)
     except asyncio.CancelledError as exc:
         # The shield kept the write alive; give it the same bounded window to
         # land before propagating, rather than abandon a half-applied pin.
         pending_cancel = exc
         try:
-            result = await asyncio.wait_for(write, timeout=cfg.command_timeout)
+            async with asyncio.timeout(cfg.command_timeout):
+                result = await write
         except Exception:
             result = None
     except Exception as exc:
@@ -402,9 +404,9 @@ async def _load_contacts(meshcore, cfg: NeighborsConfig, logger, command_lock=No
         # Under the lock: this is a multi-frame exchange, and an interleaved
         # command would take NEXT_CONTACT events that belong to it.
         async with _maybe_lock(command_lock):
-            result = await asyncio.wait_for(
-                fetch(timeout=cfg.command_timeout), timeout=cfg.command_timeout * 2
-            )
+            # wait_for can swallow cancellation at command completion on Python 3.11.
+            async with asyncio.timeout(cfg.command_timeout * 2):
+                result = await fetch(timeout=cfg.command_timeout)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -470,7 +472,8 @@ async def _direct_route(meshcore, cfg: NeighborsConfig, pubkey: str, logger, *, 
     # and even a device refusal leaves the cached contact mutated.
     try:
         try:
-            result = await asyncio.wait_for(change(contact, ""), timeout=cfg.command_timeout)
+            async with asyncio.timeout(cfg.command_timeout):
+                result = await change(contact, "")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -552,14 +555,12 @@ async def collect_scopes(
                     # Bounded: this holds the shared device-command lock, and an
                     # unbounded stall here would block the connection watchdog
                     # (and everything else) for as long as the write hangs.
-                    scopes = await asyncio.wait_for(
-                        meshcore.commands.req_regions_sync(
+                    async with asyncio.timeout(cfg.scope_request_budget):
+                        scopes = await meshcore.commands.req_regions_sync(
                             entry.pubkey,
                             timeout=timeout,
                             min_timeout=cfg.scope_min_timeout,
-                        ),
-                        timeout=cfg.scope_request_budget,
-                    )
+                        )
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:

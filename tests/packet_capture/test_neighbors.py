@@ -1954,14 +1954,23 @@ def test_restore_runs_when_cancelled_mid_pin():
     mc, contact = _pinned_mc(entry)
     mc.commands.path_change_hangs = [True]
 
+    started = asyncio.Event()
+    change = mc.commands.change_contact_path
+
+    async def pin(*args, **kwargs):
+        started.set()
+        return await change(*args, **kwargs)
+
+    mc.commands.change_contact_path = pin
     cfg = nb.NeighborsConfig(scope_gap=0.0)
-    cfg.command_timeout = 0.05
 
     async def drive():
         task = asyncio.ensure_future(
             nb.collect_scopes(mc, [entry], cfg, _FakeLogger())
         )
-        await asyncio.sleep(0)
+        async with asyncio.timeout(1):
+            await started.wait()
+        assert mc.commands.device_path == ""
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1969,6 +1978,37 @@ def test_restore_runs_when_cancelled_mid_pin():
     _run(drive())
     # Cancellation must not leave the device pinned: the restore is shielded.
     assert mc.commands.device_path == "aabb"
+
+
+@pytest.mark.parametrize("command", ["get_contacts", "change_contact_path", "req_regions_sync"])
+def test_scope_collection_propagates_cancellation_at_command_completion(command):
+    entry = _entry("a", 1.0, 100.0)
+    mc, contact = _pinned_mc(entry)
+    completed = asyncio.Event()
+    original = getattr(mc.commands, command)
+
+    async def finish(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        completed.set()
+        return result
+
+    setattr(mc.commands, command, finish)
+
+    async def drive():
+        async def run():
+            await nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger())
+            await asyncio.get_running_loop().create_future()
+
+        task = asyncio.create_task(run())
+        async with asyncio.timeout(1):
+            await completed.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(0.5):
+                await task
+
+    _run(drive())
+    assert contact["out_path"] == "aabb"
 
 
 def test_failed_restore_is_reported_not_swallowed():

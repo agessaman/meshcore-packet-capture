@@ -434,13 +434,9 @@ async def _load_contacts(meshcore, cfg: NeighborsConfig, logger, command_lock=No
 async def _direct_route(meshcore, cfg: NeighborsConfig, pubkey: str, logger, *, debug: bool = False):
     """Pin ``pubkey``'s contact to a zero-hop path for the duration of one query.
 
-    ``send_anon_req`` already does this for a contact with no path at all
-    (``out_path_len == -1``), restoring it afterwards. It does *not* for a
-    contact that has a usable multi-hop path: it routes the request that way,
-    and the repeater's isRouteDirect() gate drops it. A neighbour we can hear
-    directly therefore becomes unqueryable precisely *because* we already know a
-    longer way to reach it -- which is the stale-``out_path`` hazard that used to
-    argue against loading contacts at all.
+    Pin both multi-hop and pathless contacts here. The SDK's pathless pin/reset
+    has no ``finally``, so cancellation can leave that contact pinned. An already
+    zero-hop contact needs no write.
 
     The original path is restored explicitly rather than through ``reset_path``,
     which clears ``out_path`` outright: that would cost the contact its route and
@@ -451,9 +447,7 @@ async def _direct_route(meshcore, cfg: NeighborsConfig, pubkey: str, logger, *, 
     commands = getattr(meshcore, "commands", None)
     change = getattr(commands, "change_contact_path", None)
 
-    # out_path_len <= 0 covers both cases needing nothing from us: -1 is
-    # send_anon_req's own zero-hop path, 0 is already direct.
-    if contact is None or not callable(change) or contact.get("out_path_len", -1) <= 0:
+    if contact is None or not callable(change) or contact.get("out_path_len", -1) == 0:
         yield
         return
 
@@ -461,13 +455,19 @@ async def _direct_route(meshcore, cfg: NeighborsConfig, pubkey: str, logger, *, 
     # onto this same dict, so reading them afterwards would return the pin.
     original_path = contact.get("out_path", "")
     original_mode = contact.get("out_path_hash_mode", 0)
+    original_length = contact.get("out_path_len", -1)
 
-    # True from *before* the write is issued, not after it returns. update_contact()
-    # mutates the cached contact and hands the frame to the device before awaiting
-    # the acknowledgement, so a write interrupted by cancellation or timeout may
-    # well have been applied. Only a refusal we actually saw proves otherwise, so
-    # anything else has to be treated as possibly pinned and undone.
-    may_be_pinned = True
+    restore = change
+    if original_length == -1:
+        async def restore(contact, path, mode):
+            # change_contact_path("") encodes zero-hop, not the -1 flood sentinel.
+            contact["out_path"] = path
+            contact["out_path_len"] = original_length
+            contact["out_path_hash_mode"] = mode
+            return await commands.update_contact(contact)
+
+    # Restore after every attempted pin: SDK errors can mean lost acknowledgements,
+    # and even a device refusal leaves the cached contact mutated.
     try:
         try:
             result = await asyncio.wait_for(change(contact, ""), timeout=cfg.command_timeout)
@@ -478,11 +478,8 @@ async def _direct_route(meshcore, cfg: NeighborsConfig, pubkey: str, logger, *, 
         else:
             reason = _event_error_reason(result)
             if reason is not None:
-                # Refused outright, so the device never moved: nothing to undo,
-                # and the query runs on whatever route the contact already had.
-                may_be_pinned = False
                 logger.debug(
-                    f"Neighbors: device refused to pin {pubkey[:12]} to zero-hop ({reason})"
+                    f"Neighbors: zero-hop pin for {pubkey[:12]} was not confirmed ({reason})"
                 )
             elif debug:
                 logger.debug(
@@ -491,10 +488,9 @@ async def _direct_route(meshcore, cfg: NeighborsConfig, pubkey: str, logger, *, 
                 )
         yield
     finally:
-        if may_be_pinned:
-            await _restore_contact_path(
-                change, contact, original_path, original_mode, cfg, pubkey, logger
-            )
+        await _restore_contact_path(
+            restore, contact, original_path, original_mode, cfg, pubkey, logger
+        )
 
 
 async def collect_scopes(

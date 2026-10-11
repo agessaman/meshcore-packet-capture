@@ -155,11 +155,13 @@ class _FakeCommands:
         self._responses = responses
         self.calls = []
         self.path_changes = []
+        self.contact_updates = []
         self.path_change_error = None
         self.get_contacts_calls = []
         self.get_contacts_result = None
         self._owner = None
         self.device_path = None
+        self.device_path_len = None
         self.path_change_hangs = []
         self.path_change_results = []
 
@@ -184,8 +186,11 @@ class _FakeCommands:
         # Device state is tracked separately from the cache so a restore that
         # never reaches the device cannot be masked by the mutated dict.
         self.device_path = path
+        self.device_path_len = 0 if path == "" else len(path) // 2
         contact["out_path"] = path
         contact["out_path_len"] = 0 if path == "" else len(path) // 2
+        if path_hash_mode is not None:
+            contact["out_path_hash_mode"] = path_hash_mode
 
         if self.path_change_hangs and self.path_change_hangs.pop(0):
             # Never resolves: the autouse fixture patches asyncio.sleep on the
@@ -195,6 +200,12 @@ class _FakeCommands:
         if self.path_change_results:
             return self.path_change_results.pop(0)
         return None
+
+    async def update_contact(self, contact):
+        self.contact_updates.append(dict(contact))
+        self.device_path = contact["out_path"]
+        self.device_path_len = contact["out_path_len"]
+        return _FakeEvent(_FakeEventType.OK, {})
 
     async def req_regions_sync(self, pubkey, timeout=0, min_timeout=0):
         self.calls.append({"pubkey": pubkey, "timeout": timeout, "min_timeout": min_timeout})
@@ -1738,15 +1749,38 @@ def test_collect_scopes_restores_path_even_when_query_fails():
     assert entry.status == nb.STATUS_SEND_FAILED
 
 
-def test_collect_scopes_leaves_pathless_contact_to_send_anon_req():
-    # out_path_len == -1 is send_anon_req's own zero-hop case: it pins and
-    # restores itself, so touching the path here would be redundant device traffic.
+@pytest.mark.parametrize("response", ["fr", RuntimeError("query failed"), asyncio.CancelledError()])
+def test_collect_scopes_restores_pathless_contact(response):
     entry = _entry("a", 1.0, 100.0)
     contact = _contact(entry.pubkey, out_path_len=-1)
-    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={"c": contact})
-    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
-    assert mc.commands.path_changes == []
-    assert entry.status == nb.STATUS_RESPONDED
+    contact["out_path_hash_mode"] = 1
+    original = dict(contact)
+    mc = _FakeMeshCore({entry.pubkey: response}, contacts={"c": contact})
+
+    async def query(pubkey, **kwargs):
+        # Match the SDK's pathless pin/reset, which has no finally on failure.
+        sdk_pinned = contact["out_path_len"] == -1
+        if sdk_pinned:
+            await mc.commands.change_contact_path(contact, "")
+        if isinstance(response, BaseException):
+            raise response
+        if sdk_pinned:
+            contact.update(original)
+            await mc.commands.update_contact(contact)
+        return response
+
+    mc.commands.req_regions_sync = query
+    cycle = nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger())
+    if isinstance(response, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            _run(cycle)
+    else:
+        _run(cycle)
+        assert entry.status == (nb.STATUS_RESPONDED if isinstance(response, str) else nb.STATUS_SEND_FAILED)
+    assert [c["path"] for c in mc.commands.path_changes] == [""]
+    assert mc.commands.contact_updates == [original]
+    assert mc.commands.device_path_len == -1
+    assert contact == original
 
 
 def test_collect_scopes_handles_unknown_contact():
@@ -1756,6 +1790,18 @@ def test_collect_scopes_handles_unknown_contact():
     _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
     assert mc.commands.path_changes == []
     assert len(mc.commands.calls) == 1
+
+
+def test_collect_scopes_keeps_existing_zero_hop_contact():
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=0)
+    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={"c": contact})
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    assert mc.commands.path_changes == []
+    assert mc.commands.contact_updates == []
+    assert entry.status == nb.STATUS_RESPONDED
 
 
 def test_collect_scopes_still_queries_when_pinning_fails():
@@ -1942,9 +1988,8 @@ def test_failed_restore_is_reported_not_swallowed():
     assert any("contact busy" in m for m in logger.messages)
 
 
-def test_refused_pin_attempts_no_restore():
-    # A refusal we actually saw means the device never moved, so undoing it
-    # would be a pointless extra write on a link we are trying to keep quiet.
+def test_refused_pin_restores_original_path():
+    # Even a device refusal comes after the SDK mutates the cached contact.
     entry = _entry("a", 1.0, 100.0)
     mc, contact = _pinned_mc(entry)
     mc.commands.path_change_results = [
@@ -1953,7 +1998,48 @@ def test_refused_pin_attempts_no_restore():
 
     _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
 
-    assert [c["path"] for c in mc.commands.path_changes] == [""]
+    assert [c["path"] for c in mc.commands.path_changes] == ["", "aabb"]
+    assert contact["out_path"] == "aabb"
+
+
+@pytest.mark.parametrize("payload", [{"reason": "no_event_received"}, {"reason": "timeout"},
+                                     {"error": "transport failed"}])
+def test_restore_runs_when_sdk_returns_ambiguous_pin_error(payload):
+    entry = _entry("a", 1.0, 100.0)
+    mc, contact = _pinned_mc(entry)
+    mc.commands.path_change_results = [_FakeEvent(_FakeEventType.ERROR, payload)]
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    assert [c["path"] for c in mc.commands.path_changes] == ["", "aabb"]
+    assert mc.commands.device_path == "aabb"
+    assert contact["out_path"] == "aabb"
+
+
+def test_pathless_contact_restores_when_cancelled_mid_pin():
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=-1)
+    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={"c": contact})
+    started = asyncio.Event()
+    change = mc.commands.change_contact_path
+
+    async def interrupted_pin(*args, **kwargs):
+        await change(*args, **kwargs)
+        started.set()
+        await asyncio.get_running_loop().create_future()
+
+    mc.commands.change_contact_path = interrupted_pin
+
+    async def drive():
+        task = asyncio.create_task(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(), _FakeLogger()))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    _run(drive())
+    assert mc.commands.device_path_len == -1
+    assert contact["out_path_len"] == -1
 
 
 def test_restore_preserves_the_original_hash_mode():

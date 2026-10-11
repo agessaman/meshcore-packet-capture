@@ -34,7 +34,7 @@ def _write_python(path: Path) -> None:
     _write_executable(path, '\n'.join([
         '#!/bin/bash',
         'if [ "${2:-}" = "pip" ]; then exit 0; fi',
-        f'export PYTHONPATH={shlex.quote(str(REPO_ROOT / "src"))}',
+        f'export PYTHONPATH={shlex.quote(str(REPO_ROOT / "src"))}"${{PYTHONPATH:+:$PYTHONPATH}}"',
         f'exec {shlex.quote(sys.executable)} -c {shlex.quote(code)} "$0" "${{@:3}}"',
         '',
     ]))
@@ -49,7 +49,7 @@ def _quote_unit_value(value: str) -> str:
 
 
 def _quote_exec_arg(value: str) -> str:
-    escaped = _escape_unit_value(value).replace("$", "$$")
+    escaped = _escape_unit_value(value)
     return f'"{escaped}"'
 
 
@@ -105,9 +105,8 @@ def test_user_service_normalizes_and_quotes_repo_path(tmp_path: Path) -> None:
         config_home / "systemd" / "user" / "meshcore-packet-capture.service"
     )
     unit = unit_path.read_text()
-    expected_exec = " ".join(
+    expected_exec = ":" + " ".join(
         [
-            "env",
             _quote_exec_arg(str(python)),
             _quote_exec_arg("-m"),
             _quote_exec_arg("meshcore_packet_capture"),
@@ -187,70 +186,51 @@ def _install_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, local_c
     return repo, xdg, unit
 
 
-def _restart_config(unit: Path, *, system: Path | None = None):
-    if system is None:
-        system = unit.parent / "empty-system"
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith("PACKETCAPTURE_") and key not in ("MESHCORE_PACKETCAPTURE_ENV_DIR", "XDG_CONFIG_HOME")}
-    for line in unit.read_text().splitlines():
-        if line.startswith("Environment="):
-            key, value = shlex.split(line.split("=", 1)[1])[0].split("=", 1)
-            env[key] = value.replace("%%", "%")
-    exec_line = next(line for line in unit.read_text().splitlines() if line.startswith("ExecStart="))
-    assert shlex.split(exec_line.split("=", 1)[1])[3:] == ["meshcore_packet_capture", "--user-config"]
-    env["PYTHONPATH"] = str(REPO_ROOT / "src")
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    code = (
-        "import json, sys\n"
-        "from meshcore_packet_capture.config_loader import load_config\n"
-        "from pathlib import Path\n"
-        "kwargs = {} if len(sys.argv) == 1 else {'base_path': str(Path(sys.argv[1]) / 'config.toml'), "
-        "'config_d': str(Path(sys.argv[1]) / 'config.d')}\n"
-        "print(json.dumps(load_config(user_config=True, **kwargs)))\n"
-    )
-    result = subprocess.run([sys.executable, "-c", code, str(system)],
-                            env=env, capture_output=True, text=True)
+def _restart_config(unit: Path, run_user_unit, *, system: Path | None = None):
+    result = run_user_unit(unit.read_text(), system=system)
     assert result.returncode == 0, result.stderr
-    return json.loads(result.stdout)
+    return json.loads(result.stdout)['env']
 
 
 @pytest.mark.parametrize("local_config", [False, True])
-def test_generated_unit_discovers_configs_added_after_install(tmp_path, monkeypatch, local_config):
+def test_generated_unit_discovers_configs_added_after_install(tmp_path, monkeypatch, run_user_unit, local_config):
     repo, _, unit = _install_fixture(tmp_path, monkeypatch, local_config=local_config)
     original_unit = unit.read_text()
     system = tmp_path / "system"
     system.mkdir()
     (system / "config.toml").write_text('[general]\niata="SYSTEM"\n')
-    assert _restart_config(unit, system=system)["general"]["iata"] == ("BASE" if local_config else "SYSTEM")
+    assert _restart_config(unit, run_user_unit, system=system).get("PACKETCAPTURE_IATA") == ("BASE" if local_config else None)
     (repo / "config.d").mkdir()
     override = repo / "config.d" / "99-user.toml"
     override.write_text('[general]\niata="ADDED"\n')
-    assert _restart_config(unit, system=system)["general"]["iata"] == "ADDED"
+    assert _restart_config(unit, run_user_unit, system=system)["PACKETCAPTURE_IATA"] == "ADDED"
     override.write_text('[general]\niata="CHANGED"\n')
-    assert _restart_config(unit, system=system)["general"]["iata"] == "CHANGED"
+    assert _restart_config(unit, run_user_unit, system=system)["PACKETCAPTURE_IATA"] == "CHANGED"
     override.unlink()
-    assert _restart_config(unit, system=system)["general"]["iata"] == ("BASE" if local_config else "SYSTEM")
+    assert _restart_config(unit, run_user_unit, system=system).get("PACKETCAPTURE_IATA") == ("BASE" if local_config else None)
     assert unit.read_text() == original_unit
 
 
-def test_generated_unit_uses_xdg_when_checkout_has_no_toml(tmp_path, monkeypatch):
+def test_generated_unit_empty_checkout_stays_isolated(tmp_path, monkeypatch, run_user_unit):
     repo, xdg, unit = _install_fixture(tmp_path, monkeypatch, local_config=False)
     user = xdg / "meshcore-packet-capture"
     user.mkdir()
     (user / "config.toml").write_text('[general]\niata="XDG"\n')
-    assert _restart_config(unit)["general"]["iata"] == "XDG"
+    assert "PACKETCAPTURE_IATA" not in _restart_config(unit, run_user_unit)
     (repo / "config.toml").write_text('[general]\niata="CHECKOUT"\n')
-    assert _restart_config(unit)["general"]["iata"] == "CHECKOUT"
+    assert _restart_config(unit, run_user_unit)["PACKETCAPTURE_IATA"] == "CHECKOUT"
+    (repo / "config.toml").unlink()
+    assert "PACKETCAPTURE_IATA" not in _restart_config(unit, run_user_unit)
 
 
-def test_generated_unit_persists_and_quotes_directory_override(tmp_path, monkeypatch):
+def test_generated_unit_persists_and_quotes_directory_override(tmp_path, monkeypatch, run_user_unit):
     selected = tmp_path / 'config with spaces %n $HOME "quotes" back\\slash'
     selected.mkdir()
     (selected / "config.toml").write_text('[general]\niata="SELECTED"\n')
     monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(selected))
     _, _, unit = _install_fixture(tmp_path, monkeypatch)
     assert "Environment=" + _quote_unit_value(f"PACKETCAPTURE_CONFIG_DIR={selected}") in unit.read_text()
-    assert _restart_config(unit)["general"]["iata"] == "SELECTED"
+    assert _restart_config(unit, run_user_unit)["PACKETCAPTURE_IATA"] == "SELECTED"
 
 
 @pytest.mark.parametrize("variable", ["PACKETCAPTURE_CONFIG_DIR", "XDG_CONFIG_HOME"])
@@ -270,7 +250,7 @@ def test_user_service_rejects_control_characters_in_directory_override(tmp_path,
     assert not (tmp_path / "xdg" / "systemd" / "user" / "meshcore-packet-capture.service").exists()
 
 
-def test_generated_unit_resolves_relative_directory_at_install_time(tmp_path, monkeypatch):
+def test_generated_unit_resolves_relative_directory_at_install_time(tmp_path, monkeypatch, run_user_unit):
     selected = tmp_path / "selected"
     selected.mkdir()
     (selected / "config.toml").write_text('[general]\niata="RELATIVE"\n')
@@ -278,7 +258,27 @@ def test_generated_unit_resolves_relative_directory_at_install_time(tmp_path, mo
     monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", "selected")
     _, _, unit = _install_fixture(tmp_path, monkeypatch)
     assert "Environment=" + _quote_unit_value(f"PACKETCAPTURE_CONFIG_DIR={selected}") in unit.read_text()
-    assert _restart_config(unit)["general"]["iata"] == "RELATIVE"
+    assert _restart_config(unit, run_user_unit)["PACKETCAPTURE_IATA"] == "RELATIVE"
+
+
+def test_relative_xdg_config_home_replaces_unit_in_home(tmp_path, monkeypatch):
+    repo, _, _ = _install_fixture(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    old_unit = home / ".config/systemd/user/meshcore-packet-capture.service"
+    old_unit.parent.mkdir(parents=True)
+    old_unit.write_text("stale unit\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative-xdg")
+    result = subprocess.run(["bash", str(SCRIPT), "--user-service", "--repo-dir", str(repo)],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert old_unit.read_text().startswith("[Unit]\n")
+    assert 'Environment="XDG_CONFIG_HOME=' not in old_unit.read_text()
+    assert not (tmp_path / "relative-xdg").exists()
+    uninstalled = subprocess.run(["bash", str(REPO_ROOT / "uninstall.sh"), "--user-service",
+                                 "--repo-dir", str(repo)], cwd=tmp_path, capture_output=True, text=True)
+    assert uninstalled.returncode == 0, uninstalled.stderr
+    assert not old_unit.exists()
 
 
 def test_failed_render_preserves_existing_unit(tmp_path, monkeypatch):

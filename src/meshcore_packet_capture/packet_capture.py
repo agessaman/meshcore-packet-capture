@@ -14,9 +14,12 @@ Options:
     --debug      Show detailed debugging info
     --no-mqtt    Disable MQTT publishing
     --config     TOML only (repeatable); default loads /etc/meshcore-packet-capture/
+    --user-config Select checkout TOML or overlay system TOML with XDG user TOML
+    --no-env-files Skip legacy .env and .env.local files
 
 The script captures packet metadata including SNR, RSSI, route type, payload type,
-and raw hex data. Configuration is done via environment variables, .env files, and TOML under /etc.
+and raw hex data. Configuration uses process environment variables, legacy .env
+files, and explicitly selected, system, checkout, or XDG user TOML trees.
 """
 
 import asyncio
@@ -183,7 +186,7 @@ def _normalize_ble_pin(value: Any) -> Optional[str]:
 def load_env_files():
     """Load environment variables from .env and .env.local in one directory.
 
-    Search order: ``MESHCORE_PACKETCAPTURE_ENV_DIR`` if set, else the first of
+    Use only ``MESHCORE_PACKETCAPTURE_ENV_DIR`` if set, else the first of
     ``os.getcwd()``, the git repo root (parent of ``src/``), or the package
     directory, that contains either file; if none, use the current working
     directory (files may be absent).
@@ -194,18 +197,15 @@ def load_env_files():
     candidates: list[str] = []
     if explicit:
         candidates.append(os.path.expanduser(explicit))
-    for d in (os.getcwd(), repo_root, pkg_dir):
-        if d not in candidates:
-            candidates.append(d)
-    chosen = None
+    else:
+        candidates.extend((os.getcwd(), repo_root, pkg_dir))
+    chosen = candidates[0]
     for d in candidates:
         if os.path.isfile(os.path.join(d, ".env")) or os.path.isfile(
             os.path.join(d, ".env.local")
         ):
             chosen = d
             break
-    if chosen is None:
-        chosen = os.getcwd()
     env_file = os.path.join(chosen, ".env")
     env_local_file = os.path.join(chosen, ".env.local")
     
@@ -253,17 +253,22 @@ def load_env_files():
 _environment_initialized = False
 
 
-def init_environment(config_paths: list[str] | None = None, *, user_config: bool = False) -> None:
+def init_environment(
+    config_paths: list[str] | None = None, *, user_config: bool = False, no_env_files: bool = False,
+) -> None:
     """Load config into os.environ.
 
-    Precedence (highest first): real process env > TOML (/etc + config.d, or
-    --config paths) > .env.local > .env. The genuine process environment is
+    Precedence (highest first): real process env > selected/system/user TOML >
+    .env.local > .env. no_env_files disables both legacy files. An explicit
+    MESHCORE_PACKETCAPTURE_ENV_DIR confines legacy files to that directory.
+    The genuine process environment is
     snapshotted before any files are read so TOML may overwrite values that came
     only from .env files, while never clobbering real environment variables.
     """
     global _environment_initialized
     preexisting = set(os.environ)
-    load_env_files()
+    if not no_env_files:
+        load_env_files()
     if apply_config_to_environ is not None:
         apply_config_to_environ(config_paths, protected=preexisting, user_config=user_config)
     _environment_initialized = True
@@ -734,11 +739,12 @@ class PacketCapture:
         
         Works across all installation methods:
         - PACKETCAPTURE_DATA_DIR: explicit directory (FHS / systemd)
+        - PACKETCAPTURE_DEFAULT_DATA_DIR: user-service fallback below TOML/env
         - Docker: Uses /app/data/ (mounted volume)
         - NixOS: Uses cfg.dataDir (working directory)
         - Systemd: Uses script directory or data subdirectory
         """
-        configured = self.get_env('DATA_DIR', '').strip()
+        configured = self.get_env('DATA_DIR', '').strip() or self.get_env('DEFAULT_DATA_DIR', '').strip()
         if configured:
             return os.path.join(configured, 'advert_state.json')
 
@@ -4322,7 +4328,8 @@ async def main(args=None):
         args = parse_args()
     if args is None:
         return
-    init_environment(args.config_files if args.config_files else None, user_config=args.user_config)
+    init_environment(args.config_files if args.config_files else None, user_config=args.user_config,
+                     no_env_files=args.no_env_files)
 
     # Command line arguments will be handled after PacketCapture instantiation
     

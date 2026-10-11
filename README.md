@@ -102,6 +102,7 @@ The installed CLI can generate a user systemd unit without a repository checkout
 
 ```bash
 uv tool install "git+https://github.com/agessaman/meshcore-packet-capture"
+case "${XDG_CONFIG_HOME:-}" in /*) ;; *) export XDG_CONFIG_HOME="$HOME/.config" ;; esac
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 meshcore-packet-capture --print-systemd-unit --user \
   > "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/meshcore-packet-capture.service"
@@ -127,13 +128,20 @@ Capture options such as `--no-mqtt`, `--debug`, and `--output PATH` are also
 saved in the generated command. Shell settings for `PACKETCAPTURE_CONFIG_DIR`,
 `XDG_CONFIG_HOME`, and `MESHCORE_PACKETCAPTURE_ENV_DIR` are saved when explicitly
 set; other `PACKETCAPTURE_*` settings should go in TOML or the service environment.
+`--neighbors-now` and `--neighbors-exit` are manual actions and are rejected during
+unit generation, because a restarting service would repeat their on-air work.
 
-Runtime state goes in `${XDG_STATE_HOME:-$HOME/.local/state}/meshcore-packet-capture/`.
-An explicitly set `PACKETCAPTURE_DATA_DIR` overrides that directory. The unit sets
-this environment variable, which takes precedence over a TOML data-directory
-setting. The capture process creates the state directory when saving state.
+Without a selected checkout, runtime state defaults to
+`${XDG_STATE_HOME:-$HOME/.local/state}/meshcore-packet-capture/`. The unit supplies
+`PACKETCAPTURE_DEFAULT_DATA_DIR` as a fallback; `[capture] data_dir` in TOML takes
+precedence. An explicitly set `PACKETCAPTURE_DATA_DIR` is saved in the unit and
+overrides TOML. The capture process creates the state directory when saving state.
 The working directory is the user's home, or the selected checkout when
 `MESHCORE_PACKETCAPTURE_ENV_DIR` is set. Relative XDG directory values are ignored.
+Generated services without a checkout pass `--no-env-files`, so unrelated
+`~/.env` and `~/.env.local` cannot redirect their config or supply runtime settings.
+To use legacy env files, explicitly select their directory with
+`MESHCORE_PACKETCAPTURE_ENV_DIR` during generation.
 
 Regenerate the unit and run `systemctl --user daemon-reload` followed by a restart
 if the installed Python path or saved directory selections change. For startup
@@ -168,9 +176,9 @@ meshcore-packet-capture/
 The user-service path loads `.env` and `.env.local` from the repo root. It discovers
 `config.toml` and every `config.d/*.toml` file in sorted order at each startup, so
 new files take effect after `systemctl --user restart meshcore-packet-capture`.
-If the checkout has no TOML files, it loads the system config under `/etc` and
-then overlays user config under `${XDG_CONFIG_HOME:-$HOME/.config}/meshcore-packet-capture/`.
-Checkout-local TOML takes precedence over that system/user discovery.
+The checkout remains the selected TOML tree even when it is empty. It never
+falls through to system or XDG TOML when files are added or removed; a missing
+checkout directory fails startup. Legacy env files are confined to the repo root.
 
 To select a different TOML tree, set `PACKETCAPTURE_CONFIG_DIR` when installing
 the user service; the installer saves it in the generated unit:
@@ -184,11 +192,20 @@ The installer also saves an explicitly set `XDG_CONFIG_HOME`. Changing these
 variables in your shell later does not change an installed unit; rerun the
 installer or edit its service environment and run `systemctl --user daemon-reload`.
 
-The checkout installer uses the CLI renderer above and the same user state
-directory defaults.
+The checkout installer uses the CLI renderer above. Without an explicit data
+directory in TOML, legacy env files, or the unit environment, checkout services
+retain the legacy state location beside the package (its `data/` subdirectory
+when present). This preserves existing advert and neighbor schedule timestamps.
 
 **Existing user services:** rerun `./install.sh --user-service` once after
 upgrading to replace the old fixed `--config` file list with startup discovery.
+The selected tree now loads every future `config.d/*.toml` file, so only put
+finished, trusted configuration there. Use explicit `--config` arguments with
+the CLI generator if you need a fixed file list. If you previously generated a
+unit that set the XDG state directory, retain that location with `[capture]
+`data_dir` or `PACKETCAPTURE_DATA_DIR` before regenerating, or copy its
+`advert_state.json` to your chosen directory while the service is stopped.
+Moving state without preserving that file resets advert and neighbor timers.
 
 ### Docker Installation
 
@@ -216,7 +233,7 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 
 1. **Process environment** — `PACKETCAPTURE_*` variables already set in the environment (e.g. from a systemd unit, Docker `-e`, or your shell) always win.
 2. **TOML**: `/etc/meshcore-packet-capture/config.toml` plus every `*.toml` in `/etc/meshcore-packet-capture/config.d/` (sorted). Broker entries use the same `[[broker]]` shape as meshcoretomqtt. See `config.toml.example` and bundled `presets/letsmesh.toml` (LetsMesh Packet Analyzer defaults). With **`--config PATH`** (repeatable) only those files are merged, in order, and the automatic `/etc` scan is skipped.
-3. **Legacy `.env` / `.env.local`** (see below) — a development/manual-install convenience, loaded from the working directory. These are overridden by TOML, so they only take effect for keys the TOML config does not set.
+3. **Legacy `.env` / `.env.local`** (see below) — a development/manual-install convenience. An explicit `MESHCORE_PACKETCAPTURE_ENV_DIR` selects only that directory; otherwise the first directory with env files among the working directory, repo root, and package directory is used. `--no-env-files` skips them. These are overridden by TOML, so they only take effect for keys the TOML config does not set.
 
 Values are applied as `PACKETCAPTURE_*` environment variables. See `config.toml.example` for every TOML key, or `.env` for the equivalent flat variable names.
 
@@ -233,8 +250,10 @@ TOML sources are selected in this order:
    or a path pointing to a file fails startup. An existing empty directory is
    allowed; it supplies no TOML settings. Empty or whitespace-only values leave
    default discovery enabled.
-3. With `--user-config`, checkout-local TOML is selected if present in
-   `MESHCORE_PACKETCAPTURE_ENV_DIR`. Otherwise `/etc/meshcore-packet-capture/`
+3. With `--user-config`, a non-empty `MESHCORE_PACKETCAPTURE_ENV_DIR` selects
+   only that checkout tree, even when it contains no TOML. Surrounding whitespace
+   is stripped. A missing or non-directory checkout fails startup.
+   Without that selector, `/etc/meshcore-packet-capture/`
    is loaded first and the user tree is overlaid. The user tree is
    `$XDG_CONFIG_HOME/meshcore-packet-capture/` when `XDG_CONFIG_HOME` is absolute;
    otherwise it is `~/.config/meshcore-packet-capture/`.
@@ -247,14 +266,18 @@ cleanup helper, and uninstaller continue using `/etc`; the new variable selects
 runtime TOML sources rather than relocating managed installation files.
 
 User overlays merge brokers by name: unmatched system brokers remain configured.
-In user-discovery mode with user TOML present, unreadable system TOML files are
-skipped with a warning, so a root-owned system override does not prevent loading
-your user config. Without user TOML, system permission failures still stop startup.
+In user-discovery mode with readable user TOML present, a permission error reading
+any system file or listing its directory discards the entire system config layer
+with a warning. Only user TOML is used, so a skipped disabling override cannot
+leave an earlier system broker enabled. Ensure your user TOML supplies all the
+settings it needs. Without user TOML, system permission failures stop startup.
 Unreadable explicit files, selected-tree files, and user-tree files still fail
-startup, as do malformed TOML files in every mode.
+startup. Malformed TOML is never skipped when read, and a `config.d` path that is
+a file fails startup in every mode.
 Use `enabled = false` on a matching broker to disable it, or select an isolated
-tree with `PACKETCAPTURE_CONFIG_DIR` to exclude system TOML entirely. Legacy
-`.env` loading and process-environment precedence still apply in all modes.
+tree with `PACKETCAPTURE_CONFIG_DIR` to exclude system TOML entirely.
+Process-environment precedence still applies in all modes; legacy env loading
+applies unless `--no-env-files` is set.
 Matching TOML files are read at startup, so malformed new files prevent startup;
 the error log identifies the file. Keep unfinished files outside `config.d` or
 use a suffix other than `.toml` until they are ready.

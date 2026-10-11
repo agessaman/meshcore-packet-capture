@@ -238,7 +238,11 @@ main() {
 
     if [ "$USER_SERVICE" = true ]; then
         REPO_DIR="$(cd "$REPO_DIR" && pwd)"
-        UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+        USER_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+        if [[ "$USER_CONFIG_HOME" != /* ]]; then
+            USER_CONFIG_HOME="$HOME/.config"
+        fi
+        UNIT_DIR="$USER_CONFIG_HOME/systemd/user"
         UNIT_PATH="$UNIT_DIR/meshcore-packet-capture.service"
 
         if [ -f "$UNIT_PATH" ] || systemctl --user is-enabled --quiet meshcore-packet-capture 2>/dev/null || systemctl --user is-active --quiet meshcore-packet-capture 2>/dev/null; then

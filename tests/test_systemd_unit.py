@@ -11,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import venv
 
 import pytest
@@ -38,7 +39,8 @@ def _environment(unit):
 
 def _command(unit):
     line = next(line for line in unit.splitlines() if line.startswith('ExecStart='))
-    return [arg.replace('%%', '%').replace('$$', '$') for arg in shlex.split(line.partition('=')[2])]
+    assert line.startswith('ExecStart=:')
+    return [arg.replace('%%', '%') for arg in shlex.split(line.partition('=')[2][1:])]
 
 
 def test_preserves_paths_and_capture_options(tmp_path, monkeypatch):
@@ -51,12 +53,10 @@ def test_preserves_paths_and_capture_options(tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / special))
     monkeypatch.setenv('PACKETCAPTURE_DATA_DIR', 'state')
     unit = render_user_unit(_args(config_files=[special, 'second.toml'], output='out.json',
-                                  verbose=True, debug=True, no_mqtt=True,
-                                  neighbors_now=True, neighbors_exit=True))
-    assert _command(unit) == ['env', str(python), '-m', 'meshcore_packet_capture', '--user-config',
+                                  verbose=True, debug=True, no_mqtt=True))
+    assert _command(unit) == [str(python), '-m', 'meshcore_packet_capture', '--user-config',
                               '--config', str(tmp_path / special), '--config', str(tmp_path / 'second.toml'),
-                              '--output', str(tmp_path / 'out.json'), '--verbose', '--debug', '--no-mqtt',
-                              '--neighbors-now', '--neighbors-exit']
+                              '--output', str(tmp_path / 'out.json'), '--verbose', '--debug', '--no-mqtt']
     assert _environment(unit) == {
         'MESHCORE_PACKETCAPTURE_ENV_DIR': str(tmp_path / 'checkout'),
         'PACKETCAPTURE_CONFIG_DIR': str(tmp_path / special),
@@ -74,7 +74,7 @@ def test_user_state_directory(tmp_path, monkeypatch, xdg):
         monkeypatch.setenv('XDG_STATE_HOME', xdg)
     unit = render_user_unit(_args())
     root = Path(xdg) if xdg and xdg.startswith('/') else tmp_path / '.local/state'
-    assert _environment(unit)['PACKETCAPTURE_DATA_DIR'] == str(root / 'meshcore-packet-capture')
+    assert _environment(unit)['PACKETCAPTURE_DEFAULT_DATA_DIR'] == str(root / 'meshcore-packet-capture')
     assert 'WorkingDirectory=%h\n' in unit
     assert 'User=' not in unit and 'Group=' not in unit and 'ProtectHome=' not in unit
     assert not (tmp_path / '.local').exists()
@@ -159,10 +159,10 @@ def test_wheel_only_generation_needs_no_runtime_dependencies_or_config(wheel_ins
     assert result.returncode == 0, result.stderr
     assert result.stderr == ''
     assert result.stdout.startswith('[Unit]\n')
-    assert _command(result.stdout) == ['env', str(wheel_install / 'bin/python'), '-m',
+    assert _command(result.stdout) == [str(wheel_install / 'bin/python'), '-m',
                                        'meshcore_packet_capture', '--user-config', '--config',
                                        str(tmp_path / 'invalid.toml'), '--config',
-                                       str(tmp_path / 'later.toml'), '--no-mqtt']
+                                       str(tmp_path / 'later.toml'), '--no-mqtt', '--no-env-files']
     assert sorted(p.name for p in tmp_path.iterdir()) == ['.env', 'invalid.toml']
 
 
@@ -175,7 +175,7 @@ def test_unsupported_modes_fail_without_output(wheel_install, tmp_path, args):
 
 
 @pytest.mark.parametrize('selector', ['XDG_CONFIG_HOME', 'PACKETCAPTURE_CONFIG_DIR'])
-def test_wheel_unit_discovers_config_changes_at_each_start(wheel_install, tmp_path, selector):
+def test_wheel_unit_discovers_config_changes_at_each_start(wheel_install, tmp_path, run_user_unit, selector):
     selected = tmp_path / 'selected'
     tree = selected / 'meshcore-packet-capture' if selector == 'XDG_CONFIG_HOME' else selected
     (tree / 'config.d').mkdir(parents=True)
@@ -183,19 +183,97 @@ def test_wheel_unit_discovers_config_changes_at_each_start(wheel_install, tmp_pa
     result = _run(wheel_install, tmp_path, '--print-systemd-unit', '--user',
                   extra_env={selector: str(selected)})
     assert result.returncode == 0, result.stderr
-    env = _environment(result.stdout) | {'HOME': str(tmp_path)}
-    code = (
-        'import json; from meshcore_packet_capture.config_loader import load_config; '
-        'print(json.dumps(load_config(user_config=True, '
-        f'base_path={str(tmp_path / "missing.toml")!r}, config_d={str(tmp_path / "missing.d")!r})))'
-    )
     override = tree / 'config.d/99-user.toml'
     for expected in ('BASE', 'ADDED', 'CHANGED', 'BASE'):
         if expected == 'BASE':
             override.unlink(missing_ok=True)
         else:
             override.write_text(f'[general]\niata="{expected}"\n')
-        restart = subprocess.run([str(wheel_install / 'bin/python'), '-c', code],
-                                 cwd=tmp_path, env=env, capture_output=True, text=True)
+        restart = run_user_unit(result.stdout)
         assert restart.returncode == 0, restart.stderr
-        assert json.loads(restart.stdout)['general']['iata'] == expected
+        snapshot = json.loads(restart.stdout)
+        assert snapshot['env']['PACKETCAPTURE_IATA'] == expected
+        assert str(wheel_install) in snapshot['module']
+
+
+@pytest.mark.parametrize('options', [{'neighbors_now': True}, {'neighbors_exit': True},
+                                    {'neighbors_now': True, 'neighbors_exit': True}])
+def test_rejects_manual_neighbors_actions(options):
+    with pytest.raises(ValueError, match='manual actions'):
+        render_user_unit(_args(**options))
+
+
+def test_executes_python_path_with_equals(tmp_path, monkeypatch):
+    python = tmp_path / 'foo=bar/python'
+    python.parent.mkdir()
+    python.symlink_to(sys.executable)
+    monkeypatch.setattr(sys, 'executable', str(python))
+    command = _command(render_user_unit(_args()))
+    # Keep the generated interpreter; substitute a harmless probe.
+    result = subprocess.run(command[:1] + ['-c', 'print("reached Python")'],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'reached Python\n'
+
+
+def test_wheel_service_skips_home_env_and_respects_toml_state(wheel_install, tmp_path, run_user_unit):
+    tree = tmp_path / '.config/meshcore-packet-capture'
+    tree.mkdir(parents=True)
+    state = tmp_path / 'toml-state'
+    state.mkdir()
+    previous = {'last_advert_time': time.time() - 60, 'last_neighbors_publish': time.time() - 120}
+    (state / 'advert_state.json').write_text(json.dumps(previous))
+    (tree / 'config.toml').write_text(f'[capture]\ndata_dir={json.dumps(str(state))}\n'
+                                     '[general]\niata="USER"\n')
+    (tmp_path / '.env').write_text('PACKETCAPTURE_CONFIG_DIR=/invalid\nPACKETCAPTURE_IATA=HOME\n')
+    (tmp_path / '.env.local').write_text('PACKETCAPTURE_DATA_DIR=/unrelated\n')
+    generated = _run(wheel_install, tmp_path, '--print-systemd-unit', '--user')
+    assert generated.returncode == 0, generated.stderr
+    started = run_user_unit(generated.stdout)
+    assert started.returncode == 0, started.stderr
+    snapshot = json.loads(started.stdout)
+    assert snapshot['env']['PACKETCAPTURE_IATA'] == 'USER'
+    assert 'PACKETCAPTURE_CONFIG_DIR' not in snapshot['env']
+    assert snapshot['state_path'] == str(state / 'advert_state.json')
+    assert snapshot['previous_state'] == previous
+    assert snapshot['advert_timestamp'] == previous['last_advert_time']
+    assert snapshot['neighbors_timestamp'] == previous['last_neighbors_publish']
+
+
+def test_checkout_unit_keeps_legacy_state_path(tmp_path, monkeypatch):
+    from meshcore_packet_capture import packet_capture as pc
+
+    monkeypatch.setenv('MESHCORE_PACKETCAPTURE_ENV_DIR', str(tmp_path))
+    unit = render_user_unit(_args())
+    assert 'PACKETCAPTURE_DATA_DIR' not in _environment(unit)
+    assert 'PACKETCAPTURE_DEFAULT_DATA_DIR' not in _environment(unit)
+    package = tmp_path / 'src/meshcore_packet_capture'
+    package.mkdir(parents=True)
+    monkeypatch.setattr(pc, '__file__', str(package / 'packet_capture.py'))
+    capture = pc.PacketCapture.__new__(pc.PacketCapture)
+    capture.debug = False
+    capture.logger = logging.getLogger('checkout-state-test')
+    previous = {'last_advert_time': time.time() - 60, 'last_neighbors_publish': time.time() - 120}
+    state = package / 'advert_state.json'
+    state.write_text(json.dumps(previous))
+    assert capture._get_state_file_path() == str(package / 'advert_state.json')
+    assert capture._load_advert_state() == previous['last_advert_time']
+    assert capture._load_neighbors_state() == previous['last_neighbors_publish']
+    (package / 'data').mkdir()
+    state.rename(package / 'data/advert_state.json')
+    assert capture._get_state_file_path() == str(package / 'data/advert_state.json')
+    assert capture._load_advert_state() == previous['last_advert_time']
+    assert capture._load_neighbors_state() == previous['last_neighbors_publish']
+
+
+@pytest.mark.skipif(shutil.which('systemd-analyze') is None, reason='systemd-analyze is not installed')
+def test_systemd_analyze_accepts_special_executable_paths(tmp_path, monkeypatch):
+    python = tmp_path / 'foo=bar with spaces %n $HOME "quote" back\\slash' / 'python'
+    python.parent.mkdir()
+    python.symlink_to(sys.executable)
+    monkeypatch.setattr(sys, 'executable', str(python))
+    unit = tmp_path / 'probe.service'
+    unit.write_text(render_user_unit(_args(config_files=['config with %n $HOME.toml'])))
+    result = subprocess.run(['systemd-analyze', '--user', 'verify', str(unit)],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr

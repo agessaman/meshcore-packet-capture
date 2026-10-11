@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import builtins
+import logging
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,9 @@ def config_trees(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _load_system(root: Path, **kwargs):
-    return cl.load_config(base_path=str(root / "config.toml"), config_d=str(root / "config.d"), **kwargs)
+    assert cl.DEFAULT_CONFIG_FILE == str(root / "config.toml")
+    assert cl.DEFAULT_CONFIG_D == str(root / "config.d")
+    return cl.load_config(**kwargs)
 
 
 def test_user_discovery_is_opt_in(config_trees):
@@ -82,6 +85,7 @@ def deny_config_read(monkeypatch):
 
 @pytest.mark.parametrize("location", ["base", "override"])
 def test_user_discovery_skips_unreadable_system_files(config_trees, deny_config_read, caplog, location):
+    caplog.set_level(logging.INFO)
     system, _ = config_trees
     unreadable = system / "config.toml"
     if location == "override":
@@ -90,7 +94,9 @@ def test_user_discovery_skips_unreadable_system_files(config_trees, deny_config_
         unreadable.write_text('[general]\niata="PRIVATE"\n')
     deny_config_read(unreadable)
     assert _load_system(system, user_config=True)["general"]["iata"] == "USER"
-    assert f"Skipping unreadable system config: {unreadable}" in caplog.text
+    assert "Discarding unreadable system config tree" in caplog.text
+    assert str(unreadable) in caplog.text
+    assert "Loaded system config tree" not in caplog.text
     with pytest.raises(PermissionError):
         _load_system(system)
 
@@ -259,15 +265,107 @@ def test_malformed_config_reports_filename(config_trees, tmp_path, monkeypatch, 
     assert str(bad) in caplog.text
 
 
-def test_checkout_discovery_precedes_xdg_and_preserves_no_config_fallback(config_trees, tmp_path, monkeypatch):
+def test_checkout_selection_stays_isolated_when_empty(config_trees, tmp_path, monkeypatch):
     system, _ = config_trees
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", str(checkout))
-    assert _load_system(system, user_config=True)["general"]["iata"] == "USER"
+    assert _load_system(system, user_config=True) == {}
     _write_tree(checkout, "CHECKOUT")
     assert _load_system(system, user_config=True) == {"general": {"iata": "CHECKOUT"}}
+    (checkout / "config.toml").unlink()
+    assert _load_system(system, user_config=True) == {}
     assert _load_system(system)["general"]["iata"] == "SYSTEM"
+
+
+@pytest.mark.parametrize("kind", ["missing", "file"])
+def test_invalid_checkout_does_not_fall_back(config_trees, tmp_path, monkeypatch, kind):
+    checkout = tmp_path / kind
+    if kind == "file":
+        checkout.write_text("not a directory")
+    monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", str(checkout))
+    with pytest.raises(NotADirectoryError, match="MESHCORE_PACKETCAPTURE_ENV_DIR"):
+        cl.load_config(user_config=True)
+
+
+def test_checkout_selector_whitespace_matches_renderer(config_trees, tmp_path, monkeypatch):
+    checkout = _write_tree(tmp_path / "checkout", "CHECKOUT")
+    monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", f" {checkout} ")
+    assert cl.load_config(user_config=True) == {"general": {"iata": "CHECKOUT"}}
+
+
+def test_explicit_tree_arguments_bypass_environment_discovery(config_trees, tmp_path, monkeypatch):
+    system, _ = config_trees
+    selected = tmp_path / "empty"
+    selected.mkdir()
+    monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR", str(selected))
+    monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", "/missing")
+    assert cl.load_config(base_path=str(system / "config.toml"),
+                          config_d=str(system / "config.d"), user_config=True) == {
+        "general": {"iata": "SYSTEM"},
+    }
+
+
+def test_unreadable_disable_discards_entire_system_layer(config_trees, deny_config_read):
+    system, xdg = config_trees
+    (system / "config.toml").write_text('[[broker]]\nname="system"\nenabled=true\n')
+    (system / "config.d").mkdir()
+    disabled = system / "config.d/50-disable.toml"
+    disabled.write_text('[[broker]]\nname="system"\nenabled=false\n')
+    (system / "config.d/99-later.toml").write_text('[[broker]]\nname="later"\nenabled=true\n')
+    (xdg / "meshcore-packet-capture/config.toml").write_text('[[broker]]\nname="user"\nenabled=true\n')
+    deny_config_read(disabled)
+    assert cl.load_config(user_config=True) == {"broker": [{"name": "user", "enabled": True}]}
+
+
+@pytest.mark.parametrize("user_toml", [False, True])
+def test_unreadable_system_directory_is_not_silently_empty(config_trees, monkeypatch, caplog, user_toml):
+    system, xdg = config_trees
+    if not user_toml:
+        (xdg / "meshcore-packet-capture/config.toml").unlink()
+    denied = system / "config.d"
+    denied.mkdir()
+    original_iterdir = Path.iterdir
+    def iterdir(path):
+        if path == denied:
+            raise PermissionError(13, "Permission denied", str(path))
+        return original_iterdir(path)
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    if user_toml:
+        assert cl.load_config(user_config=True) == {"general": {"iata": "USER"}}
+        assert str(denied) in caplog.text
+        assert "Discarding unreadable system config tree" in caplog.text
+    else:
+        with pytest.raises(PermissionError):
+            cl.load_config(user_config=True)
+
+
+@pytest.mark.parametrize("location", ["system", "selected", "user", "checkout"])
+def test_config_d_file_is_an_error(config_trees, tmp_path, monkeypatch, location):
+    system, xdg = config_trees
+    root = system if location == "system" else xdg / "meshcore-packet-capture"
+    if location in ("selected", "checkout"):
+        root = _write_tree(tmp_path / location, "OTHER")
+        monkeypatch.setenv("PACKETCAPTURE_CONFIG_DIR" if location == "selected"
+                           else "MESHCORE_PACKETCAPTURE_ENV_DIR", str(root))
+    (root / "config.d").write_text("not a directory")
+    with pytest.raises(NotADirectoryError):
+        cl.load_config(user_config=True)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read mode-000 directories")
+def test_real_unreadable_config_directory(config_trees, caplog):
+    system, _ = config_trees
+    denied = system / "config.d"
+    denied.mkdir()
+    denied.chmod(0)
+    try:
+        assert cl.load_config(user_config=True) == {"general": {"iata": "USER"}}
+        assert "Discarding unreadable system config tree" in caplog.text
+        with pytest.raises(PermissionError):
+            cl.load_config()
+    finally:
+        denied.chmod(0o700)
 
 
 def test_deep_merge_nested():

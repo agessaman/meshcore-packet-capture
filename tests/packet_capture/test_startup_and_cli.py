@@ -153,3 +153,27 @@ def test_directory_selector_can_come_from_env_local(tmp_path, monkeypatch):
     monkeypatch.setattr(pc, "_environment_initialized", False)
     pc.init_environment()
     assert os.environ["PACKETCAPTURE_IATA"] == "SELECTED"
+
+
+def test_explicit_env_directory_does_not_search_home(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (tmp_path / ".env").write_text("PACKETCAPTURE_CONFIG_DIR=/unrelated\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MESHCORE_PACKETCAPTURE_ENV_DIR", str(checkout))
+    assert pc.load_env_files() == {}
+    assert "PACKETCAPTURE_CONFIG_DIR" not in os.environ
+
+
+def test_no_env_files_prevents_home_config_redirection(tmp_path, monkeypatch):
+    (tmp_path / ".env.local").write_text("PACKETCAPTURE_CONFIG_DIR=/unrelated\n")
+    monkeypatch.chdir(tmp_path)
+    user = tmp_path / ".config/meshcore-packet-capture"
+    user.mkdir(parents=True)
+    (user / "config.toml").write_text('[general]\niata="USER"\n')
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setattr(pc, "_environment_initialized", False)
+    pc.init_environment(user_config=True, no_env_files=True)
+    assert os.environ["PACKETCAPTURE_IATA"] == "USER"
+    assert "PACKETCAPTURE_CONFIG_DIR" not in os.environ

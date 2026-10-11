@@ -14,12 +14,8 @@ def _escape(value: str) -> str:
     return value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
 
 
-def _quote(value: str, *, exec_arg: bool = False) -> str:
-    escaped = _escape(value)
-    # ExecStart expands environment variables even inside quotes.
-    if exec_arg:
-        escaped = escaped.replace('$', '$$')
-    return f'"{escaped}"'
+def _quote(value: str) -> str:
+    return f'"{_escape(value)}"'
 
 
 def _absolute(value: str) -> str:
@@ -29,14 +25,17 @@ def _absolute(value: str) -> str:
 
 
 def render_user_unit(args: argparse.Namespace) -> str:
+    if args.neighbors_now or args.neighbors_exit:
+        raise ValueError('--neighbors-now and --neighbors-exit are manual actions; '
+                         'they cannot be saved in a restarting service')
     command = [sys.executable, '-m', 'meshcore_packet_capture', '--user-config']
     command[0] = _absolute(command[0])
     for path in args.config_files or []:
         command.extend(['--config', _absolute(path)])
     if args.output is not None:
         command.extend(['--output', _absolute(args.output)])
-    for option in ('verbose', 'debug', 'no_mqtt', 'neighbors_now', 'neighbors_exit'):
-        if getattr(args, option):
+    for option in ('verbose', 'debug', 'no_mqtt', 'no_env_files'):
+        if getattr(args, option, False):
             command.append('--' + option.replace('_', '-'))
 
     environment = []
@@ -56,19 +55,25 @@ def render_user_unit(args: argparse.Namespace) -> str:
         if variable == 'MESHCORE_PACKETCAPTURE_ENV_DIR':
             checkout = value
 
+    if not checkout and '--no-env-files' not in command:
+        command.append('--no-env-files')
+
     data_dir = os.environ.get('PACKETCAPTURE_DATA_DIR', '')
     _escape(data_dir)
     data_dir = data_dir.strip()
-    if not data_dir:
+    if data_dir:
+        environment.append(f'Environment={_quote("PACKETCAPTURE_DATA_DIR=" + _absolute(data_dir))}')
+    elif not checkout:
         state_home = os.environ.get('XDG_STATE_HOME', '')
         _escape(state_home)
         if not os.path.isabs(state_home):
             state_home = str(Path.home() / '.local' / 'state')
         data_dir = os.path.join(state_home, 'meshcore-packet-capture')
-    environment.append(f'Environment={_quote("PACKETCAPTURE_DATA_DIR=" + _absolute(data_dir))}')
+        environment.append(f'Environment={_quote("PACKETCAPTURE_DEFAULT_DATA_DIR=" + _absolute(data_dir))}')
 
     working_directory = _quote(checkout) if checkout else '%h'
-    exec_start = 'env ' + ' '.join(_quote(arg, exec_arg=True) for arg in command)
+    # The ':' prefix disables variable expansion, including literal '$' in paths.
+    exec_start = ':' + ' '.join(_quote(arg) for arg in command)
     return '\n'.join([
         '[Unit]',
         'Description=MeshCore Packet Capture (user)',

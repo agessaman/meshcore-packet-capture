@@ -13,6 +13,8 @@ def parse_args() -> argparse.Namespace | None:
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output (shows JSON packet data)')
     parser.add_argument('--debug', action='store_true', help='Enable debug output (shows all detailed debugging info)')
     parser.add_argument('--no-mqtt', action='store_true', help='Disable MQTT publishing')
+    parser.add_argument('--no-env-files', action='store_true',
+                        help='Skip legacy .env and .env.local loading (default for generated services without a checkout).')
     parser.add_argument(
         '--neighbors-now', action='store_true',
         help='Run one neighbors discovery + scopes cycle immediately, ignoring the '
@@ -29,7 +31,7 @@ def parse_args() -> argparse.Namespace | None:
     )
     parser.add_argument(
         '--user-config', action='store_true',
-        help='Discover checkout-local TOML using MESHCORE_PACKETCAPTURE_ENV_DIR, '
+        help='Select checkout-local TOML using MESHCORE_PACKETCAPTURE_ENV_DIR, '
              'or overlay /etc config with XDG user config. --config and '
              'PACKETCAPTURE_CONFIG_DIR take precedence.',
     )

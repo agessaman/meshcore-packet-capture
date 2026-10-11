@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -64,13 +65,13 @@ def _apply_override(config: dict[str, Any], override: dict[str, Any]) -> dict[st
     return config
 
 
-def _load_toml(path: str | Path, *, skip_permission_errors: bool = False) -> dict[str, Any]:
+def _load_toml(path: str | Path, *, missing_ok: bool = False) -> dict[str, Any]:
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
-    except PermissionError:
-        if skip_permission_errors:
-            logger.warning("Skipping unreadable system config: %s", path)
+    except FileNotFoundError:
+        if missing_ok:
+            logger.warning("Base config not found at %s, using defaults", path)
             return {}
         logger.error("Unable to load TOML config: %s", path)
         raise
@@ -79,14 +80,25 @@ def _load_toml(path: str | Path, *, skip_permission_errors: bool = False) -> dic
         raise
 
 
-def _load_config_dir(
-    config: dict[str, Any], config_d: Path, *, skip_permission_errors: bool = False,
-) -> dict[str, Any]:
-    if not config_d.is_dir():
-        return config
-    for override_file in sorted(config_d.glob("*.toml")):
+def _is_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _config_dir_paths(config_d: Path) -> list[Path]:
+    try:
+        entries = list(config_d.iterdir())
+    except FileNotFoundError:
+        return []
+    return sorted(path for path in entries if path.name.endswith(".toml") and _is_file(path))
+
+
+def _load_config_dir(config: dict[str, Any], config_d: Path) -> dict[str, Any]:
+    for override_file in _config_dir_paths(config_d):
         logger.info("Loading config override: %s", override_file)
-        override = _load_toml(override_file, skip_permission_errors=skip_permission_errors)
+        override = _load_toml(override_file)
         config = _apply_override(config, override)
     return config
 
@@ -100,8 +112,9 @@ def load_config(
 ) -> dict[str, Any]:
     """Load explicit files, a selected tree, or the default system tree.
 
-    With user_config, checkout-local TOML takes precedence over system/XDG
-    discovery. MESHCORE_PACKETCAPTURE_ENV_DIR identifies that checkout.
+    Explicit base_path/config_d arguments bypass environment discovery.
+    With user_config, MESHCORE_PACKETCAPTURE_ENV_DIR selects only that checkout,
+    including an empty tree; missing checkout directories fail startup.
     """
     if config_paths:
         config: dict[str, Any] = {}
@@ -114,6 +127,12 @@ def load_config(
             config = _apply_override(config, override)
         return config
 
+    if base_path is not None or config_d is not None:
+        return _load_system_config(
+            DEFAULT_CONFIG_FILE if base_path is None else base_path,
+            DEFAULT_CONFIG_D if config_d is None else config_d,
+        )
+
     selected_dir = os.environ.get("PACKETCAPTURE_CONFIG_DIR", "")
     if selected_dir.strip():
         root = Path(selected_dir).expanduser()
@@ -123,43 +142,52 @@ def load_config(
 
     user_root = None
     if user_config:
-        checkout_dir = os.environ.get("MESHCORE_PACKETCAPTURE_ENV_DIR", "")
-        if checkout_dir.strip():
+        checkout_dir = os.environ.get("MESHCORE_PACKETCAPTURE_ENV_DIR", "").strip()
+        if checkout_dir:
             root = Path(checkout_dir).expanduser()
-            if _tree_config_paths(root):
-                return _load_config_tree(root)
+            if not root.is_dir():
+                raise NotADirectoryError(f"MESHCORE_PACKETCAPTURE_ENV_DIR is not a directory: {root}")
+            return _load_config_tree(root)
         xdg_home = os.environ.get("XDG_CONFIG_HOME", "")
         user_root = (
             Path(xdg_home) if xdg_home and Path(xdg_home).is_absolute()
             else Path.home() / ".config"
         ) / "meshcore-packet-capture"
 
-    base_path = DEFAULT_CONFIG_FILE if base_path is None else base_path
-    config_d = DEFAULT_CONFIG_D if config_d is None else config_d
-    skip_system_permission_errors = user_root is not None and bool(_tree_config_paths(user_root))
-    config = {}
-    if os.path.exists(base_path):
-        config = _load_toml(base_path, skip_permission_errors=skip_system_permission_errors)
-        logger.info("Loaded base config from %s", base_path)
-    else:
-        logger.warning("Base config not found at %s, using defaults", base_path)
+    user_paths = _tree_config_paths(user_root) if user_root is not None else []
+    # Parse user settings first so unreadable user files never permit a fallback.
+    user_settings = _load_config_paths(user_paths)
+    try:
+        config = _load_system_config(DEFAULT_CONFIG_FILE, DEFAULT_CONFIG_D)
+    except PermissionError as exc:
+        if not user_paths:
+            raise
+        logger.warning("Discarding unreadable system config tree; using only user TOML: %s", exc)
+        config = {}
+    return _apply_override(config, user_settings)
 
-    config = _load_config_dir(config, Path(config_d), skip_permission_errors=skip_system_permission_errors)
-    if user_root is not None:
-        config = _load_config_tree(user_root, config)
+
+def _load_system_config(base_path: str, config_d: str) -> dict[str, Any]:
+    config = _load_toml(base_path, missing_ok=True)
+    config = _load_config_dir(config, Path(config_d))
+    logger.info("Loaded system config tree from %s and %s", base_path, config_d)
     return config
 
 
 def _tree_config_paths(root: Path) -> list[str]:
-    paths = [root / "config.toml"] if (root / "config.toml").is_file() else []
-    paths.extend(sorted(path for path in (root / "config.d").glob("*.toml") if path.is_file()))
+    paths = [root / "config.toml"] if _is_file(root / "config.toml") else []
+    paths.extend(_config_dir_paths(root / "config.d"))
     return [str(path) for path in paths]
 
 
 def _load_config_tree(root: Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _load_config_paths(_tree_config_paths(root), config)
+
+
+def _load_config_paths(paths: list[str], config: dict[str, Any] | None = None) -> dict[str, Any]:
     if config is None:
         config = {}
-    for path in _tree_config_paths(root):
+    for path in paths:
         logger.info("Loading config: %s", path)
         config = _apply_override(config, _load_toml(path))
     return config

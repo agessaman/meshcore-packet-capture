@@ -162,10 +162,13 @@ def test_macos_cleanup_includes_main_branch_launchagent(
     monkeypatch.setattr(mc.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(mc, "_real_user_home", lambda: home)
     monkeypatch.setattr(mc, "run_cmd", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        mc, "Path",
-        lambda value: tmp_path / "systemd" if value == "/etc/systemd/system" else Path(value),
-    )
+    def isolated_path(*parts, **kwargs):
+        path = Path(*parts, **kwargs)
+        systemd = Path("/etc/systemd/system")
+        if path.is_relative_to(systemd):
+            return tmp_path / "systemd" / path.relative_to(systemd)
+        return path
+    monkeypatch.setattr(mc, "Path", isolated_path)
 
     mc._cleanup_old_service_units()
 

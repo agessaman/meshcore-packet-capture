@@ -93,7 +93,11 @@ if [ "$USER_SERVICE" = true ]; then
     "$REPO_DIR/.venv/bin/python" -m pip install --upgrade pip
     "$REPO_DIR/.venv/bin/python" -m pip install -e "$REPO_DIR"
 
-    UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    USER_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+    if [[ "$USER_CONFIG_HOME" != /* ]]; then
+        USER_CONFIG_HOME="$HOME/.config"
+    fi
+    UNIT_DIR="$USER_CONFIG_HOME/systemd/user"
     UNIT_PATH="$UNIT_DIR/meshcore-packet-capture.service"
     mkdir -p "$UNIT_DIR"
     UNIT_TEMP="$(mktemp "$UNIT_DIR/.meshcore-packet-capture.XXXXXX")"

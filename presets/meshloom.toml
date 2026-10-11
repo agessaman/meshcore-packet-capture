@@ -1,0 +1,30 @@
+# Meshloom Stats community broker (mqtt.meshloom.app).
+# Stock LetsMesh JWT (no extra claims). Stats accepts missing iata/owner.
+# WebSocket path "/" — community listener, not the OSS /mqtt alias.
+# Requires [general] iata = "XXX" (a real [A-Z]{3} code, not XXX/LOC/AAA)
+# or a [broker.topics] iata override. Without it every publish is silently
+# dropped (AuthZ deny + EMQX deny_action = ignore).
+
+[[broker]]
+name = "meshloom"
+enabled = true
+server = "mqtt.meshloom.app"
+port = 443
+transport = "websockets"
+websocket_path = "/"
+keepalive = 30
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt.meshloom.app"
+token_ttl = 3300
+
+[broker.topics]
+packets = "meshcore/{IATA}/{PUBLIC_KEY}/packets"
+status = "meshcore/{IATA}/{PUBLIC_KEY}/status"

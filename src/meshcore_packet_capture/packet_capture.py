@@ -491,6 +491,11 @@ class PacketCapture:
         self.drain_messages = self.get_env_bool('DRAIN_MESSAGES', True)
         self.packet_count = 0
         
+        # Our own event subscriptions, as (meshcore, subscription) pairs.
+        # Tracked because the dispatcher also carries the library's internal
+        # handlers, which must outlive our cleanup -- see cleanup_event_subscriptions.
+        self._app_subscriptions = []
+
         # Device information
         self.device_name = None
         self.device_public_key = None
@@ -2269,27 +2274,46 @@ class PacketCapture:
                 self.meshcore = None
             return False
     
+    def _subscribe_tracked(self, event_type, handler):
+        """Subscribe, recording it so cleanup can find ours among the library's."""
+        subscription = self.meshcore.subscribe(event_type, handler)
+        self._app_subscriptions.append((self.meshcore, subscription))
+        return subscription
+
     def cleanup_event_subscriptions(self):
-        """Clean up all event subscriptions before disconnecting to prevent pending tasks"""
+        """Drop our own event subscriptions before reconnecting or disconnecting.
+
+        Only ours. The dispatcher also holds the subscriptions MeshCore makes for
+        itself in __init__ -- _update_contacts, _update_self_info, _update_time,
+        _add_pending_contact -- and nothing ever re-registers them. Clearing the
+        dispatcher wholesale therefore permanently blinds the library's own state:
+        get_contacts() still returns a CONTACTS event, but with _update_contacts
+        gone nothing writes meshcore.contacts, so it stays empty forever. That is
+        not a cosmetic loss. send_anon_req() routes by contact lookup, so an empty
+        cache makes every anon request flood, and a flooded REGIONS request is
+        dropped unanswered by the repeater -- which is why neighbour scope
+        collection returned nothing but timeouts.
+        """
         if not self.meshcore:
             return
-        
-        try:
-            # Use meshcore.unsubscribe() method which is the proper API
-            if hasattr(self.meshcore, "dispatcher") and hasattr(self.meshcore.dispatcher, "subscriptions"):
-                subscription_count = len(self.meshcore.dispatcher.subscriptions)
-                if subscription_count > 0:
-                    self.logger.debug(f"Cleaning up {subscription_count} event subscriptions")
-                    # Create a copy of the list to avoid modification during iteration
-                    for subscription in list(self.meshcore.dispatcher.subscriptions):
-                        try:
-                            # Use meshcore.unsubscribe() - the proper API method
-                            self.meshcore.unsubscribe(subscription)
-                        except Exception as e:
-                            self.logger.debug(f"Error unsubscribing: {e}")
-                    self.logger.debug(f"Cleared {subscription_count} event subscriptions")
-        except Exception as e:
-            self.logger.debug(f"Error cleaning up subscriptions: {e}")
+
+        tracked, self._app_subscriptions = self._app_subscriptions, []
+        if not tracked:
+            return
+
+        self.logger.debug(f"Cleaning up {len(tracked)} event subscription(s)")
+        cleared = 0
+        for owner, subscription in tracked:
+            # A reconnect replaces self.meshcore; subscriptions belonging to the
+            # old object died with its dispatcher and must not be handed to the new one.
+            if owner is not self.meshcore:
+                continue
+            try:
+                self.meshcore.unsubscribe(subscription)
+                cleared += 1
+            except Exception as e:
+                self.logger.debug(f"Error unsubscribing: {e}")
+        self.logger.debug(f"Cleared {cleared} event subscription(s)")
 
     async def reconnect_meshcore(self) -> bool:
         """Attempt to reconnect to MeshCore device with exponential backoff retry logic"""
@@ -3754,7 +3778,7 @@ class PacketCapture:
             self.connected = False
             self.logger.info("Connection status updated - connection monitor will handle reconnection")
         
-        self.meshcore.subscribe(EventType.DISCONNECTED, on_disconnect)
+        self._subscribe_tracked(EventType.DISCONNECTED, on_disconnect)
         self.logger.debug("Disconnect event handler registered")
 
     async def setup_event_handlers(self):
@@ -3784,9 +3808,9 @@ class PacketCapture:
                     self.logger.debug(f"Status data: {event.payload}")
         
         # Subscribe to events
-        self.meshcore.subscribe(EventType.RX_LOG_DATA, on_rf_data)
-        self.meshcore.subscribe(EventType.RAW_DATA, on_raw_data)
-        self.meshcore.subscribe(EventType.STATUS_RESPONSE, on_status_response)
+        self._subscribe_tracked(EventType.RX_LOG_DATA, on_rf_data)
+        self._subscribe_tracked(EventType.RAW_DATA, on_raw_data)
+        self._subscribe_tracked(EventType.STATUS_RESPONSE, on_status_response)
         
         # Setup disconnect handler
         await self.setup_disconnect_handler()

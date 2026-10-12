@@ -138,10 +138,74 @@ class _FakeLogger:
 # Scope collection: pacing, status assignment, budget
 # --------------------------------------------------------------------------
 
+class _FakeEventType:
+    # Only ERROR is meaningful to the code under test; OK is any non-ERROR value.
+    OK = "ok"
+    ERROR = nb.EventType.ERROR
+
+
+class _FakeEvent:
+    def __init__(self, type_, payload):
+        self.type = type_
+        self.payload = payload
+
+
 class _FakeCommands:
     def __init__(self, responses):
         self._responses = responses
         self.calls = []
+        self.path_changes = []
+        self.contact_updates = []
+        self.path_change_error = None
+        self.get_contacts_calls = []
+        self.get_contacts_result = None
+        self._owner = None
+        self.device_path = None
+        self.device_path_len = None
+        self.path_change_hangs = []
+        self.path_change_results = []
+
+    async def get_contacts(self, lastmod=0, timeout=5):
+        self.get_contacts_calls.append({"timeout": timeout})
+        if self.get_contacts_result is not None:
+            return self.get_contacts_result
+        self._owner._contacts = dict(self._owner._seed_contacts)
+        return _FakeEvent(_FakeEventType.OK, {})
+
+    async def change_contact_path(self, contact, path, path_hash_mode=None):
+        """Faithful to update_contact(): the device write and the cache mutation
+        both happen BEFORE the acknowledgement is awaited. Anything that
+        interrupts the await has therefore already changed the device.
+        """
+        if self.path_change_error is not None:
+            raise self.path_change_error
+
+        self.path_changes.append({
+            "pubkey": contact["public_key"], "path": path, "mode": path_hash_mode,
+        })
+        # Device state is tracked separately from the cache so a restore that
+        # never reaches the device cannot be masked by the mutated dict.
+        self.device_path = path
+        self.device_path_len = 0 if path == "" else len(path) // 2
+        contact["out_path"] = path
+        contact["out_path_len"] = 0 if path == "" else len(path) // 2
+        if path_hash_mode is not None:
+            contact["out_path_hash_mode"] = path_hash_mode
+
+        if self.path_change_hangs and self.path_change_hangs.pop(0):
+            # Never resolves: the autouse fixture patches asyncio.sleep on the
+            # module object, so a sleep-based stall would be collapsed to a no-op
+            # and the timeout under test would never fire.
+            await asyncio.get_running_loop().create_future()
+        if self.path_change_results:
+            return self.path_change_results.pop(0)
+        return None
+
+    async def update_contact(self, contact):
+        self.contact_updates.append(dict(contact))
+        self.device_path = contact["out_path"]
+        self.device_path_len = contact["out_path_len"]
+        return _FakeEvent(_FakeEventType.OK, {})
 
     async def req_regions_sync(self, pubkey, timeout=0, min_timeout=0):
         self.calls.append({"pubkey": pubkey, "timeout": timeout, "min_timeout": min_timeout})
@@ -157,13 +221,22 @@ class _FakeCommands:
 
 
 class _FakeMeshCore:
-    def __init__(self, responses):
+    def __init__(self, responses, contacts=None):
         self.commands = _FakeCommands(responses)
+        self.commands._owner = self
+        # The cache starts empty and is filled by get_contacts, as on a device.
+        self._seed_contacts: dict = contacts or {}
         self._contacts: dict = {}
 
     @property
     def contacts(self):
         return self._contacts
+
+    def get_contact_by_key_prefix(self, prefix):
+        for contact in self._contacts.values():
+            if contact.get("public_key", "").lower().startswith(prefix.lower()):
+                return contact
+        return None
 
 
 def _run(coro):
@@ -1622,3 +1695,399 @@ def test_truncated_flag_set_by_max_neighbors_cap():
     assert message["total_neighbors"] == 9
     assert message["queried_neighbors"] == 1
     assert message["truncated"] is True
+
+
+# --------------------------------------------------------------------------
+# Direct routing: the REGIONS request is dropped by the repeater unless it
+# arrives zero-hop, and send_anon_req only routes direct for a *known* contact.
+# --------------------------------------------------------------------------
+
+def _contact(pubkey: str, out_path_len: int, out_path: str = "", name: str = "R"):
+    return {
+        "public_key": pubkey,
+        "out_path_len": out_path_len,
+        "out_path": out_path,
+        "out_path_hash_mode": 0,
+        "adv_name": name,
+    }
+
+
+def test_collect_scopes_loads_contacts_before_querying():
+    # Without a populated cache send_anon_req cannot route direct, so the whole
+    # pass silently returns timeouts. Loading once per pass, not per neighbor.
+    entries = [_entry("a", 1.0, 100.0), _entry("b", 1.0, 200.0)]
+    mc = _FakeMeshCore({e.pubkey: "S" for e in entries})
+    _run(nb.collect_scopes(mc, entries, nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+    assert len(mc.commands.get_contacts_calls) == 1
+
+
+def test_collect_scopes_pins_multihop_neighbor_to_zero_hop_and_restores():
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=2, out_path="aabb")
+    mc = _FakeMeshCore({entry.pubkey: "fr,eu"}, contacts={"c": contact})
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    # Pinned to zero-hop for the query, then put back the way we found it.
+    assert [c["path"] for c in mc.commands.path_changes] == ["", "aabb"]
+    assert contact["out_path"] == "aabb"
+    assert entry.status == nb.STATUS_RESPONDED
+    assert entry.scopes == "fr,eu"
+
+
+def test_collect_scopes_restores_path_even_when_query_fails():
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=2, out_path="aabb")
+    mc = _FakeMeshCore({entry.pubkey: RuntimeError("serial write blew up")},
+                       contacts={"c": contact})
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    # A neighbor must not lose its route because reading its scopes went wrong.
+    assert [c["path"] for c in mc.commands.path_changes] == ["", "aabb"]
+    assert contact["out_path"] == "aabb"
+    assert entry.status == nb.STATUS_SEND_FAILED
+
+
+@pytest.mark.parametrize("response", ["fr", RuntimeError("query failed"), asyncio.CancelledError()])
+def test_collect_scopes_restores_pathless_contact(response):
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=-1)
+    contact["out_path_hash_mode"] = 1
+    original = dict(contact)
+    mc = _FakeMeshCore({entry.pubkey: response}, contacts={"c": contact})
+
+    async def query(pubkey, **kwargs):
+        # Match the SDK's pathless pin/reset, which has no finally on failure.
+        sdk_pinned = contact["out_path_len"] == -1
+        if sdk_pinned:
+            await mc.commands.change_contact_path(contact, "")
+        if isinstance(response, BaseException):
+            raise response
+        if sdk_pinned:
+            contact.update(original)
+            await mc.commands.update_contact(contact)
+        return response
+
+    mc.commands.req_regions_sync = query
+    cycle = nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger())
+    if isinstance(response, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            _run(cycle)
+    else:
+        _run(cycle)
+        assert entry.status == (nb.STATUS_RESPONDED if isinstance(response, str) else nb.STATUS_SEND_FAILED)
+    assert [c["path"] for c in mc.commands.path_changes] == [""]
+    assert mc.commands.contact_updates == [original]
+    assert mc.commands.device_path_len == -1
+    assert contact == original
+
+
+def test_collect_scopes_handles_unknown_contact():
+    # Nothing to pin; the query still goes out rather than being skipped.
+    entry = _entry("a", 1.0, 100.0)
+    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={})
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+    assert mc.commands.path_changes == []
+    assert len(mc.commands.calls) == 1
+
+
+def test_collect_scopes_keeps_existing_zero_hop_contact():
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=0)
+    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={"c": contact})
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    assert mc.commands.path_changes == []
+    assert mc.commands.contact_updates == []
+    assert entry.status == nb.STATUS_RESPONDED
+
+
+def test_collect_scopes_still_queries_when_pinning_fails():
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=2, out_path="aabb")
+    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={"c": contact})
+    mc.commands.path_change_error = RuntimeError("device busy")
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    # Falling back to the un-pinned query is the pre-fix behaviour, not a new
+    # failure mode -- and no restore is attempted for a pin that never took.
+    assert mc.commands.path_changes == []
+    assert len(mc.commands.calls) == 1
+
+
+def test_collect_scopes_uses_command_timeout_not_library_default_for_contacts():
+    # The library's 5s default times out under live RF traffic, leaving the cache
+    # empty and every query flooded. The configured command timeout must win.
+    entry = _entry("a", 1.0, 100.0)
+    mc = _FakeMeshCore({entry.pubkey: "fr"})
+    cfg = nb.NeighborsConfig(scope_gap=0.0, command_timeout=20.0)
+    _run(nb.collect_scopes(mc, [entry], cfg, _FakeLogger()))
+    assert mc.commands.get_contacts_calls[0]["timeout"] == 20.0
+
+
+def test_collect_scopes_warns_when_contact_fetch_returns_error():
+    # get_contacts reports failure by RETURNING Event(ERROR), never by raising --
+    # which is exactly how this stayed invisible before.
+    entry = _entry("a", 1.0, 100.0)
+    mc = _FakeMeshCore({entry.pubkey: "fr"})
+    mc.commands.get_contacts_result = _FakeEvent(
+        _FakeEventType.ERROR, {"reason": "timeout waiting for contacts"}
+    )
+    logger = _FakeLogger()
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), logger))
+    assert any("contact fetch failed" in m for m in logger.messages)
+    assert any("timeout waiting for contacts" in m for m in logger.messages)
+    # The cycle still runs: the neighbour list is worth publishing without scopes.
+    assert len(mc.commands.calls) == 1
+
+
+def test_collect_scopes_warns_when_cache_empty_after_fetch():
+    entry = _entry("a", 1.0, 100.0)
+    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={})
+    logger = _FakeLogger()
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), logger))
+    assert any("contact cache is empty" in m for m in logger.messages)
+
+
+# --------------------------------------------------------------------------
+# Subscription cleanup must spare the library's own internal handlers.
+# Clearing them leaves meshcore.contacts permanently empty, which makes every
+# anon request flood -- and a flooded REGIONS request is dropped by the repeater.
+# --------------------------------------------------------------------------
+
+class _FakeDispatcher:
+    def __init__(self):
+        self.subscriptions = []
+
+
+class _SubMeshCore:
+    """Stands in for MeshCore, which subscribes its own handlers in __init__."""
+
+    def __init__(self):
+        self.dispatcher = _FakeDispatcher()
+        self.unsubscribed = []
+        # What MeshCore registers for itself and never re-registers.
+        self.dispatcher.subscriptions.extend(["lib:contacts", "lib:self_info", "lib:time"])
+
+    def subscribe(self, event_type, handler):
+        sub = f"app:{event_type}"
+        self.dispatcher.subscriptions.append(sub)
+        return sub
+
+    def unsubscribe(self, subscription):
+        self.unsubscribed.append(subscription)
+        if subscription in self.dispatcher.subscriptions:
+            self.dispatcher.subscriptions.remove(subscription)
+
+
+def test_cleanup_only_drops_our_own_subscriptions(capture: PacketCapture):
+    mc = _SubMeshCore()
+    capture.meshcore = mc
+    capture._subscribe_tracked("rx_log_data", lambda e: None)
+    capture._subscribe_tracked("raw_data", lambda e: None)
+
+    capture.cleanup_event_subscriptions()
+
+    assert sorted(mc.unsubscribed) == ["app:raw_data", "app:rx_log_data"]
+    # The library's handlers survive; without them meshcore.contacts stays empty
+    # forever and scope collection silently degrades to all-timeouts.
+    assert mc.dispatcher.subscriptions == ["lib:contacts", "lib:self_info", "lib:time"]
+
+
+def test_cleanup_is_idempotent(capture: PacketCapture):
+    mc = _SubMeshCore()
+    capture.meshcore = mc
+    capture._subscribe_tracked("rx_log_data", lambda e: None)
+
+    capture.cleanup_event_subscriptions()
+    capture.cleanup_event_subscriptions()
+
+    assert mc.unsubscribed == ["app:rx_log_data"]
+
+
+def test_cleanup_skips_subscriptions_from_a_previous_connection(capture: PacketCapture):
+    old = _SubMeshCore()
+    capture.meshcore = old
+    capture._subscribe_tracked("rx_log_data", lambda e: None)
+
+    # A reconnect swaps in a new object; the old dispatcher died with it.
+    new = _SubMeshCore()
+    capture.meshcore = new
+    capture.cleanup_event_subscriptions()
+
+    assert new.unsubscribed == []
+    assert old.unsubscribed == []
+
+
+# --------------------------------------------------------------------------
+# Pin/restore safety. change_contact_path writes the device and mutates the
+# cache BEFORE awaiting the ack, so an interrupted pin may already have landed;
+# and like get_contacts it reports refusal by RETURNING Event(ERROR).
+# --------------------------------------------------------------------------
+
+def _pinned_mc(entry, response="fr"):
+    contact = _contact(entry.pubkey, out_path_len=2, out_path="aabb")
+    mc = _FakeMeshCore({entry.pubkey: response}, contacts={"c": contact})
+    return mc, contact
+
+
+def test_restore_runs_when_the_pin_write_times_out():
+    # wait_for gives up, but update_contact already wrote the device. Treating
+    # that as "not pinned" is what stranded contacts on a zero-hop path.
+    entry = _entry("a", 1.0, 100.0)
+    mc, contact = _pinned_mc(entry)
+    mc.commands.path_change_hangs = [True]   # the ack never arrives
+    cfg = nb.NeighborsConfig(scope_gap=0.0)
+    cfg.command_timeout = 0.05               # set post-init: __post_init__ floors it at 1.0s
+
+    _run(nb.collect_scopes(mc, [entry], cfg, _FakeLogger()))
+
+    assert [c["path"] for c in mc.commands.path_changes] == ["", "aabb"]
+    assert mc.commands.device_path == "aabb"
+
+
+def test_restore_runs_when_cancelled_mid_pin():
+    entry = _entry("a", 1.0, 100.0)
+    mc, contact = _pinned_mc(entry)
+    mc.commands.path_change_hangs = [True]
+
+    started = asyncio.Event()
+    change = mc.commands.change_contact_path
+
+    async def pin(*args, **kwargs):
+        started.set()
+        return await change(*args, **kwargs)
+
+    mc.commands.change_contact_path = pin
+    cfg = nb.NeighborsConfig(scope_gap=0.0)
+
+    async def drive():
+        task = asyncio.ensure_future(
+            nb.collect_scopes(mc, [entry], cfg, _FakeLogger())
+        )
+        async with asyncio.timeout(1):
+            await started.wait()
+        assert mc.commands.device_path == ""
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    _run(drive())
+    # Cancellation must not leave the device pinned: the restore is shielded.
+    assert mc.commands.device_path == "aabb"
+
+
+@pytest.mark.parametrize("command", ["get_contacts", "change_contact_path", "req_regions_sync"])
+def test_scope_collection_propagates_cancellation_at_command_completion(command):
+    entry = _entry("a", 1.0, 100.0)
+    mc, contact = _pinned_mc(entry)
+    completed = asyncio.Event()
+    original = getattr(mc.commands, command)
+
+    async def finish(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        completed.set()
+        return result
+
+    setattr(mc.commands, command, finish)
+
+    async def drive():
+        async def run():
+            await nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger())
+            await asyncio.get_running_loop().create_future()
+
+        task = asyncio.create_task(run())
+        async with asyncio.timeout(1):
+            await completed.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            async with asyncio.timeout(0.5):
+                await task
+
+    _run(drive())
+    assert contact["out_path"] == "aabb"
+
+
+def test_failed_restore_is_reported_not_swallowed():
+    # The cache says "aabb" because update_contact mutated it, but the device
+    # refused. Inferring success from the dict is exactly the silent-failure bug.
+    entry = _entry("a", 1.0, 100.0)
+    mc, contact = _pinned_mc(entry)
+    mc.commands.path_change_results = [
+        None,
+        _FakeEvent(_FakeEventType.ERROR, {"reason": "contact busy"}),
+    ]
+    logger = _FakeLogger()
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), logger))
+
+    assert any("refused the path restore" in m for m in logger.messages)
+    assert any("contact busy" in m for m in logger.messages)
+
+
+def test_refused_pin_restores_original_path():
+    # Even a device refusal comes after the SDK mutates the cached contact.
+    entry = _entry("a", 1.0, 100.0)
+    mc, contact = _pinned_mc(entry)
+    mc.commands.path_change_results = [
+        _FakeEvent(_FakeEventType.ERROR, {"reason": "refused"}),
+    ]
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    assert [c["path"] for c in mc.commands.path_changes] == ["", "aabb"]
+    assert contact["out_path"] == "aabb"
+
+
+@pytest.mark.parametrize("payload", [{"reason": "no_event_received"}, {"reason": "timeout"},
+                                     {"error": "transport failed"}])
+def test_restore_runs_when_sdk_returns_ambiguous_pin_error(payload):
+    entry = _entry("a", 1.0, 100.0)
+    mc, contact = _pinned_mc(entry)
+    mc.commands.path_change_results = [_FakeEvent(_FakeEventType.ERROR, payload)]
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    assert [c["path"] for c in mc.commands.path_changes] == ["", "aabb"]
+    assert mc.commands.device_path == "aabb"
+    assert contact["out_path"] == "aabb"
+
+
+def test_pathless_contact_restores_when_cancelled_mid_pin():
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=-1)
+    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={"c": contact})
+    started = asyncio.Event()
+    change = mc.commands.change_contact_path
+
+    async def interrupted_pin(*args, **kwargs):
+        await change(*args, **kwargs)
+        started.set()
+        await asyncio.get_running_loop().create_future()
+
+    mc.commands.change_contact_path = interrupted_pin
+
+    async def drive():
+        task = asyncio.create_task(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(), _FakeLogger()))
+        await asyncio.wait_for(started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    _run(drive())
+    assert mc.commands.device_path_len == -1
+    assert contact["out_path_len"] == -1
+
+
+def test_restore_preserves_the_original_hash_mode():
+    entry = _entry("a", 1.0, 100.0)
+    contact = _contact(entry.pubkey, out_path_len=2, out_path="aabb")
+    contact["out_path_hash_mode"] = 1
+    mc = _FakeMeshCore({entry.pubkey: "fr"}, contacts={"c": contact})
+
+    _run(nb.collect_scopes(mc, [entry], nb.NeighborsConfig(scope_gap=0.0), _FakeLogger()))
+
+    assert mc.commands.path_changes[-1]["mode"] == 1

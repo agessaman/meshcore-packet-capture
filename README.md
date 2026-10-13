@@ -314,6 +314,53 @@ sudo bash install.sh --branch main     # track a branch (development)
 `update` resolves the latest release the same way and reports the
 installed-versus-target version before applying it.
 
+The same choices can be made with environment variables. See
+[Installer environment variables](#installer-environment-variables). `install.sh`
+re-execs under `sudo` when it is not already root, which drops the environment,
+so the flags above are the reliable form.
+
+#### Installer environment variables
+
+These variables are read by the installer. They do not affect a capture process
+that is already running.
+
+`install.sh` re-execs with `sudo` when it is not already root, and that drops
+the environment. `--repo`, `--branch`, and `--tag` survive because they are
+arguments. To use the variables, start the installer in an environment that
+still has them, for example `sudo env PACKETCAPTURE_BRANCH=dev bash install.sh`,
+or run `python3 -m installer` as root.
+
+`install.sh` selects the installer code it runs. `python3 -m installer` selects
+the files that get installed. `--branch`, `MESHCORE_PACKET_CAPTURE_BRANCH`, and
+`PACKETCAPTURE_BRANCH` apply to both layers. `INSTALL_BRANCH`, `INSTALL_TAG`,
+and `PACKETCAPTURE_TAG` are read only by the Python installer. Through
+`install.sh`, pin a release with `--tag`. Without that flag, the bootstrap still
+downloads its installer from `main`, or from an explicit branch.
+
+Bootstrap (`install.sh`):
+
+- `MESHCORE_PACKET_CAPTURE_REPO`, otherwise `MESHCORE_PACKETCAPTURE_REPO`, otherwise `PACKETCAPTURE_REPO`: GitHub repository as `owner/name`. Default: `agessaman/meshcore-packet-capture`. `--repo` overrides this.
+- `MESHCORE_PACKET_CAPTURE_BRANCH`, otherwise `PACKETCAPTURE_BRANCH`: branch the bootstrap downloads. Default: `main`. Setting either variable, or passing `--branch`, also exports `INSTALL_BRANCH`, so the installed files are that branch rather than the latest release.
+- `LOCAL_INSTALL`: path to a checkout. The bootstrap copies `installer/` from that directory instead of downloading an archive. The Python installer then installs that same directory. See the checkout example above.
+
+Python installer (`python3 -m installer`):
+
+- `INSTALL_REPO`: default for `--repo`. `install.sh` always exports the repository it resolved.
+- `INSTALL_BRANCH`, or `PACKETCAPTURE_BRANCH` when `INSTALL_BRANCH` is unset: default for `--branch`.
+- `INSTALL_TAG`, or `PACKETCAPTURE_TAG` when `INSTALL_TAG` is unset: default for `--tag`.
+- `INSTALL_REF`: when set and non-empty, this git ref is used and the latest-release lookup is skipped.
+- `INSTALL_REF_KIND`: the exact value `tags` means `INSTALL_REF` is a release tag. Any other value, including unset, fetches it as a branch.
+- `LOCAL_INSTALL`: install this directory and skip the release lookup. A branch or tag set at the same time does not replace that tree.
+- `INSTALL_REBUILD_VENV`: any non-empty value deletes the install virtualenv and creates it again. `0` and `false` still rebuild. When the variable is unset or empty, an existing virtualenv is kept if `meshcore`, `paho.mqtt.client`, and `bleak` import.
+
+When `INSTALL_REF` is unset and `LOCAL_INSTALL` is unset, the installed ref is
+chosen in this order: an explicit branch, an explicit tag, the latest published
+GitHub release, then `main`. An explicit branch wins over an explicit tag,
+including a branch left in the environment while `--tag` is passed.
+
+`install.sh` does not set `INSTALL_REF` or `INSTALL_REF_KIND`. Those two are for
+a direct `python3 -m installer` run that has already chosen the ref.
+
 #### Upgrading legacy service installs
 
 Older installers placed the app and `.env.local` configuration under
@@ -337,9 +384,12 @@ working directory (repo root, `/opt/meshcore-packet-capture`, or `/app` in Docke
 1. `.env` - Default configuration (committed to repository)
 2. `.env.local` - Local overrides (not committed, for your specific setup; `.env.local` wins over `.env`)
 
-All logical keys use the `PACKETCAPTURE_` prefix. These files are **legacy**: the TOML
-config under `/etc/meshcore-packet-capture/` takes precedence over them. For service
-installs, configure via TOML (`config.d/99-user.toml`) instead.
+Capture settings use the `PACKETCAPTURE_` prefix. `AUTH_TOKEN_METHOD`,
+`AUTH_TOKEN_DEVICE_ONLY`, and `DEBUG_DEVICE_SIGNING` are copied through under
+those names. See [Authentication Methods](#authentication-methods). The files
+are **legacy**: TOML config under `/etc/meshcore-packet-capture/` takes
+precedence over them. For service installs, configure via TOML
+(`config.d/99-user.toml`) instead.
 
 ### Configuration Variables
 
@@ -411,6 +461,9 @@ Brokers are discovered sequentially starting at `MQTT1` and continue until `PACK
 **Private Key Settings:**
 - `PACKETCAPTURE_PRIVATE_KEY`: Device private key for auth token authentication (hex string)
 - `PACKETCAPTURE_PRIVATE_KEY_FILE`: Path to file containing device private key
+- `AUTH_TOKEN_METHOD`: `device` (default), `python`, or `meshcore-decoder`. No `PACKETCAPTURE_` prefix. See [Authentication Methods](#authentication-methods).
+- `AUTH_TOKEN_DEVICE_ONLY`: set to `true` to disable the private-key fallback. No `PACKETCAPTURE_` prefix.
+- `DEBUG_DEVICE_SIGNING`: set to `true` to use the manual on-device signing sequence. Troubleshooting only.
 
 **Note**: Private keys can be provided via environment variable, file path, or `.env.local` file.
 
@@ -464,7 +517,50 @@ PACKETCAPTURE_PRIVATE_KEY=your_private_key_here
 # OR
 PACKETCAPTURE_PRIVATE_KEY_FILE=/path/to/private_key_file
 ```
-**Note**: Auth token authentication requires the device's private key.
+
+With a connected radio, the token is signed on the device and the private key
+is not required. The private key is the fallback when on-device signing is
+unavailable or fails, and it is required for the `python` and
+`meshcore-decoder` methods below.
+
+`AUTH_TOKEN_METHOD` and `AUTH_TOKEN_DEVICE_ONLY` have no `PACKETCAPTURE_`
+prefix. TOML export only writes `PACKETCAPTURE_*` keys, so it cannot set them,
+and `--print-systemd-unit` does not copy them into the unit. Set them in the
+process environment (a systemd `Environment=` line, Docker `-e`, or the shell)
+or in `.env` / `.env.local`. A value already in the environment wins over those
+files. Generated user units pass `--no-env-files` unless
+`MESHCORE_PACKETCAPTURE_ENV_DIR` was set when the unit was generated, so a wheel
+or uv install needs these variables on the unit itself.
+
+`AUTH_TOKEN_METHOD` is compared after lowercasing, and surrounding whitespace is
+ignored:
+
+- Unset, empty, or `device`: sign on the connected radio. This is the default.
+- `python`: sign with PyNaCl using the device private key. The radio is not asked.
+- `meshcore-decoder`: sign with the `meshcore-decoder` command, or with the `@michaelhart/meshcore-decoder` Node module when that command is not on `PATH`. This requires the private key, and the key is passed to that tool. The radio is not asked.
+
+Any other value is treated as `device`.
+
+If on-device signing fails and `AUTH_TOKEN_METHOD` is unset, capture loads
+`PACKETCAPTURE_PRIVATE_KEY` or `PACKETCAPTURE_PRIVATE_KEY_FILE`. If those are
+unset it tries to export the key from the radio, then signs with PyNaCl.
+`AUTH_TOKEN_DEVICE_ONLY=true` turns that fallback off, and token creation fails
+instead of using a private key. Only the word `true` enables it (any case,
+surrounding whitespace ignored). `1` and `yes` leave the fallback on.
+
+Leave `AUTH_TOKEN_DEVICE_ONLY` unset when `AUTH_TOKEN_METHOD` is `python` or
+`meshcore-decoder`. Those methods never sign on the radio, so device-only mode
+rejects the token before the private key is used.
+
+`DEBUG_DEVICE_SIGNING=true` is for signing failures, not normal configuration.
+The value must be `true` ignoring case, with no extra whitespace (unlike
+`AUTH_TOKEN_DEVICE_ONLY`, surrounding spaces are not stripped). It applies only
+while signing on the radio: the library `sign()` call is replaced by
+`sign_start`, `sign_data`, and `sign_finish`, and that sequence is logged at
+DEBUG, including the bytes sent to the radio and the signature that comes back.
+The replacement happens even when the log level hides those lines. Use `--debug`
+or `PACKETCAPTURE_LOG_LEVEL=DEBUG` to see them. Leave the variable unset
+otherwise.
 
 Optional owner identification links your observer to your MeshCore account in
 broker dashboards. Set a global default under `[capture]` or override per broker:

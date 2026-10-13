@@ -12,6 +12,8 @@ import types
 
 import pytest
 
+from meshcore_packet_capture.systemd import unescape_working_directory
+
 
 def _install_dependency_stubs() -> None:
     if "meshcore" not in sys.modules:
@@ -122,7 +124,7 @@ def run_user_unit(tmp_path):
                            for arg in shlex.split(line.partition('=')[2][1:])]
             elif line.startswith('WorkingDirectory='):
                 value = line.partition('=')[2]
-                working = tmp_path if value == '%h' else Path(shlex.split(value)[0].replace('%%', '%'))
+                working = tmp_path if value == '%h' else Path(unescape_working_directory(value))
         env.update(extra_env or {})
         assert command is not None
         return subprocess.run(command, cwd=working, env=env, capture_output=True, text=True, timeout=15)

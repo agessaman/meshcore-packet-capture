@@ -105,7 +105,7 @@ def test_user_service_normalizes_and_quotes_repo_path(tmp_path: Path) -> None:
         config_home / "systemd" / "user" / "meshcore-packet-capture.service"
     )
     unit = unit_path.read_text()
-    expected_exec = ":" + " ".join(
+    expected_exec = ":/usr/bin/env " + " ".join(
         [
             _quote_exec_arg(str(python)),
             _quote_exec_arg("-m"),
@@ -114,7 +114,7 @@ def test_user_service_normalizes_and_quotes_repo_path(tmp_path: Path) -> None:
         ]
     )
 
-    assert f"WorkingDirectory={_quote_unit_value(str(repo_dir))}" in unit
+    assert f"WorkingDirectory={_escape_unit_value(str(repo_dir))}" in unit
     assert (
         "Environment="
         + _quote_unit_value(f"MESHCORE_PACKETCAPTURE_ENV_DIR={repo_dir}")

@@ -16,7 +16,7 @@ import venv
 
 import pytest
 
-from meshcore_packet_capture.systemd import render_user_unit
+from meshcore_packet_capture.systemd import render_user_unit, unescape_working_directory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,9 +54,12 @@ def test_preserves_paths_and_capture_options(tmp_path, monkeypatch):
     monkeypatch.setenv('PACKETCAPTURE_DATA_DIR', 'state')
     unit = render_user_unit(_args(config_files=[special, 'second.toml'], output='out.json',
                                   verbose=True, debug=True, no_mqtt=True))
-    assert _command(unit) == [str(python), '-m', 'meshcore_packet_capture', '--user-config',
+    assert _command(unit) == ['/usr/bin/env', str(python), '-m', 'meshcore_packet_capture', '--user-config',
                               '--config', str(tmp_path / special), '--config', str(tmp_path / 'second.toml'),
                               '--output', str(tmp_path / 'out.json'), '--verbose', '--debug', '--no-mqtt']
+    working_directory = next(line for line in unit.splitlines() if line.startswith('WorkingDirectory='))
+    assert not working_directory.startswith('WorkingDirectory="')
+    assert unescape_working_directory(working_directory.partition('=')[2]) == str(tmp_path / 'checkout')
     assert _environment(unit) == {
         'MESHCORE_PACKETCAPTURE_ENV_DIR': str(tmp_path / 'checkout'),
         'PACKETCAPTURE_CONFIG_DIR': str(tmp_path / special),
@@ -159,7 +162,7 @@ def test_wheel_only_generation_needs_no_runtime_dependencies_or_config(wheel_ins
     assert result.returncode == 0, result.stderr
     assert result.stderr == ''
     assert result.stdout.startswith('[Unit]\n')
-    assert _command(result.stdout) == [str(wheel_install / 'bin/python'), '-m',
+    assert _command(result.stdout) == ['/usr/bin/env', str(wheel_install / 'bin/python'), '-m',
                                        'meshcore_packet_capture', '--user-config', '--config',
                                        str(tmp_path / 'invalid.toml'), '--config',
                                        str(tmp_path / 'later.toml'), '--no-mqtt', '--no-env-files']
@@ -209,8 +212,9 @@ def test_executes_python_path_with_equals(tmp_path, monkeypatch):
     python.symlink_to(sys.executable)
     monkeypatch.setattr(sys, 'executable', str(python))
     command = _command(render_user_unit(_args()))
+    assert command[0] == '/usr/bin/env'
     # Keep the generated interpreter; substitute a harmless probe.
-    result = subprocess.run(command[:1] + ['-c', 'print("reached Python")'],
+    result = subprocess.run([command[1], '-c', 'print("reached Python")'],
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     assert result.stdout == 'reached Python\n'

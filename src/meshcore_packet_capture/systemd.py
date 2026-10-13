@@ -18,6 +18,26 @@ def _quote(value: str) -> str:
     return f'"{_escape(value)}"'
 
 
+def unescape_working_directory(value: str) -> str:
+    """Inverse of the unquoted WorkingDirectory encoding."""
+    out = []
+    index = 0
+    while index < len(value):
+        if value.startswith('\\\\', index):
+            out.append('\\')
+            index += 2
+        elif value.startswith('\\"', index):
+            out.append('"')
+            index += 2
+        elif value.startswith('%%', index):
+            out.append('%')
+            index += 2
+        else:
+            out.append(value[index])
+            index += 1
+    return ''.join(out)
+
+
 def _absolute(value: str) -> str:
     _escape(value)
     # Preserve the venv executable path; resolving its symlink loses the venv.
@@ -71,9 +91,13 @@ def render_user_unit(args: argparse.Namespace) -> str:
         data_dir = os.path.join(state_home, 'meshcore-packet-capture')
         environment.append(f'Environment={_quote("PACKETCAPTURE_DEFAULT_DATA_DIR=" + _absolute(data_dir))}')
 
-    working_directory = _quote(checkout) if checkout else '%h'
-    # The ':' prefix disables variable expansion, including literal '$' in paths.
-    exec_start = ':' + ' '.join(_quote(arg) for arg in command)
+    # A quoted WorkingDirectory fails systemd's absolute-path check. The value
+    # is one path, so spaces stay literal; %, ", and \ are escaped in place.
+    working_directory = _escape(checkout) if checkout else '%h'
+    # systemd rejects quotes, backslashes, and '=' in the executable path.
+    # The interpreter is an argument of /usr/bin/env. The ':' prefix disables
+    # environment substitution, so a literal '$' in a path is preserved.
+    exec_start = ':/usr/bin/env ' + ' '.join(_quote(arg) for arg in command)
     return '\n'.join([
         '[Unit]',
         'Description=MeshCore Packet Capture (user)',

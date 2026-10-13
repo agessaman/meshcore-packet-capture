@@ -2,12 +2,14 @@
 
 Mirrors meshcoretomqtt merge semantics (deep merge, [[broker]] by name).
 Default paths: /etc/meshcore-packet-capture/config.toml + config.d/*.toml.
+PACKETCAPTURE_CONFIG_DIR selects an alternative tree; user discovery is opt-in.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -63,15 +65,38 @@ def _apply_override(config: dict[str, Any], override: dict[str, Any]) -> dict[st
     return config
 
 
-def _load_toml(path: str | Path) -> dict[str, Any]:
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+def _load_toml(path: str | Path, *, missing_ok: bool = False) -> dict[str, Any]:
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        if missing_ok:
+            logger.warning("Base config not found at %s, using defaults", path)
+            return {}
+        logger.error("Unable to load TOML config: %s", path)
+        raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.error("Unable to load TOML config: %s", path)
+        raise
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _config_dir_paths(config_d: Path) -> list[Path]:
+    try:
+        entries = list(config_d.iterdir())
+    except FileNotFoundError:
+        return []
+    return sorted(path for path in entries if path.name.endswith(".toml") and _is_file(path))
 
 
 def _load_config_dir(config: dict[str, Any], config_d: Path) -> dict[str, Any]:
-    if not config_d.is_dir():
-        return config
-    for override_file in sorted(config_d.glob("*.toml")):
+    for override_file in _config_dir_paths(config_d):
         logger.info("Loading config override: %s", override_file)
         override = _load_toml(override_file)
         config = _apply_override(config, override)
@@ -81,10 +106,16 @@ def _load_config_dir(config: dict[str, Any], config_d: Path) -> dict[str, Any]:
 def load_config(
     config_paths: list[str] | None = None,
     *,
-    base_path: str = DEFAULT_CONFIG_FILE,
-    config_d: str = DEFAULT_CONFIG_D,
+    base_path: str | None = None,
+    config_d: str | None = None,
+    user_config: bool = False,
 ) -> dict[str, Any]:
-    """Load and merge TOML. If config_paths is set, load only those files in order."""
+    """Load explicit files, a selected tree, or the default system tree.
+
+    Explicit base_path/config_d arguments bypass environment discovery.
+    With user_config, MESHCORE_PACKETCAPTURE_ENV_DIR selects only that checkout,
+    including an empty tree; missing checkout directories fail startup.
+    """
     if config_paths:
         config: dict[str, Any] = {}
         for path in config_paths:
@@ -96,14 +127,69 @@ def load_config(
             config = _apply_override(config, override)
         return config
 
-    config = {}
-    if os.path.exists(base_path):
-        config = _load_toml(base_path)
-        logger.info("Loaded base config from %s", base_path)
-    else:
-        logger.warning("Base config not found at %s, using defaults", base_path)
+    if base_path is not None or config_d is not None:
+        return _load_system_config(
+            DEFAULT_CONFIG_FILE if base_path is None else base_path,
+            DEFAULT_CONFIG_D if config_d is None else config_d,
+        )
 
+    selected_dir = os.environ.get("PACKETCAPTURE_CONFIG_DIR", "")
+    if selected_dir.strip():
+        root = Path(selected_dir).expanduser()
+        if not root.is_dir():
+            raise NotADirectoryError(f"PACKETCAPTURE_CONFIG_DIR is not a directory: {root}")
+        return _load_config_tree(root)
+
+    user_root = None
+    if user_config:
+        checkout_dir = os.environ.get("MESHCORE_PACKETCAPTURE_ENV_DIR", "").strip()
+        if checkout_dir:
+            root = Path(checkout_dir).expanduser()
+            if not root.is_dir():
+                raise NotADirectoryError(f"MESHCORE_PACKETCAPTURE_ENV_DIR is not a directory: {root}")
+            return _load_config_tree(root)
+        xdg_home = os.environ.get("XDG_CONFIG_HOME", "")
+        user_root = (
+            Path(xdg_home) if xdg_home and Path(xdg_home).is_absolute()
+            else Path.home() / ".config"
+        ) / "meshcore-packet-capture"
+
+    user_paths = _tree_config_paths(user_root) if user_root is not None else []
+    # Parse user settings first so unreadable user files never permit a fallback.
+    user_settings = _load_config_paths(user_paths)
+    try:
+        config = _load_system_config(DEFAULT_CONFIG_FILE, DEFAULT_CONFIG_D)
+    except PermissionError as exc:
+        if not user_paths:
+            raise
+        logger.warning("Discarding unreadable system config tree; using only user TOML: %s", exc)
+        config = {}
+    return _apply_override(config, user_settings)
+
+
+def _load_system_config(base_path: str, config_d: str) -> dict[str, Any]:
+    config = _load_toml(base_path, missing_ok=True)
     config = _load_config_dir(config, Path(config_d))
+    logger.info("Loaded system config tree from %s and %s", base_path, config_d)
+    return config
+
+
+def _tree_config_paths(root: Path) -> list[str]:
+    paths = [root / "config.toml"] if _is_file(root / "config.toml") else []
+    paths.extend(_config_dir_paths(root / "config.d"))
+    return [str(path) for path in paths]
+
+
+def _load_config_tree(root: Path, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _load_config_paths(_tree_config_paths(root), config)
+
+
+def _load_config_paths(paths: list[str], config: dict[str, Any] | None = None) -> dict[str, Any]:
+    if config is None:
+        config = {}
+    for path in paths:
+        logger.info("Loading config: %s", path)
+        config = _apply_override(config, _load_toml(path))
     return config
 
 
@@ -326,9 +412,10 @@ def flatten_config_to_env_dict(config: dict[str, Any]) -> dict[str, str]:
 def apply_config_to_environ(
     config_paths: list[str] | None = None,
     *,
-    base_path: str = DEFAULT_CONFIG_FILE,
-    config_d: str = DEFAULT_CONFIG_D,
+    base_path: str | None = None,
+    config_d: str | None = None,
     protected: set[str] | None = None,
+    user_config: bool = False,
 ) -> dict[str, Any]:
     """Load TOML and apply it to os.environ as PACKETCAPTURE_* keys.
 
@@ -339,7 +426,7 @@ def apply_config_to_environ(
     overwritten by the TOML value. When ``protected`` is ``None`` the legacy
     behavior is used: only keys absent from ``os.environ`` are set.
     """
-    cfg = load_config(config_paths, base_path=base_path, config_d=config_d)
+    cfg = load_config(config_paths, base_path=base_path, config_d=config_d, user_config=user_config)
     for key, value in flatten_config_to_env_dict(cfg).items():
         if protected is None:
             if key not in os.environ:

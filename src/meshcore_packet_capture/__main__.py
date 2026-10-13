@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 
-from .packet_capture import main
+from .cli import parse_args
 
 
 def cli() -> None:
-    asyncio.run(main())
+    args = parse_args()
+    if args is None:
+        return
+    from .packet_capture import main
+
+    asyncio.run(main(args))
 
 
 if __name__ == "__main__":

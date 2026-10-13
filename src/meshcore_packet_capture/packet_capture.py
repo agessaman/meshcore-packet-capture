@@ -14,9 +14,12 @@ Options:
     --debug      Show detailed debugging info
     --no-mqtt    Disable MQTT publishing
     --config     TOML only (repeatable); default loads /etc/meshcore-packet-capture/
+    --user-config Select checkout TOML or overlay system TOML with XDG user TOML
+    --no-env-files Skip legacy .env and .env.local files
 
 The script captures packet metadata including SNR, RSSI, route type, payload type,
-and raw hex data. Configuration is done via environment variables, .env files, and TOML under /etc.
+and raw hex data. Configuration uses process environment variables, legacy .env
+files, and explicitly selected, system, checkout, or XDG user TOML trees.
 """
 
 import asyncio
@@ -29,7 +32,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
-import argparse
+from .cli import parse_args
 
 # Import meshcore from PyPI
 import meshcore
@@ -183,7 +186,7 @@ def _normalize_ble_pin(value: Any) -> Optional[str]:
 def load_env_files():
     """Load environment variables from .env and .env.local in one directory.
 
-    Search order: ``MESHCORE_PACKETCAPTURE_ENV_DIR`` if set, else the first of
+    Use only ``MESHCORE_PACKETCAPTURE_ENV_DIR`` if set, else the first of
     ``os.getcwd()``, the git repo root (parent of ``src/``), or the package
     directory, that contains either file; if none, use the current working
     directory (files may be absent).
@@ -194,18 +197,15 @@ def load_env_files():
     candidates: list[str] = []
     if explicit:
         candidates.append(os.path.expanduser(explicit))
-    for d in (os.getcwd(), repo_root, pkg_dir):
-        if d not in candidates:
-            candidates.append(d)
-    chosen = None
+    else:
+        candidates.extend((os.getcwd(), repo_root, pkg_dir))
+    chosen = candidates[0]
     for d in candidates:
         if os.path.isfile(os.path.join(d, ".env")) or os.path.isfile(
             os.path.join(d, ".env.local")
         ):
             chosen = d
             break
-    if chosen is None:
-        chosen = os.getcwd()
     env_file = os.path.join(chosen, ".env")
     env_local_file = os.path.join(chosen, ".env.local")
     
@@ -253,19 +253,24 @@ def load_env_files():
 _environment_initialized = False
 
 
-def init_environment(config_paths: list[str] | None = None) -> None:
+def init_environment(
+    config_paths: list[str] | None = None, *, user_config: bool = False, no_env_files: bool = False,
+) -> None:
     """Load config into os.environ.
 
-    Precedence (highest first): real process env > TOML (/etc + config.d, or
-    --config paths) > .env.local > .env. The genuine process environment is
+    Precedence (highest first): real process env > selected/system/user TOML >
+    .env.local > .env. no_env_files disables both legacy files. An explicit
+    MESHCORE_PACKETCAPTURE_ENV_DIR confines legacy files to that directory.
+    The genuine process environment is
     snapshotted before any files are read so TOML may overwrite values that came
     only from .env files, while never clobbering real environment variables.
     """
     global _environment_initialized
     preexisting = set(os.environ)
-    load_env_files()
+    if not no_env_files:
+        load_env_files()
     if apply_config_to_environ is not None:
-        apply_config_to_environ(config_paths, protected=preexisting)
+        apply_config_to_environ(config_paths, protected=preexisting, user_config=user_config)
     _environment_initialized = True
 
 
@@ -486,6 +491,11 @@ class PacketCapture:
         self.drain_messages = self.get_env_bool('DRAIN_MESSAGES', True)
         self.packet_count = 0
         
+        # Our own event subscriptions, as (meshcore, subscription) pairs.
+        # Tracked because the dispatcher also carries the library's internal
+        # handlers, which must outlive our cleanup -- see cleanup_event_subscriptions.
+        self._app_subscriptions = []
+
         # Device information
         self.device_name = None
         self.device_public_key = None
@@ -734,11 +744,12 @@ class PacketCapture:
         
         Works across all installation methods:
         - PACKETCAPTURE_DATA_DIR: explicit directory (FHS / systemd)
+        - PACKETCAPTURE_DEFAULT_DATA_DIR: user-service fallback below TOML/env
         - Docker: Uses /app/data/ (mounted volume)
         - NixOS: Uses cfg.dataDir (working directory)
         - Systemd: Uses script directory or data subdirectory
         """
-        configured = self.get_env('DATA_DIR', '').strip()
+        configured = self.get_env('DATA_DIR', '').strip() or self.get_env('DEFAULT_DATA_DIR', '').strip()
         if configured:
             return os.path.join(configured, 'advert_state.json')
 
@@ -2263,27 +2274,46 @@ class PacketCapture:
                 self.meshcore = None
             return False
     
+    def _subscribe_tracked(self, event_type, handler):
+        """Subscribe, recording it so cleanup can find ours among the library's."""
+        subscription = self.meshcore.subscribe(event_type, handler)
+        self._app_subscriptions.append((self.meshcore, subscription))
+        return subscription
+
     def cleanup_event_subscriptions(self):
-        """Clean up all event subscriptions before disconnecting to prevent pending tasks"""
+        """Drop our own event subscriptions before reconnecting or disconnecting.
+
+        Only ours. The dispatcher also holds the subscriptions MeshCore makes for
+        itself in __init__ -- _update_contacts, _update_self_info, _update_time,
+        _add_pending_contact -- and nothing ever re-registers them. Clearing the
+        dispatcher wholesale therefore permanently blinds the library's own state:
+        get_contacts() still returns a CONTACTS event, but with _update_contacts
+        gone nothing writes meshcore.contacts, so it stays empty forever. That is
+        not a cosmetic loss. send_anon_req() routes by contact lookup, so an empty
+        cache makes every anon request flood, and a flooded REGIONS request is
+        dropped unanswered by the repeater -- which is why neighbour scope
+        collection returned nothing but timeouts.
+        """
         if not self.meshcore:
             return
-        
-        try:
-            # Use meshcore.unsubscribe() method which is the proper API
-            if hasattr(self.meshcore, "dispatcher") and hasattr(self.meshcore.dispatcher, "subscriptions"):
-                subscription_count = len(self.meshcore.dispatcher.subscriptions)
-                if subscription_count > 0:
-                    self.logger.debug(f"Cleaning up {subscription_count} event subscriptions")
-                    # Create a copy of the list to avoid modification during iteration
-                    for subscription in list(self.meshcore.dispatcher.subscriptions):
-                        try:
-                            # Use meshcore.unsubscribe() - the proper API method
-                            self.meshcore.unsubscribe(subscription)
-                        except Exception as e:
-                            self.logger.debug(f"Error unsubscribing: {e}")
-                    self.logger.debug(f"Cleared {subscription_count} event subscriptions")
-        except Exception as e:
-            self.logger.debug(f"Error cleaning up subscriptions: {e}")
+
+        tracked, self._app_subscriptions = self._app_subscriptions, []
+        if not tracked:
+            return
+
+        self.logger.debug(f"Cleaning up {len(tracked)} event subscription(s)")
+        cleared = 0
+        for owner, subscription in tracked:
+            # A reconnect replaces self.meshcore; subscriptions belonging to the
+            # old object died with its dispatcher and must not be handed to the new one.
+            if owner is not self.meshcore:
+                continue
+            try:
+                self.meshcore.unsubscribe(subscription)
+                cleared += 1
+            except Exception as e:
+                self.logger.debug(f"Error unsubscribing: {e}")
+        self.logger.debug(f"Cleared {cleared} event subscription(s)")
 
     async def reconnect_meshcore(self) -> bool:
         """Attempt to reconnect to MeshCore device with exponential backoff retry logic"""
@@ -3748,7 +3778,7 @@ class PacketCapture:
             self.connected = False
             self.logger.info("Connection status updated - connection monitor will handle reconnection")
         
-        self.meshcore.subscribe(EventType.DISCONNECTED, on_disconnect)
+        self._subscribe_tracked(EventType.DISCONNECTED, on_disconnect)
         self.logger.debug("Disconnect event handler registered")
 
     async def setup_event_handlers(self):
@@ -3778,9 +3808,9 @@ class PacketCapture:
                     self.logger.debug(f"Status data: {event.payload}")
         
         # Subscribe to events
-        self.meshcore.subscribe(EventType.RX_LOG_DATA, on_rf_data)
-        self.meshcore.subscribe(EventType.RAW_DATA, on_raw_data)
-        self.meshcore.subscribe(EventType.STATUS_RESPONSE, on_status_response)
+        self._subscribe_tracked(EventType.RX_LOG_DATA, on_rf_data)
+        self._subscribe_tracked(EventType.RAW_DATA, on_raw_data)
+        self._subscribe_tracked(EventType.STATUS_RESPONSE, on_status_response)
         
         # Setup disconnect handler
         await self.setup_disconnect_handler()
@@ -4316,35 +4346,14 @@ class PacketCapture:
 
 
 
-async def main():
+async def main(args=None):
     """Main entry point"""
-    parser = argparse.ArgumentParser(description='MeshCore Packet Capture Script')
-    parser.add_argument('--output', help='Output file path (optional)')
-    parser.add_argument('--verbose', action='store_true', help='Enable verbose output (shows JSON packet data)')
-    parser.add_argument('--debug', action='store_true', help='Enable debug output (shows all detailed debugging info)')
-    parser.add_argument('--no-mqtt', action='store_true', help='Disable MQTT publishing')
-    parser.add_argument(
-        '--neighbors-now',
-        action='store_true',
-        help='Run one neighbors discovery + scopes cycle immediately, ignoring the '
-             'schedule (the equivalent of the firmware\'s "discover.neighbors"). '
-             'Combine with --neighbors-exit to run just that and quit.',
-    )
-    parser.add_argument(
-        '--neighbors-exit',
-        action='store_true',
-        help='With --neighbors-now, exit once the cycle finishes instead of continuing to capture.',
-    )
-    parser.add_argument(
-        '--config',
-        action='append',
-        dest='config_files',
-        metavar='PATH',
-        help='TOML config file (repeatable). If set, only these files are loaded, not /etc defaults.',
-    )
-
-    args = parser.parse_args()
-    init_environment(args.config_files if args.config_files else None)
+    if args is None:
+        args = parse_args()
+    if args is None:
+        return
+    init_environment(args.config_files if args.config_files else None, user_config=args.user_config,
+                     no_env_files=args.no_env_files)
 
     # Command line arguments will be handled after PacketCapture instantiation
     

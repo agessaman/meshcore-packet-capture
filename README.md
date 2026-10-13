@@ -92,9 +92,67 @@ meshcore-packet-capture --help
 
 This installs the `meshcore-packet-capture` command and its dependencies into a
 local virtualenv. Use it for manual runs, development, or when you manage the
-process yourself. To run it as a managed background service, use the bootstrap
-installer (see [Quick Start](#quick-start) and
+process yourself. For a system service, use the bootstrap installer (see
+[Quick Start](#quick-start) and
 [Managed-service installer](#managed-service-installer-linux-and-macos) below).
+
+#### User service from a wheel or uv install (Linux)
+
+The installed CLI can generate a user systemd unit without a repository checkout:
+
+```bash
+uv tool install "git+https://github.com/agessaman/meshcore-packet-capture"
+case "${XDG_CONFIG_HOME:-}" in /*) ;; *) export XDG_CONFIG_HOME="$HOME/.config" ;; esac
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+meshcore-packet-capture --print-systemd-unit --user \
+  > "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/meshcore-packet-capture.service"
+systemd-analyze --user verify "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/meshcore-packet-capture.service"
+systemctl --user daemon-reload
+systemctl --user enable --now meshcore-packet-capture
+```
+
+Generation only prints the unit to stdout. It does not read config files, connect
+to a radio, install a service, or start one. The unit uses the Python executable
+from the CLI's installed environment, so no path edits are needed.
+
+Put TOML configuration in
+`${XDG_CONFIG_HOME:-$HOME/.config}/meshcore-packet-capture/config.toml` and
+`config.d/*.toml`. The service enables `--user-config`, which overlays user TOML
+on readable system config. New, edited, or removed config files take effect after
+`systemctl --user restart meshcore-packet-capture` without regenerating the unit.
+
+To select another directory, set `PACKETCAPTURE_CONFIG_DIR` during generation.
+To select specific files instead, pass repeatable `--config PATH` arguments;
+their order is preserved and relative paths are saved as absolute paths.
+Capture options such as `--no-mqtt`, `--debug`, and `--output PATH` are also
+saved in the generated command. Shell settings for `PACKETCAPTURE_CONFIG_DIR`,
+`XDG_CONFIG_HOME`, and `MESHCORE_PACKETCAPTURE_ENV_DIR` are saved when explicitly
+set; other `PACKETCAPTURE_*` settings should go in TOML or the service environment.
+`--neighbors-now` and `--neighbors-exit` are manual actions and are rejected during
+unit generation, because a restarting service would repeat their on-air work.
+
+Without a selected checkout, runtime state defaults to
+`${XDG_STATE_HOME:-$HOME/.local/state}/meshcore-packet-capture/`. The unit supplies
+`PACKETCAPTURE_DEFAULT_DATA_DIR` as a fallback; `[capture] data_dir` in TOML takes
+precedence. An explicitly set `PACKETCAPTURE_DATA_DIR` is saved in the unit and
+overrides TOML. The capture process creates the state directory when saving state.
+The working directory is the user's home, or the selected checkout when
+`MESHCORE_PACKETCAPTURE_ENV_DIR` is set. Relative XDG directory values are ignored.
+Generated services without a checkout pass `--no-env-files`, so unrelated
+`~/.env` and `~/.env.local` cannot redirect their config or supply runtime settings.
+To use legacy env files, explicitly select their directory with
+`MESHCORE_PACKETCAPTURE_ENV_DIR` during generation.
+
+Regenerate the unit and run `systemctl --user daemon-reload` followed by a restart
+if the installed Python path or saved directory selections change. For startup
+without logging in, enable lingering with `loginctl enable-linger "$USER"`
+(this may require administrator authorization). Radio access still requires the
+user's normal serial-device or Bluetooth permissions.
+
+Only `--print-systemd-unit --user` is supported. System services use the managed
+installer, which sets up the service account and permissions.
+
+#### User service from a local checkout (Linux)
 
 For a local checkout on Linux, `./install.sh --user-service` will create a per-user
 systemd service that runs from the repo's `.venv`. Pass `--repo-dir PATH` if the checkout
@@ -115,8 +173,39 @@ meshcore-packet-capture/
     99-user.toml
 ```
 
-The user-service path loads `.env` and `.env.local` from the repo root, then loads
-`config.toml` and every `config.d/*.toml` file in sorted order.
+The user-service path loads `.env` and `.env.local` from the repo root. It discovers
+`config.toml` and every `config.d/*.toml` file in sorted order at each startup, so
+new files take effect after `systemctl --user restart meshcore-packet-capture`.
+The checkout remains the selected TOML tree even when it is empty. It never
+falls through to system or XDG TOML when files are added or removed; a missing
+checkout directory fails startup. Legacy env files are confined to the repo root.
+
+To select a different TOML tree, set `PACKETCAPTURE_CONFIG_DIR` when installing
+the user service; the installer saves it in the generated unit:
+
+```bash
+mkdir -p "$HOME/.config/meshcore-packet-capture/config.d"
+PACKETCAPTURE_CONFIG_DIR="$HOME/.config/meshcore-packet-capture" ./install.sh --user-service
+```
+
+The installer also saves an explicitly set `XDG_CONFIG_HOME`. Changing these
+variables in your shell later does not change an installed unit; rerun the
+installer or edit its service environment and run `systemctl --user daemon-reload`.
+
+The checkout installer uses the CLI renderer above. Without an explicit data
+directory in TOML, legacy env files, or the unit environment, checkout services
+retain the legacy state location beside the package (its `data/` subdirectory
+when present). This preserves existing advert and neighbor schedule timestamps.
+
+**Existing user services:** rerun `./install.sh --user-service` once after
+upgrading to replace the old fixed `--config` file list with startup discovery.
+The selected tree now loads every future `config.d/*.toml` file, so only put
+finished, trusted configuration there. Use explicit `--config` arguments with
+the CLI generator if you need a fixed file list. If you previously generated a
+unit that set the XDG state directory, retain that location with `[capture]
+`data_dir` or `PACKETCAPTURE_DATA_DIR` before regenerating, or copy its
+`advert_state.json` to your chosen directory while the service is stopped.
+Moving state without preserving that file resets advert and neighbor timers.
 
 ### Docker Installation
 
@@ -144,9 +233,54 @@ See the [Docker Deployment](#docker-deployment) section below for detailed instr
 
 1. **Process environment** — `PACKETCAPTURE_*` variables already set in the environment (e.g. from a systemd unit, Docker `-e`, or your shell) always win.
 2. **TOML**: `/etc/meshcore-packet-capture/config.toml` plus every `*.toml` in `/etc/meshcore-packet-capture/config.d/` (sorted). Broker entries use the same `[[broker]]` shape as meshcoretomqtt. See `config.toml.example` and bundled `presets/letsmesh.toml` (LetsMesh Packet Analyzer defaults). With **`--config PATH`** (repeatable) only those files are merged, in order, and the automatic `/etc` scan is skipped.
-3. **Legacy `.env` / `.env.local`** (see below) — a development/manual-install convenience, loaded from the working directory. These are overridden by TOML, so they only take effect for keys the TOML config does not set.
+3. **Legacy `.env` / `.env.local`** (see below) — a development/manual-install convenience. An explicit `MESHCORE_PACKETCAPTURE_ENV_DIR` selects only that directory; otherwise the first directory with env files among the working directory, repo root, and package directory is used. `--no-env-files` skips them. These are overridden by TOML, so they only take effect for keys the TOML config does not set.
 
 Values are applied as `PACKETCAPTURE_*` environment variables. See `config.toml.example` for every TOML key, or `.env` for the equivalent flat variable names.
+
+### Selecting a TOML configuration tree
+
+TOML sources are selected in this order:
+
+1. Repeatable `--config PATH` loads only the listed files, in order, regardless
+   of directory variables or user discovery.
+2. A non-empty `PACKETCAPTURE_CONFIG_DIR` loads only that directory's
+   `config.toml` and sorted `config.d/*.toml`. It does not merge `/etc` or XDG
+   config. `~` is expanded; relative paths resolve against the working directory
+   (the user-service installer saves them as absolute paths). A missing directory
+   or a path pointing to a file fails startup. An existing empty directory is
+   allowed; it supplies no TOML settings. Empty or whitespace-only values leave
+   default discovery enabled.
+3. With `--user-config`, a non-empty `MESHCORE_PACKETCAPTURE_ENV_DIR` selects
+   only that checkout tree, even when it contains no TOML. Surrounding whitespace
+   is stripped. A missing or non-directory checkout fails startup.
+   Without that selector, `/etc/meshcore-packet-capture/`
+   is loaded first and the user tree is overlaid. The user tree is
+   `$XDG_CONFIG_HOME/meshcore-packet-capture/` when `XDG_CONFIG_HOME` is absolute;
+   otherwise it is `~/.config/meshcore-packet-capture/`.
+4. Without `--user-config`, default discovery uses only `/etc/meshcore-packet-capture/`.
+
+The checkout user-service installer enables `--user-config`. Manual CLI users
+can opt in with `meshcore-packet-capture --user-config`. Managed Linux/macOS
+services keep their existing system-only discovery. The managed installer, BLE
+cleanup helper, and uninstaller continue using `/etc`; the new variable selects
+runtime TOML sources rather than relocating managed installation files.
+
+User overlays merge brokers by name: unmatched system brokers remain configured.
+In user-discovery mode with readable user TOML present, a permission error reading
+any system file or listing its directory discards the entire system config layer
+with a warning. Only user TOML is used, so a skipped disabling override cannot
+leave an earlier system broker enabled. Ensure your user TOML supplies all the
+settings it needs. Without user TOML, system permission failures stop startup.
+Unreadable explicit files, selected-tree files, and user-tree files still fail
+startup. Malformed TOML is never skipped when read, and a `config.d` path that is
+a file fails startup in every mode.
+Use `enabled = false` on a matching broker to disable it, or select an isolated
+tree with `PACKETCAPTURE_CONFIG_DIR` to exclude system TOML entirely.
+Process-environment precedence still applies in all modes; legacy env loading
+applies unless `--no-env-files` is set.
+Matching TOML files are read at startup, so malformed new files prevent startup;
+the error log identifies the file. Keep unfinished files outside `config.d` or
+use a suffix other than `.toml` until they are ready.
 
 ### Managed-service installer (Linux and macOS)
 
@@ -173,12 +307,59 @@ get a stable, tagged version rather than the moving branch tip. (If the project
 has no releases yet, it falls back to the `main` branch.) You can override this:
 
 ```bash
-sudo bash install.sh --tag v2.2.1      # pin to a specific release
+sudo bash install.sh --tag v2.3.0      # pin to a specific release
 sudo bash install.sh --branch main     # track a branch (development)
 ```
 
 `update` resolves the latest release the same way and reports the
 installed-versus-target version before applying it.
+
+The same choices can be made with environment variables. See
+[Installer environment variables](#installer-environment-variables). `install.sh`
+re-execs under `sudo` when it is not already root, which drops the environment,
+so the flags above are the reliable form.
+
+#### Installer environment variables
+
+These variables are read by the installer. They do not affect a capture process
+that is already running.
+
+`install.sh` re-execs with `sudo` when it is not already root, and that drops
+the environment. `--repo`, `--branch`, and `--tag` survive because they are
+arguments. To use the variables, start the installer in an environment that
+still has them, for example `sudo env PACKETCAPTURE_BRANCH=dev bash install.sh`,
+or run `python3 -m installer` as root.
+
+`install.sh` selects the installer code it runs. `python3 -m installer` selects
+the files that get installed. `--branch`, `MESHCORE_PACKET_CAPTURE_BRANCH`, and
+`PACKETCAPTURE_BRANCH` apply to both layers. `INSTALL_BRANCH`, `INSTALL_TAG`,
+and `PACKETCAPTURE_TAG` are read only by the Python installer. Through
+`install.sh`, pin a release with `--tag`. Without that flag, the bootstrap still
+downloads its installer from `main`, or from an explicit branch.
+
+Bootstrap (`install.sh`):
+
+- `MESHCORE_PACKET_CAPTURE_REPO`, otherwise `MESHCORE_PACKETCAPTURE_REPO`, otherwise `PACKETCAPTURE_REPO`: GitHub repository as `owner/name`. Default: `agessaman/meshcore-packet-capture`. `--repo` overrides this.
+- `MESHCORE_PACKET_CAPTURE_BRANCH`, otherwise `PACKETCAPTURE_BRANCH`: branch the bootstrap downloads. Default: `main`. Setting either variable, or passing `--branch`, also exports `INSTALL_BRANCH`, so the installed files are that branch rather than the latest release.
+- `LOCAL_INSTALL`: path to a checkout. The bootstrap copies `installer/` from that directory instead of downloading an archive. The Python installer then installs that same directory. See the checkout example above.
+
+Python installer (`python3 -m installer`):
+
+- `INSTALL_REPO`: default for `--repo`. `install.sh` always exports the repository it resolved.
+- `INSTALL_BRANCH`, or `PACKETCAPTURE_BRANCH` when `INSTALL_BRANCH` is unset: default for `--branch`.
+- `INSTALL_TAG`, or `PACKETCAPTURE_TAG` when `INSTALL_TAG` is unset: default for `--tag`.
+- `INSTALL_REF`: when set and non-empty, this git ref is used and the latest-release lookup is skipped.
+- `INSTALL_REF_KIND`: the exact value `tags` means `INSTALL_REF` is a release tag. Any other value, including unset, fetches it as a branch.
+- `LOCAL_INSTALL`: install this directory and skip the release lookup. A branch or tag set at the same time does not replace that tree.
+- `INSTALL_REBUILD_VENV`: any non-empty value deletes the install virtualenv and creates it again. `0` and `false` still rebuild. When the variable is unset or empty, an existing virtualenv is kept if `meshcore`, `paho.mqtt.client`, and `bleak` import.
+
+When `INSTALL_REF` is unset and `LOCAL_INSTALL` is unset, the installed ref is
+chosen in this order: an explicit branch, an explicit tag, the latest published
+GitHub release, then `main`. An explicit branch wins over an explicit tag,
+including a branch left in the environment while `--tag` is passed.
+
+`install.sh` does not set `INSTALL_REF` or `INSTALL_REF_KIND`. Those two are for
+a direct `python3 -m installer` run that has already chosen the ref.
 
 #### Upgrading legacy service installs
 
@@ -203,9 +384,12 @@ working directory (repo root, `/opt/meshcore-packet-capture`, or `/app` in Docke
 1. `.env` - Default configuration (committed to repository)
 2. `.env.local` - Local overrides (not committed, for your specific setup; `.env.local` wins over `.env`)
 
-All logical keys use the `PACKETCAPTURE_` prefix. These files are **legacy**: the TOML
-config under `/etc/meshcore-packet-capture/` takes precedence over them. For service
-installs, configure via TOML (`config.d/99-user.toml`) instead.
+Capture settings use the `PACKETCAPTURE_` prefix. `AUTH_TOKEN_METHOD`,
+`AUTH_TOKEN_DEVICE_ONLY`, and `DEBUG_DEVICE_SIGNING` are copied through under
+those names. See [Authentication Methods](#authentication-methods). The files
+are **legacy**: TOML config under `/etc/meshcore-packet-capture/` takes
+precedence over them. For service installs, configure via TOML
+(`config.d/99-user.toml`) instead.
 
 ### Configuration Variables
 
@@ -277,6 +461,9 @@ Brokers are discovered sequentially starting at `MQTT1` and continue until `PACK
 **Private Key Settings:**
 - `PACKETCAPTURE_PRIVATE_KEY`: Device private key for auth token authentication (hex string)
 - `PACKETCAPTURE_PRIVATE_KEY_FILE`: Path to file containing device private key
+- `AUTH_TOKEN_METHOD`: `device` (default), `python`, or `meshcore-decoder`. No `PACKETCAPTURE_` prefix. See [Authentication Methods](#authentication-methods).
+- `AUTH_TOKEN_DEVICE_ONLY`: set to `true` to disable the private-key fallback. No `PACKETCAPTURE_` prefix.
+- `DEBUG_DEVICE_SIGNING`: set to `true` to use the manual on-device signing sequence. Troubleshooting only.
 
 **Note**: Private keys can be provided via environment variable, file path, or `.env.local` file.
 
@@ -330,7 +517,50 @@ PACKETCAPTURE_PRIVATE_KEY=your_private_key_here
 # OR
 PACKETCAPTURE_PRIVATE_KEY_FILE=/path/to/private_key_file
 ```
-**Note**: Auth token authentication requires the device's private key.
+
+With a connected radio, the token is signed on the device and the private key
+is not required. The private key is the fallback when on-device signing is
+unavailable or fails, and it is required for the `python` and
+`meshcore-decoder` methods below.
+
+`AUTH_TOKEN_METHOD` and `AUTH_TOKEN_DEVICE_ONLY` have no `PACKETCAPTURE_`
+prefix. TOML export only writes `PACKETCAPTURE_*` keys, so it cannot set them,
+and `--print-systemd-unit` does not copy them into the unit. Set them in the
+process environment (a systemd `Environment=` line, Docker `-e`, or the shell)
+or in `.env` / `.env.local`. A value already in the environment wins over those
+files. Generated user units pass `--no-env-files` unless
+`MESHCORE_PACKETCAPTURE_ENV_DIR` was set when the unit was generated, so a wheel
+or uv install needs these variables on the unit itself.
+
+`AUTH_TOKEN_METHOD` is compared after lowercasing, and surrounding whitespace is
+ignored:
+
+- Unset, empty, or `device`: sign on the connected radio. This is the default.
+- `python`: sign with PyNaCl using the device private key. The radio is not asked.
+- `meshcore-decoder`: sign with the `meshcore-decoder` command, or with the `@michaelhart/meshcore-decoder` Node module when that command is not on `PATH`. This requires the private key, and the key is passed to that tool. The radio is not asked.
+
+Any other value is treated as `device`.
+
+If on-device signing fails and `AUTH_TOKEN_METHOD` is unset, capture loads
+`PACKETCAPTURE_PRIVATE_KEY` or `PACKETCAPTURE_PRIVATE_KEY_FILE`. If those are
+unset it tries to export the key from the radio, then signs with PyNaCl.
+`AUTH_TOKEN_DEVICE_ONLY=true` turns that fallback off, and token creation fails
+instead of using a private key. Only the word `true` enables it (any case,
+surrounding whitespace ignored). `1` and `yes` leave the fallback on.
+
+Leave `AUTH_TOKEN_DEVICE_ONLY` unset when `AUTH_TOKEN_METHOD` is `python` or
+`meshcore-decoder`. Those methods never sign on the radio, so device-only mode
+rejects the token before the private key is used.
+
+`DEBUG_DEVICE_SIGNING=true` is for signing failures, not normal configuration.
+The value must be `true` ignoring case, with no extra whitespace (unlike
+`AUTH_TOKEN_DEVICE_ONLY`, surrounding spaces are not stripped). It applies only
+while signing on the radio: the library `sign()` call is replaced by
+`sign_start`, `sign_data`, and `sign_finish`, and that sequence is logged at
+DEBUG, including the bytes sent to the radio and the signature that comes back.
+The replacement happens even when the log level hides those lines. Use `--debug`
+or `PACKETCAPTURE_LOG_LEVEL=DEBUG` to see them. Leave the variable unset
+otherwise.
 
 Optional owner identification links your observer to your MeshCore account in
 broker dashboards. Set a global default under `[capture]` or override per broker:

@@ -307,7 +307,7 @@ get a stable, tagged version rather than the moving branch tip. (If the project
 has no releases yet, it falls back to the `main` branch.) You can override this:
 
 ```bash
-sudo bash install.sh --tag v2.2.1      # pin to a specific release
+sudo bash install.sh --tag v2.3.0      # pin to a specific release
 sudo bash install.sh --branch main     # track a branch (development)
 ```
 

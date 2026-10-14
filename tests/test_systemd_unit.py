@@ -79,8 +79,36 @@ def test_user_state_directory(tmp_path, monkeypatch, xdg):
     root = Path(xdg) if xdg and xdg.startswith('/') else tmp_path / '.local/state'
     assert _environment(unit)['PACKETCAPTURE_DEFAULT_DATA_DIR'] == str(root / 'meshcore-packet-capture')
     assert 'WorkingDirectory=%h\n' in unit
-    assert 'User=' not in unit and 'Group=' not in unit and 'ProtectHome=' not in unit
+    assert 'User=' not in unit and 'Group=' not in unit
     assert not (tmp_path / '.local').exists()
+
+
+def test_user_unit_sandbox_keeps_home_and_devices():
+    unit = render_user_unit(_args())
+    for line in (
+        'UMask=0077',
+        'NoNewPrivileges=true',
+        'PrivateTmp=true',
+        'ProtectKernelTunables=true',
+        'ProtectKernelModules=true',
+        'ProtectKernelLogs=true',
+        'ProtectControlGroups=true',
+        'ProtectClock=true',
+        'ProtectHostname=true',
+        'RestrictSUIDSGID=true',
+        'LockPersonality=true',
+        'RestrictRealtime=true',
+        'RemoveIPC=true',
+        'CapabilityBoundingSet=',
+        'SystemCallArchitectures=native',
+    ):
+        assert line in unit.splitlines()
+    # These would hide config, state, or serial nodes, or reject paths the
+    # generator cannot know exist before the first start.
+    for forbidden in ('ProtectHome=', 'ProtectSystem=', 'PrivateDevices=',
+                      'MemoryDenyWriteExecute=', 'SystemCallFilter=',
+                      'BindPaths=', 'BindReadOnlyPaths='):
+        assert forbidden not in unit
 
 
 @pytest.mark.parametrize('variable', ['PACKETCAPTURE_CONFIG_DIR', 'MESHCORE_PACKETCAPTURE_ENV_DIR',

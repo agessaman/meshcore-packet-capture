@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import types
 
 import pytest
 
 from meshcore_packet_capture import packet_capture as pc_mod
 from meshcore_packet_capture.enums import PayloadType
-from meshcore_packet_capture.packet_capture import PacketCapture, _normalize_ble_pin
+from meshcore_packet_capture.packet_capture import PacketCapture, _normalize_ble_pin, enable_tcp_keepalive
 
 
 @pytest.fixture
@@ -65,6 +66,45 @@ def test_ble_grace_period_allows_then_fails(capture: PacketCapture) -> None:
 )
 def test_normalize_ble_pin(value, expected) -> None:
     assert _normalize_ble_pin(value) == expected
+
+
+def test_enable_tcp_keepalive_configures_socket() -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        assert enable_tcp_keepalive(sock, idle=11, interval=6, count=4) is True
+        # macOS reports a non-zero flag here rather than the literal 1 passed in.
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) != 0
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE) == 11
+        elif hasattr(socket, "TCP_KEEPALIVE"):
+            assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE) == 11
+        if hasattr(socket, "TCP_KEEPINTVL"):
+            assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL) == 6
+        if hasattr(socket, "TCP_KEEPCNT"):
+            assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) == 4
+    finally:
+        sock.close()
+
+
+def test_enable_tcp_keepalive_missing_socket() -> None:
+    class _Transport:
+        def get_extra_info(self, _name):
+            return None
+
+    assert enable_tcp_keepalive(_Transport()) is False
+
+
+def test_enable_tcp_keepalive_socket_error_is_nonfatal(capsys) -> None:
+    class _Socket:
+        def setsockopt(self, *_args):
+            raise OSError("keepalive refused")
+
+    class _Transport:
+        def get_extra_info(self, name):
+            return _Socket() if name == "socket" else None
+
+    assert enable_tcp_keepalive(_Transport()) is False
+    assert "keepalive refused" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

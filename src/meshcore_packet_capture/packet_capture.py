@@ -147,6 +147,25 @@ def enable_tcp_keepalive(transport, idle=10, interval=5, count=3):
     if sock is None:
         return False
 
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+        # Linux and some BSD systems use TCP_KEEPIDLE; macOS uses TCP_KEEPALIVE.
+        if hasattr(socket, 'TCP_KEEPIDLE'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
+        elif hasattr(socket, 'TCP_KEEPALIVE'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, idle)
+
+        if hasattr(socket, 'TCP_KEEPINTVL'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
+        if hasattr(socket, 'TCP_KEEPCNT'):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
+
+        return True
+    except Exception as e:
+        print(f"Warning: Could not enable TCP keepalive: {e}")
+        return False
+
 
 def _normalize_ble_pin(value: Any) -> Optional[str]:
     """Return a valid six-digit BLE PIN without losing leading zeroes."""
@@ -158,29 +177,6 @@ def _normalize_ble_pin(value: Any) -> Optional[str]:
     if len(pin) == 6 and pin.isascii() and pin.isdigit():
         return pin
     return None
-    
-    try:
-        # Enable TCP keepalive
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        
-        # Platform-specific keepalive settings
-        # Linux and some BSD systems
-        if hasattr(socket, 'TCP_KEEPIDLE'):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, idle)
-        # macOS uses different constant names
-        elif hasattr(socket, 'TCP_KEEPALIVE'):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, idle)
-        
-        if hasattr(socket, 'TCP_KEEPINTVL'):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval)
-        if hasattr(socket, 'TCP_KEEPCNT'):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, count)
-        
-        return True
-    except Exception as e:
-        # Log but don't fail the connection
-        print(f"Warning: Could not enable TCP keepalive: {e}")
-        return False
 
 
 def load_env_files():

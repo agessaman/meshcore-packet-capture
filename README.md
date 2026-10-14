@@ -138,6 +138,10 @@ precedence. An explicitly set `PACKETCAPTURE_DATA_DIR` is saved in the unit and
 overrides TOML. The capture process creates the state directory when saving state.
 The working directory is the user's home, or the selected checkout when
 `MESHCORE_PACKETCAPTURE_ENV_DIR` is set. Relative XDG directory values are ignored.
+The unit uses a private `/tmp`, an owner-only umask, and restrictions that block
+kernel, clock, hostname, and capability changes. The home directory stays visible
+so the service can read configuration, run its interpreter, and create its state
+directory on first save. Serial devices and Bluetooth stay reachable.
 Generated services without a checkout pass `--no-env-files`, so unrelated
 `~/.env` and `~/.env.local` cannot redirect their config or supply runtime settings.
 To use legacy env files, explicitly select their directory with
@@ -202,8 +206,8 @@ upgrading to replace the old fixed `--config` file list with startup discovery.
 The selected tree now loads every future `config.d/*.toml` file, so only put
 finished, trusted configuration there. Use explicit `--config` arguments with
 the CLI generator if you need a fixed file list. If you previously generated a
-unit that set the XDG state directory, retain that location with `[capture]
-`data_dir` or `PACKETCAPTURE_DATA_DIR` before regenerating, or copy its
+unit that set the XDG state directory, retain that location with `[capture] data_dir`
+or `PACKETCAPTURE_DATA_DIR` before regenerating, or copy its
 `advert_state.json` to your chosen directory while the service is stopped.
 Moving state without preserving that file resets advert and neighbor timers.
 

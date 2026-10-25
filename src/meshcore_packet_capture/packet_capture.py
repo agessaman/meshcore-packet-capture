@@ -1979,8 +1979,31 @@ class PacketCapture:
         """Check MQTT broker health with grace period before counting failures"""
         import time
         
-        if not self.enable_mqtt or not self.mqtt_clients:
-            return True  # MQTT not enabled or no brokers configured
+        if not self.enable_mqtt:
+            return True  # MQTT explicitly disabled
+
+        if not self.mqtt_clients:
+            # A failed initial connection creates no client entry. Still monitor
+            # enabled brokers so the service can recover via its existing watchdog.
+            enabled_brokers = [
+                broker_num for broker_num in self.iter_configured_mqtt_brokers()
+                if self.get_env_bool(f'MQTT{broker_num}_ENABLED', False)
+            ]
+            if not enabled_brokers:
+                return True  # No enabled brokers configured
+
+            current_time = time.time()
+            for broker_num in enabled_brokers:
+                if broker_num not in self.mqtt_disconnect_timestamps:
+                    self.mqtt_disconnect_timestamps[broker_num] = current_time
+                    self.logger.debug(
+                        f"{self.get_broker_label(broker_num)} failed initial connection - grace period started"
+                    )
+
+            return all(
+                current_time - self.mqtt_disconnect_timestamps[broker_num] < self.mqtt_grace_period
+                for broker_num in enabled_brokers
+            )
         
         current_time = time.time()
         connected_brokers = 0

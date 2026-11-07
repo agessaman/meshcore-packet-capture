@@ -1,0 +1,18 @@
+[[broker]]
+name = "idahomesh"
+enabled = true
+server = "mqtt.idahomesh.org"
+port = 443
+transport = "websockets"
+websocket_path = "/mqtt"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt.idahomesh.org"

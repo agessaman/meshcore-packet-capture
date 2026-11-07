@@ -1,0 +1,18 @@
+[[broker]]
+name = "rflab"
+enabled = true
+server = "mqtt.rflab.io"
+port = 443
+transport = "websockets"
+keepalive = 55
+qos = 0
+retain = true
+neighbors = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt.rflab.io"

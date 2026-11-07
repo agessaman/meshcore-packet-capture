@@ -1,0 +1,16 @@
+# Username is the device public key (hex); password is issued by the broker operator.
+
+[[broker]]
+name = "mesh-chaun14"
+enabled = true
+server = "mqtt.mesh.chaun14.fr"
+port = 1884
+transport = "tcp"
+keepalive = 60
+qos = 0
+retain = true
+
+[broker.auth]
+method = "password"
+username = "REPLACE_WITH_DEVICE_PUBLIC_KEY_HEX"
+password = "REPLACE_WITH_CHAUN14_PASSWORD"

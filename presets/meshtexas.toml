@@ -1,0 +1,18 @@
+[[broker]]
+name = "meshtexas"
+enabled = true
+server = "mqtt.meshtexas.org"
+port = 443
+transport = "websockets"
+websocket_path = "/mqtt"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt.meshtexas.org"

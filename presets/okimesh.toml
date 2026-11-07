@@ -1,0 +1,37 @@
+[[broker]]
+name = "okimesh-1"
+enabled = true
+server = "mqtt1.okimesh.org"
+port = 9002
+transport = "websockets"
+websocket_path = "/mqtt"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt1.okimesh.org"
+
+[[broker]]
+name = "okimesh-2"
+enabled = true
+server = "mqtt2.okimesh.org"
+port = 9002
+transport = "websockets"
+websocket_path = "/mqtt"
+keepalive = 55
+qos = 0
+retain = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "mqtt2.okimesh.org"

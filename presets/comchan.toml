@@ -1,0 +1,18 @@
+[[broker]]
+name = "comchan"
+enabled = true
+server = "obs.comchan.net"
+port = 443
+transport = "websockets"
+keepalive = 55
+qos = 0
+retain = true
+neighbors = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "token"
+audience = "obs.comchan.net"

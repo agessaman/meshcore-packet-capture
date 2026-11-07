@@ -1,16 +1,12 @@
 [[broker]]
 name = "eastidahomesh"
 enabled = true
-server = "broker.eastidahomesh.net"
-port = 443
-transport = "websockets"
+server = "live.eastidahomesh.com"
+port = 1883
+transport = "tcp"
 keepalive = 55
 qos = 0
 retain = true
-
-[broker.tls]
-enabled = true
-verify = true
 
 [broker.auth]
 method = "none"

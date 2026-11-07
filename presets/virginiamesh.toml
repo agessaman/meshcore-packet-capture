@@ -1,0 +1,17 @@
+[[broker]]
+name = "virginiamesh"
+enabled = true
+server = "mqtt.virginiamesh.com"
+port = 8883
+transport = "websockets"
+keepalive = 55
+qos = 0
+retain = true
+neighbors = true
+
+[broker.tls]
+enabled = true
+verify = true
+
+[broker.auth]
+method = "none"
